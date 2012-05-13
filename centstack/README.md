@@ -16,7 +16,7 @@ Read more at http://http://oss.fulltrust.co.jp/
 
 The hagistack master branch generally points to Essex versions of OpenStack components.
 
-# Install Openstac
+# Install Openstack
 
 Installing in a dedicated disposable vm is safer than installing on your dev machine!  To start a dev cloud:
 
