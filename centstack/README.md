@@ -11,6 +11,7 @@ Read more at http://http://oss.fulltrust.co.jp/
 
 * When you install the OS, please create a LVM named nova-volumes.
 * IP address must have been fixed.
+* Please do not create the bridge interfaces.
 
 # Versions
 
