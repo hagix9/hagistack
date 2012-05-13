@@ -468,18 +468,18 @@ USER_ID=$(keystone user-list | awk "/$ADMIN_USERNAME / {print \$2}")
 ACCESS_KEY=$(keystone ec2-credentials-list --user $USER_ID | awk "/$ADMIN_USERNAME / {print \$4}")
 SECRET_KEY=$(keystone ec2-credentials-list --user $USER_ID | awk "/$ADMIN_USERNAME / {print \$6}")
 cd /home/$STACK_USER
-cat > novarc <<EOF
+cat > eucarc <<EOF
 export EC2_URL=http://$NOVA_CONTOLLER_HOSTNAME:8773/services/Cloud
 export EC2_ACCESS_KEY=$ACCESS_KEY
 export EC2_SECRET_KEY=$SECRET_KEY
 EOF
-chown $STACK_USER:$STACK_USER novarc
-chmod 600 novarc
-. /home/$STACK_USER/novarc
+chown $STACK_USER:$STACK_USER eucarc
+chmod 600 eucarc
+. /home/$STACK_USER/eucarc
 
 cat << NOVARC | tee -a /etc/bashrc > /dev/null
 . /home/$STACK_USER/keystonerc
-. /home/$STACK_USER/novarc
+. /home/$STACK_USER/eucarc
 NOVARC
 
 #network make 
