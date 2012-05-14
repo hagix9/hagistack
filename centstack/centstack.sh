@@ -396,16 +396,11 @@ cp -a /etc/httpd/conf.d/openstack-dashboard.conf /etc/httpd/conf.d/openstack-das
 sed -i 's#WSGIScriptAlias /dashboard#WSGIScriptAlias /#' /etc/httpd/conf.d/openstack-dashboard.conf
 
 #novnc install
-yum install -y rpm-build make gcc
-yum install -y numpy python-matplotlib
-mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-echo '%_topdir %(echo $HOME)/rpmbuild' > ~/.rpmmacros
-wget http://admiyo.fedorapeople.org/noVNC/novnc.spec -P ~/rpmbuild/SPECS
-wget http://admiyo.fedorapeople.org/noVNC/novnc-0.2.0GITf8380f.tar.gz -P ~/rpmbuild/SOURCES
-cd ~/rpmbuild/SPECS
-rpmbuild -ba novnc.spec
-rpm -ivh /root/rpmbuild/RPMS/x86_64/novnc-0.2.0GITf8380f-0.el6.x86_64.rpm
-rpm -ivh http://admiyo.fedorapeople.org/noVNC/novnc-nonvc-openstack-nova-0.2.0GITf8380f-0.f17ayoung.x86_64.rpm
+#not install http://admiyo.fedorapeople.org/noVNC/
+yum install -y git numpy
+git clone https://github.com/cloudbuilders/noVNC.git /opt/noVNC
+
+#novnc init script
 cat << 'EOF' | tee /etc/init.d/openstack-nova-novnc > /dev/null
 #!/bin/sh
 #
@@ -416,11 +411,12 @@ cat << 'EOF' | tee /etc/init.d/openstack-nova-novnc > /dev/null
 # author       Shiro Hagihara(Fulltrust.inc) <hagihara@fulltrust.co.jp @hagix9 fulltrust.co.jp>
 
 start() {
-  cd /usr/share/novnc && /usr/bin/nova-vncproxy --flagfile=/etc/nova/nova.conf –web . >/dev/null 2>&1 &
+  cd /opt/noVNC && ./utils/nova-novncproxy --flagfile=/etc/nova/nova.conf --web . >/dev/null 2>&1 &
+
 }
 
 stop() {
-  kill $(ps -ef | grep nova-vncproxy | grep -v grep | awk '{print $2}')
+  kill $(ps -ef | grep nova-novncproxy | grep -v grep | awk '{print $2}')
 }
 
 restart() {
@@ -431,6 +427,7 @@ restart() {
 reload() {
     restart
 }
+
 
 case "$1" in
     start)
