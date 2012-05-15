@@ -1,8 +1,8 @@
-hagiStack is a set of scripts to quickly deploy an OpenStack cloud.
+hagistack is a set of scripts to quickly deploy an OpenStack cloud.
 
-# And Centstack?
+# And hagistack?
 
-* To easy install OpenStack environments in a clean CentOS6.2(minimal)
+* To easy install OpenStack environments in a clean Ubuntu12.04
 * However, it does not install also Qauntum Swift.
 
 Read more at http://http://oss.fulltrust.co.jp/
@@ -21,7 +21,11 @@ The hagistack master branch generally points to Essex versions of OpenStack comp
 
 Installing in a dedicated disposable vm is safer than installing on your dev machine!  To start a dev cloud:
 
-    ./centstack.sh
+    ./hagistack_controller.sh
+
+If you want to add is ComputeNode
+
+    ./hagistack_compute.sh
 
 When the script finishes executing, you should be able to access OpenStack endpoints, like so:
 
@@ -45,5 +49,5 @@ If you want to use EC2API
 
 # Customizing
 
-You can override environment variables used in `centstack.sh` by creating file name `stack.env`.
+You can override environment variables used in `hagistack_controller.sh` by creating file name `stack.env`.
 
