@@ -52,6 +52,8 @@ modprobe kvm
 #keystoneclient download
 git clone git://github.com/openstack/python-keystoneclient /opt/python-keystoneclient
 cd /opt/python-keystoneclient ; git checkout -b essex refs/tags/2012.1
+#workaround
+sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/setup.py
 
 #glance download
 git clone git://github.com/openstack/glance /opt/glance

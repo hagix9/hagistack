@@ -72,6 +72,12 @@ apt-get install -y tgt memcached python-memcache \
                    mysql-server rabbitmq-server euca2ools curl vlan       \
                    apache2 libapache2-mod-wsgi python-numpy
 
+#rabbitmq setting for controller node
+rabbitmqctl add_vhost /nova
+rabbitmqctl add_user nova $RABBIT_PASS
+rabbitmqctl set_permissions -p /nova nova ".*" ".*" ".*"
+rabbitmqctl delete_user guest
+
 #mysql setting for contoller node
 sed -i 's#127.0.0.1#0.0.0.0#g' /etc/mysql/my.cnf
 restart mysql
@@ -110,6 +116,8 @@ cd /opt/keystone ; git checkout -b essex origin/stable/essex
 #keystoneclient download
 git clone git://github.com/openstack/python-keystoneclient /opt/python-keystoneclient
 cd /opt/python-keystoneclient ; git checkout -b essex refs/tags/2012.1
+#workaround
+sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/setup.py 
 
 #keystone install
 pip install -r /opt/keystone/tools/pip-requires
@@ -135,23 +143,23 @@ sed -i 's#driver = keystone.contrib.ec2.backends.kvs.Ec2#driver = keystone.contr
 sed -i 's#keystone.token.backends.kvs.Token#keystone.token.backends.sql.Token#' /etc/keystone/keystone.conf
 sed -i '8a\log_file = /var/log/keystone/keystone.log' /etc/keystone/keystone.conf
 sed -i "s/localhost/$NOVA_CONTOLLER_HOSTNAME/" /etc/keystone/default_catalog.templates
-cat << KEYSTONE_TEMPLATE | tee -a /etc/keystone/default_catalog.templates > /dev/null
-
-catalog.RegionOne.s3.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-catalog.RegionOne.s3.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-catalog.RegionOne.s3.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-catalog.RegionOne.s3.name = S3 Service
-
-catalog.RegionOne.object-store.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/v1/AUTH_\$(tenant_id)s
-catalog.RegionOne.object-store.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/
-catalog.RegionOne.object-store.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/v1/AUTH_\$(tenant_id)s
-catalog.RegionOne.object-store.name = Swift Service
-
-catalog.RegionOne.network.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
-catalog.RegionOne.network.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
-catalog.RegionOne.network.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
-catalog.RegionOne.network.name = Quantum Service
-KEYSTONE_TEMPLATE
+#cat << KEYSTONE_TEMPLATE | tee -a /etc/keystone/default_catalog.templates > /dev/null
+#
+#catalog.RegionOne.s3.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+#catalog.RegionOne.s3.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+#catalog.RegionOne.s3.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+#catalog.RegionOne.s3.name = S3 Service
+#
+#catalog.RegionOne.object-store.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/v1/AUTH_\$(tenant_id)s
+#catalog.RegionOne.object-store.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/
+#catalog.RegionOne.object-store.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/v1/AUTH_\$(tenant_id)s
+#catalog.RegionOne.object-store.name = Swift Service
+#
+#catalog.RegionOne.network.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
+#catalog.RegionOne.network.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
+#catalog.RegionOne.network.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:9696/
+#catalog.RegionOne.network.name = Quantum Service
+#KEYSTONE_TEMPLATE
 
 #keystone db make
 mysql -u root -pnova -e "create database keystone;"
@@ -199,7 +207,7 @@ cd /opt/glance && python setup.py install
 #glance setting
 useradd glance -m -d /var/lib/glance -s /bin/false
 usermod -G $STACK_USER glance
-mkdir /etc/keystone /var/log/glance
+mkdir /etc/glance /var/log/glance
 mkdir /var/lib/glance/scrubber /var/lib/glance/image-cache
 
 #glance setting
@@ -215,7 +223,7 @@ sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry-paste
 sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-registry-paste.ini
-sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME#/glance#" /etc/glance/glance-registry.conf
+sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME/glance#" /etc/glance/glance-registry.conf
 echo -e "\n[paste_deploy]\nflavor = keystone"  | tee -a /etc/glance/glance-registry.conf
 chown glance:glance /var/log/glance /var/lib/glance/scrubber /var/lib/glance/image-cache
 
@@ -285,7 +293,7 @@ mkdir /var/lib/nova/instances /var/lib/nova/images /var/lib/nova/keys /var/lib/n
 chown nova:nova /var/log/nova /var/lib/nova -R
 
 #nova.conf setting
-cat << 'NOVA_SETUP' | tee /etc/nova/nova.conf > /dev/null
+cat << NOVA_SETUP | tee /etc/nova/nova.conf > /dev/null
 [DEFAULT]
 #verbose=true
 allow_admin_api=true
@@ -308,7 +316,7 @@ lock_path=/var/lock/nova
 libvirt_use_virtio_for_bridges = true
 network_manager=nova.network.manager.FlatDHCPManager
 dhcpbridge_flagfile=/etc/nova/nova.conf 
-dhcpbridge=/usr/bin/nova-dhcpbridge
+dhcpbridge=/usr/local/bin/nova-dhcpbridge
 public_interface=eth0
 flat_interface=eth0
 flat_network_bridge=br100
