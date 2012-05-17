@@ -345,7 +345,7 @@ chown $STACK_USER:$STACK_USER novarc
 chmod 600 novarc
 . /home/$STACK_USER/novarc
 
-cat << 'NOVARC' | tee -a /etc/bash.bashrc > /dev/null
+cat << NOVARC | tee -a /etc/bash.bashrc > /dev/null
 . /home/$STACK_USER/keystonerc
 . /home/$STACK_USER/novarc
 NOVARC
