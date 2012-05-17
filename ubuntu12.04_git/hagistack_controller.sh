@@ -128,7 +128,6 @@ cd /opt/python-keystoneclient && python setup.py install
 
 #keystone setting
 useradd keystone -m -d /var/lib/keystone -s /bin/false
-usermod -G $STACK_USER keystone
 mkdir /etc/keystone
 mkdir /var/log/keystone
 chown keystone:keystone /var/log/keystone
@@ -206,7 +205,6 @@ cd /opt/glance && python setup.py install
 
 #glance setting
 useradd glance -m -d /var/lib/glance -s /bin/false
-usermod -G $STACK_USER glance
 mkdir /etc/glance /var/log/glance
 mkdir /var/lib/glance/scrubber /var/lib/glance/image-cache
 
@@ -218,7 +216,10 @@ sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-api-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-api-paste.ini
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api.conf
 echo -e "\n[paste_deploy]\nflavor = keystone"  | tee -a /etc/glance/glance-api.conf
-sed -i "s/# auth_url = http:\/\/127.0.0.1:5000\/v2.0\//auth_url = http:\/\/NOVA_CONTOLLER_HOSTNAME:5000\/v2.0\//" /etc/glance/glance-cache.conf
+sed -i "s/# auth_url = http:\/\/127.0.0.1:5000\/v2.0\//auth_url = http:\/\/$NOVA_CONTOLLER_HOSTNAME:5000\/v2.0\//" /etc/glance/glance-cache.conf
+sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-cache.conf
+sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-cache.conf
+sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-cache.conf
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-registry-paste.ini
@@ -286,7 +287,6 @@ cd /opt/python-novaclient && python setup.py install
 #nova setting
 useradd nova -m -d /var/lib/nova -s /bin/false
 usermod -G libvirtd nova
-usermod -G $STACK_USER nova
 mkdir /etc/nova
 mkdir /var/log/nova
 mkdir /var/lib/nova/instances /var/lib/nova/images /var/lib/nova/keys /var/lib/nova/networks
@@ -621,7 +621,6 @@ NOVA_SUDO
 chmod 440 /etc/sudoers.d/nova
 
 #nova service init
-usermod -G $STACK_USER nova
 usermod -G libvirtd nova
 for i in api network objectstore scheduler compute volume xvpvncproxy console cert consoleauth
 do
@@ -699,6 +698,9 @@ cat << 'APACHE_SETUP' | tee /etc/apache2/sites-available/default > /dev/null
     CustomLog /var/log/apache2/access.log combined
 </VirtualHost>
 APACHE_SETUP
+
+#horizon work arround bug 
+sed -i 's/430/441/' /opt/horizon/horizon/dashboards/nova/templates/nova/instances_and_volumes/instances/_detail_vnc.html
 
 #apache2 restart
 service apache2 restart
