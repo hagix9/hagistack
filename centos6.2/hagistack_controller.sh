@@ -450,7 +450,11 @@ service openstack-nova-novnc start
 chkconfig openstack-nova-novnc on
 
 #iptables setting
+sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 11211 -j ACCEPT' /etc/sysconfig/iptables
+sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 9292 -j ACCEPT' /etc/sysconfig/iptables
 sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 6080 -j ACCEPT' /etc/sysconfig/iptables
+sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 5672 -j ACCEPT' /etc/sysconfig/iptables
+sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 3306 -j ACCEPT' /etc/sysconfig/iptables
 sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 443 -j ACCEPT' /etc/sysconfig/iptables
 sed -i '10a-A INPUT -m state --state NEW -m tcp -p tcp --dport 80 -j ACCEPT' /etc/sysconfig/iptables
 service iptables restart
