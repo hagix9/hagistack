@@ -4,9 +4,6 @@
 #prerequisite make lvm nova-volumes , setting /etc/hosts (NOVA_CONTOLLER_HOSTNAME)
 
 #ENV
-#For openstack admin user
-STACK_PASS=stack
-STACK_USER=stack
 
 #For nova.conf
 NOVA_CONTOLLER_IP=192.168.10.60
@@ -26,10 +23,6 @@ ADMIN_TOKEN=999888777666
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=password
 ADMIN_TENANT_NAME=admin
-
-#useradd
-useradd $STACK_USER
-echo $STACK_PASS | passwd $STACK_USER --stdin
 
 #hosts setting
 cat << HOSTS | tee -a /etc/hosts > /dev/null
@@ -68,10 +61,6 @@ service libvirtd start
 
 #nova install
 yum install -y openstack-nova python-keystone python-keystoneclient python-memcached
-
-#iscsi setup
-service tgtd start
-chkconfig tgtd on
 
 #nova.conf setting
 cp -a /etc/nova /etc/nova_bak
