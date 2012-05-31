@@ -52,7 +52,7 @@ service ntpd start
 chkconfig ntpd on
 
 #add epel
-rpm -i http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-6.noarch.rpm
+rpm -i http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-7.noarch.rpm
 
 #dependency package install for compute node
 yum install -y iscsi-initiator-utils qemu-kvm \
