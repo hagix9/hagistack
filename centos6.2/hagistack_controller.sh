@@ -341,7 +341,6 @@ nova-manage db sync
 #epel openstack workaround
 mkdir /var/lock/nova
 chown nova:root /var/lock/nova
-sed -i '37s/int(self.partition or 0)/-1/' /usr/lib/python2.6/site-packages/nova/virt/disk/guestfs.py
 
 #nova service init
 for proc in api metadata-api cert network compute objectstore console scheduler consoleauth volume direct-api xvpvncproxy
