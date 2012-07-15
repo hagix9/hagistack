@@ -29,6 +29,13 @@ cat << HOSTS | tee -a /etc/hosts > /dev/null
 $NOVA_CONTOLLER_IP $NOVA_CONTOLLER_HOSTNAME
 HOSTS
 
+#os version fixed
+echo "exclude=centos-release" >> /etc/yum.conf
+cp /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.`date +%Y%m%d`
+sed -i 's/\$releasever/6.2/g' /etc/yum.repos.d/CentOS-Base.repo
+yum clean all
+yum check-update
+
 #os update
 yum update -y
 yum upgrade -y
