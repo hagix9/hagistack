@@ -111,12 +111,13 @@ chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
 #keystone download
 git clone git://github.com/openstack/keystone /opt/keystone
-cd /opt/keystone ; git checkout -b essex origin/stable/essex
+cd /opt/keystone ; git checkout -b essex refs/tags/2012.1.1
 
 #keystoneclient download
 git clone git://github.com/openstack/python-keystoneclient /opt/python-keystoneclient
 cd /opt/python-keystoneclient ; git checkout -b essex refs/tags/2012.1
 #workaround
+sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/tools/pip-requires
 sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/setup.py 
 
 #keystone install
@@ -196,7 +197,7 @@ sed -i "66s/secrete/$ADMIN_PASSWORD/" /home/$STACK_USER/sample_data.sh
 
 #glance download
 git clone git://github.com/openstack/glance /opt/glance
-cd /opt/glance ; git checkout -b essex origin/stable/essex
+cd /opt/glance ; git checkout -b essex refs/tags/2012.1.1
 
 #glance install
 sed -i 's/^-e/#-e/' /opt/glance/tools/pip-requires
@@ -215,7 +216,7 @@ sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-api-past
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-api-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-api-paste.ini
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api.conf
-echo -e "\n[paste_deploy]\nflavor = keystone"  | tee -a /etc/glance/glance-api.conf
+echo $'\n'[paste_deploy]$'\n'flavor = keystone  | tee -a /etc/glance/glance-api.conf
 sed -i "s/# auth_url = http:\/\/127.0.0.1:5000\/v2.0\//auth_url = http:\/\/$NOVA_CONTOLLER_HOSTNAME:5000\/v2.0\//" /etc/glance/glance-cache.conf
 sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-cache.conf
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-cache.conf
@@ -225,7 +226,7 @@ sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-registry
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-registry-paste.ini
 sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME/glance#" /etc/glance/glance-registry.conf
-echo -e "\n[paste_deploy]\nflavor = keystone"  | tee -a /etc/glance/glance-registry.conf
+echo $'\n'[paste_deploy]$'\n'flavor = keystone  | tee -a /etc/glance/glance-registry.conf
 chown glance:glance /var/log/glance /var/lib/glance/scrubber /var/lib/glance/image-cache
 
 #glance db make
@@ -271,11 +272,14 @@ done
 
 #nova download
 git clone https://github.com/openstack/nova.git /opt/nova
-cd /opt/nova && git checkout -b essex origin/stable/essex
+cd /opt/nova && git checkout -b essex refs/tags/2012.1.1
 
 #novaclient download
 git clone https://github.com/openstack/python-novaclient.git /opt/python-novaclient
 cd /opt/python-novaclient ; git checkout -b essex refs/tags/2012.1
+#workaround
+sed -i 's/prettytable/prettytable==0.5/' /opt/python-novaclient/tools/pip-requires
+sed -i 's/prettytable/prettytable==0.5/' /opt/python-novaclient/setup.py 
 
 #nova install
 pip install -r /opt/nova/tools/pip-requires
@@ -629,7 +633,7 @@ done
 
 #horizon download
 git clone https://github.com/openstack/horizon.git /opt/horizon
-cd /opt/horizon ; git checkout -b essex origin/stable/essex
+cd /opt/horizon ; git checkout -b essex refs/tags/2012.1
 
 #horizon install
 sed -i 's/^-e/#-e/' /opt/horizon/tools/pip-requires
