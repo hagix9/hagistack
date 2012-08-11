@@ -111,7 +111,7 @@ chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
 #keystone download
 git clone git://github.com/openstack/keystone /opt/keystone
-cd /opt/keystone ; git checkout -b essex refs/tags/2012.1.1
+cd /opt/keystone ; git checkout -b essex refs/tags/2012.1.2
 
 #keystoneclient download
 git clone git://github.com/openstack/python-keystoneclient /opt/python-keystoneclient
@@ -197,7 +197,7 @@ sed -i "66s/secrete/$ADMIN_PASSWORD/" /home/$STACK_USER/sample_data.sh
 
 #glance download
 git clone git://github.com/openstack/glance /opt/glance
-cd /opt/glance ; git checkout -b essex refs/tags/2012.1.1
+cd /opt/glance ; git checkout -b essex refs/tags/2012.1.2
 
 #glance install
 sed -i 's/^-e/#-e/' /opt/glance/tools/pip-requires
@@ -272,7 +272,7 @@ done
 
 #nova download
 git clone https://github.com/openstack/nova.git /opt/nova
-cd /opt/nova && git checkout -b essex refs/tags/2012.1.1
+cd /opt/nova && git checkout -b essex refs/tags/2012.1.2
 
 #novaclient download
 git clone https://github.com/openstack/python-novaclient.git /opt/python-novaclient
