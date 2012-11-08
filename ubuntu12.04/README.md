@@ -2,7 +2,7 @@ hagistack is a set of scripts to quickly deploy an OpenStack cloud.
 
 # And hagistack?
 
-* To easy install OpenStack environments in a clean Ubuntu12.10
+* To easy install OpenStack environments in a clean Ubuntu12.04
 * However, it does not install also Qauntum Swift.
 
 Read more at http://http://oss.fulltrust.co.jp/
@@ -15,7 +15,7 @@ Read more at http://http://oss.fulltrust.co.jp/
 
 # Versions
 
-The hagistack master branch generally points to Essex versions of OpenStack components.
+The hagistack master branch generally points to Folsom versions of OpenStack components.
 
 # Install Openstack
 
