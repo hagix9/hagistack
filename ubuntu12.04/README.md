@@ -2,14 +2,14 @@ hagistack is a set of scripts to quickly deploy an OpenStack cloud.
 
 # And hagistack?
 
-* To easy install OpenStack environments in a clean Ubuntu12.04
+* To easy install OpenStack environments in a clean Ubuntu12.10
 * However, it does not install also Qauntum Swift.
 
 Read more at http://http://oss.fulltrust.co.jp/
 
 # Prerequisite
 
-* When you install the OS, please create a LVM named nova-volumes.
+* When you install the OS, please create a LVM named cinder-volumes.
 * IP address must have been fixed.
 * Please do not create the bridge interfaces.
 
