@@ -116,6 +116,8 @@ sudo sed -i "s@# debug = False@debug = True@" /etc/keystone/keystone.conf
 sudo sed -i "s@# verbose = False@verbose = True@" /etc/keystone/keystone.conf
 sudo sed -i "s#sqlite:////var/lib/keystone/keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTOLLER_HOSTNAME/keystone?charset=utf8#" /etc/keystone/keystone.conf
 sudo sed -i "s@# idle_timeout = 200@idle_timeout = 200@" /etc/keystone/keystone.conf
+sudo sed -i "s@keystone.token.backends.kvs.Token@keystone.token.backends.kvs.Token@" /etc/keystone/keystone.conf
+sudo sed -i "s@keystone.contrib.ec2.backends.kvs.Ec2@keystone.contrib.ec2.backends.kvs.Ec2@" /etc/keystone/keystone.conf
 sudo sed -i "s@#token_format = PKI@token_format = UUID@" /etc/keystone/keystone.conf
 
 #keystone db make
@@ -163,6 +165,7 @@ sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
 sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 sudo sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 
+sudo mysql -uroot -pnova -e "drop database if exists glance;"
 sudo mysql -uroot -pnova -e "create database glance character set utf8;"
 sudo mysql -uroot -pnova -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
 sudo mysql -uroot -pnova -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_GLANCE';"
@@ -225,6 +228,7 @@ sudo sed -i "s/%SERVICE_PASSWORD%/$NOVA_ADMIN_PASS/" /etc/cinder/api-paste.ini
 sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 sudo sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 
+sudo mysql -uroot -pnova -e "drop database if exists cinder;"
 sudo mysql -uroot -pnova -e "create database cinder character set utf8;"
 sudo mysql -uroot -pnova -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
 sudo mysql -uroot -pnova -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
@@ -333,6 +337,7 @@ sudo sed -i "s#%SERVICE_USER%#$NOVA_ADMIN_NAME#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_PASSWORD%#$NOVA_ADMIN_PASS#" /etc/nova/api-paste.ini
 
 #nova db make
+sudo mysql -uroot -pnova -e "drop database if exists nova;"
 sudo mysql -u root -pnova -e "create database nova;"
 sudo mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
 sudo mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
@@ -391,22 +396,22 @@ glance image-create --name="ttylinux" --is-public=true --container-format=ami --
 #ami ubuntu11.10
 #sudo mkdir /opt/virt/ubuntu11.10 ; cd /opt/virt/ubuntu11.10
 #sudo wget http://uec-images.ubuntu.com/releases/11.10/release/ubuntu-11.10-server-cloudimg-amd64-disk1.img
-#glance image-create --name="Ubuntu 11.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-11.10-server-cloudimg-amd64-disk1.img
+#glance image-create --name="Ubuntu_11.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-11.10-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu12.04
 #sudo mkdir /opt/virt/ubuntu12.04 ; cd /opt/virt/ubuntu12.04
 #sudo wget http://cloud-images.ubuntu.com/releases/precise/release/ubuntu-12.04-server-cloudimg-amd64-disk1.img
-#glance image-create --name="Ubuntu 12.04 LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.04-server-cloudimg-amd64-disk1.img
+#glance image-create --name="Ubuntu_12.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.04-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu12.10
 #sudo mkdir /opt/virt/ubuntu12.10 ; cd /opt/virt/ubuntu12.10
 #sudo wget http://cloud-images.ubuntu.com/releases/quantal/release/ubuntu-12.10-server-cloudimg-amd64-disk1.img
-#glance image-create --name="Ubuntu 12.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.10-server-cloudimg-amd64-disk1.img
+#glance image-create --name="Ubuntu_12.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.10-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu13.04
 #sudo mkdir -p /opt/virt/ubuntu13.04 ; cd /opt/virt/ubuntu13.04
 #sudo wget http://cloud-images.ubuntu.com/releases/13.04/beta-1/ubuntu-13.04-beta1-server-cloudimg-amd64-disk1.img
-#glance image-create --name="Ubuntu 13.04 LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-13.04-beta1-server-cloudimg-amd64-disk1.img
+#glance image-create --name="Ubuntu_13.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-13.04-beta1-server-cloudimg-amd64-disk1.img
 
 #ami fedora16
 #sudo mkdir -p /opt/virt/fedora16; cd /opt/virt/fedora16;

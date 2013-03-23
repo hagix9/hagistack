@@ -21,11 +21,12 @@ MYSQL_PASS=nova
 MYSQL_PASS_NOVA=password
 MYSQL_PASS_KEYSTONE=password
 MYSQL_PASS_GLANCE=password
+MYSQL_PASS_CINDER=password
 MYSQL_PASS_HORIZON=password
 
 #openstack env
 #export ADMIN_TOKEN=$(openssl rand -hex 10)
-ADMIN_TOKEN=999888777666
+ADMIN_TOKEN=ADMIN
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=password
 ADMIN_TENANT_NAME=admin
@@ -70,7 +71,7 @@ apt-get install -y tgt memcached python-memcache \
                    dnsmasq-base dnsmasq-utils kpartx parted arping        \
                    iptables ebtables sqlite3 libsqlite3-dev lvm2 curl     \
                    mysql-server rabbitmq-server euca2ools curl vlan       \
-                   apache2 libapache2-mod-wsgi python-numpy
+                   apache2 libapache2-mod-wsgi python-numpy nodejs
 
 #rabbitmq setting for controller node
 rabbitmqctl add_vhost /nova
@@ -111,14 +112,11 @@ chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
 #keystone download
 git clone git://github.com/openstack/keystone /opt/keystone
-cd /opt/keystone ; git checkout -b essex refs/tags/2012.1.2
+cd /opt/keystone ; git checkout -b folsom refs/tags/folsom-3
 
 #keystoneclient download
 git clone git://github.com/openstack/python-keystoneclient /opt/python-keystoneclient
-cd /opt/python-keystoneclient ; git checkout -b essex refs/tags/2012.1
-#workaround
-sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/tools/pip-requires
-sed -i 's/prettytable/prettytable==0.5/' /opt/python-keystoneclient/setup.py 
+#cd /opt/python-keystoneclient ; git checkout -b folsom refs/tags/folsom-3
 
 #keystone install
 pip install -r /opt/keystone/tools/pip-requires
@@ -135,20 +133,34 @@ chown keystone:keystone /var/log/keystone
 
 #keystone setting
 cp -a /opt/keystone/etc/* /etc/keystone
-sed -i "s#sqlite:///keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTOLLER_HOSTNAME/keystone#" /etc/keystone/keystone.conf
-sed -i "s#ADMIN#$ADMIN_TOKEN#" /etc/keystone/keystone.conf
-sed -i 's|./etc/default_catalog.templates|/etc/keystone/default_catalog\.templates|' /etc/keystone/keystone.conf
-sed -i 's#driver = keystone.identity.backends.kvs.Identity#driver = keystone.identity.backends.sql.Identity#' /etc/keystone/keystone.conf
-sed -i 's#driver = keystone.contrib.ec2.backends.kvs.Ec2#driver = keystone.contrib.ec2.backends.sql.Ec2#' /etc/keystone/keystone.conf
-sed -i 's#keystone.token.backends.kvs.Token#keystone.token.backends.sql.Token#' /etc/keystone/keystone.conf
-sed -i '8a\log_file = /var/log/keystone/keystone.log' /etc/keystone/keystone.conf
+mv /etc/keystone/keystone.conf.sample /etc/keystone/keystone.conf
+mv /etc/keystone/logging.conf.sample /etc/keystone/logging.conf
+sed -i "s/# admin_token = ADMIN/admin_token = ADMIN/" /etc/keystone/keystone.conf
+#sed -i "s/# bind_host = 0.0.0.0/bind_host = 0.0.0.0/" /etc/keystone/keystone.conf
+#sed -i "s/# public_port = 5000/public_port = 5000/" /etc/keystone/keystone.conf
+#sed -i "s/# admin_port = 35357/admin_port = 35357/" /etc/keystone/keystone.conf
+#sed -i "s/# compute_port = 8774/compute_port = 8774/" /etc/keystone/keystone.conf
+#sed -i "s/# verbose = True/verbose = True/" /etc/keystone/keystone.conf
+#sed -i "s/# debug = True/debug = True/" /etc/keystone/keystone.conf
+#sed -i "s/# log_file = keystone.log/log_file = keystone.log/" /etc/keystone/keystone.conf
+#sed -i "s@# log_dir = /var/log/keystone@log_dir = /var/log/keystone@" /etc/keystone/keystone.conf
+sed -i "s[# connection = sqlite:///keystone.db[connection = mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTOLLER_HOSTNAME/keystone?charset=utf8[" /etc/keystone/keystone.conf
+#sed -i "s/# idle_timeout = 200/idle_timeout = 200/" /etc/keystone/keystone.conf
+#sed -i "s/# driver = keystone.identity.backends.sql.Identity/driver = keystone.identity.backends.sql.Identity/" /etc/keystone/keystone.conf
+sed -i "s/# driver = keystone.catalog.backends.templated.TemplatedCatalog/driver = keystone.catalog.backends.templated.TemplatedCatalog/" /etc/keystone/keystone.conf
+sed -i "s/# template_file = default_catalog.templates/template_file = default_catalog.templates/" /etc/keystone/keystone.conf
+#sed -i "s/# driver = keystone.token.backends.kvs.Token/driver = keystone.token.backends.kvs.Token/" /etc/keystone/keystone.conf
+#sed -i "s/# expiration = 86400/expiration = 86400/" /etc/keystone/keystone.conf
+#sed -i "s/# driver = keystone.policy.backends.rules.Policy/driver = keystone.policy.backends.rules.Policy/" /etc/keystone/keystone.conf
+sed -i "s/# driver = keystone.contrib.ec2.backends.kvs.Ec2/driver = keystone.contrib.ec2.backends.kvs.Ec2/" /etc/keystone/keystone.conf
 sed -i "s/localhost/$NOVA_CONTOLLER_HOSTNAME/" /etc/keystone/default_catalog.templates
-#cat << KEYSTONE_TEMPLATE | tee -a /etc/keystone/default_catalog.templates > /dev/null
-#
-#catalog.RegionOne.s3.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-#catalog.RegionOne.s3.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-#catalog.RegionOne.s3.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
-#catalog.RegionOne.s3.name = S3 Service
+cat << KEYSTONE_TEMPLATE | tee -a /etc/keystone/default_catalog.templates > /dev/null
+
+catalog.RegionOne.s3.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+catalog.RegionOne.s3.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+catalog.RegionOne.s3.internalURL = http://$NOVA_CONTOLLER_HOSTNAME:3333
+catalog.RegionOne.s3.name = S3 Service
+KEYSTONE_TEMPLATE
 #
 #catalog.RegionOne.object-store.publicURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/v1/AUTH_\$(tenant_id)s
 #catalog.RegionOne.object-store.adminURL = http://$NOVA_CONTOLLER_HOSTNAME:8080/
@@ -162,7 +174,7 @@ sed -i "s/localhost/$NOVA_CONTOLLER_HOSTNAME/" /etc/keystone/default_catalog.tem
 #KEYSTONE_TEMPLATE
 
 #keystone db make
-mysql -u root -pnova -e "create database keystone;"
+mysql -u root -pnova -e "create database keystone character set utf8;"
 mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'%' identified by '$MYSQL_PASS_KEYSTONE';"
 mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'localhost' identified by '$MYSQL_PASS_KEYSTONE';"
 mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
@@ -190,19 +202,20 @@ cd /home/$STACK_USER ; cp -a /opt/keystone/tools/sample_data.sh .
 sed -i "s/127.0.0.1/$NOVA_CONTOLLER_HOSTNAME/" /home/$STACK_USER/sample_data.sh
 sed -i "s/localhost/$NOVA_CONTOLLER_HOSTNAME/" /home/$STACK_USER/sample_data.sh
 sed -i "66s/secrete/$ADMIN_PASSWORD/" /home/$STACK_USER/sample_data.sh
-#sed -i '63a\ENABLE_SWIFT=1' /home/$STACK_USER/sample_data.sh
-#sed -i '63a\ENABLE_ENDPOINTS=1' /home/$STACK_USER/sample_data.sh
-#sed -i '63a\ENABLE_QUANTUM=1' /home/$STACK_USER/sample_data.sh
+#export ENABLE_QUANTUM=yes
+#export ENABLE_SWIFT=yes
+#export ENABLE_CINDER=yes
 /home/$STACK_USER/sample_data.sh
 
 #glance download
 git clone git://github.com/openstack/glance /opt/glance
-cd /opt/glance ; git checkout -b essex refs/tags/2012.1.2
+git clone git://github.com/openstack/python-glanceclient /opt/python-glanceclient
+cd /opt/glance ; git checkout -b folsom refs/tags/folsom-3
 
 #glance install
-sed -i 's/^-e/#-e/' /opt/glance/tools/pip-requires
 pip install -r /opt/glance/tools/pip-requires
 cd /opt/glance && python setup.py install
+cd /opt/python-glanceclient && sudo python setup.py install
 
 #glance setting
 useradd glance -m -d /var/lib/glance -s /bin/false
@@ -211,26 +224,29 @@ mkdir /var/lib/glance/scrubber /var/lib/glance/image-cache
 
 #glance setting
 cp -a /opt/glance/etc/* /etc/glance
+sed -i "7s/#   \[paste_deploy\]/\[paste_deploy\]/" /etc/glance/glance-api-paste.ini
+sed -i "8s/#   flavor = keystone/flavor = keystone/" /etc/glance/glance-api-paste.ini
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api-paste.ini
 sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-api-paste.ini
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-api-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-api-paste.ini
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api.conf
-echo $'\n'[paste_deploy]$'\n'flavor = keystone  | tee -a /etc/glance/glance-api.conf
+sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-api.conf
 sed -i "s/# auth_url = http:\/\/127.0.0.1:5000\/v2.0\//auth_url = http:\/\/$NOVA_CONTOLLER_HOSTNAME:5000\/v2.0\//" /etc/glance/glance-cache.conf
-sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-cache.conf
-sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-cache.conf
-sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-cache.conf
+sed -i "s/# admin_tenant_name = %SERVICE_TENANT_NAME%/admin_tenant_name = $ADMIN_TENANT_NAME/" /etc/glance/glance-cache.conf
+sed -i "s/# admin_user = %SERVICE_USER%/admin_user = $ADMIN_USERNAME/" /etc/glance/glance-cache.conf
+sed -i "s/# admin_password = %SERVICE_PASSWORD%/admin_password = $ADMIN_PASSWORD/" /etc/glance/glance-cache.conf
+sed -i "7s/#   \[paste_deploy\]/\[paste_deploy\]/" /etc/glance/glance-registry-paste.ini
+sed -i "8s/#   flavor = keystone/flavor = keystone/" /etc/glance/glance-registry-paste.ini
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_TENANT_NAME%/$ADMIN_TENANT_NAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_USER%/$ADMIN_USERNAME/" /etc/glance/glance-registry-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$ADMIN_PASSWORD/" /etc/glance/glance-registry-paste.ini
-sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME/glance#" /etc/glance/glance-registry.conf
-echo $'\n'[paste_deploy]$'\n'flavor = keystone  | tee -a /etc/glance/glance-registry.conf
+sed -i "s#sql_connection = sqlite:///glance.sqlite#sql_connection = mysql://glance:password@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-registry.conf
 chown glance:glance /var/log/glance /var/lib/glance/scrubber /var/lib/glance/image-cache
 
 #glance db make
-mysql -u root -pnova -e "create database glance;"
+mysql -u root -pnova -e "create database glance character set utf8;"
 mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
 mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_NOVA';"
 mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
@@ -270,16 +286,115 @@ do
   start glance-$i ; restart glance-$i
 done
 
+#cinder download
+git clone git://github.com/openstack/cinder /opt/cinder
+cd /opt/cinder ; sudo git checkout -b folsom refs/tags/folsom-3
+
+#cinderclient download
+git clone git://github.com/openstack/python-cinderclient /opt/python-cinderclient
+
+#cinder install
+pip install -r /opt/cinder/tools/pip-requires
+cd /opt/cinder && sudo python setup.py install
+
+#cinderclient install
+cd /opt/python-cinderclient && sudo python setup.py install
+
+#cinder setting
+useradd cinder -m -d /var/lib/cinder -s /bin/false
+mkdir /etc/cinder
+mkdir /var/log/cinder
+chown cinder:cinder /var/log/cinder
+cp -a /opt/cinder/etc/* /etc
+mv /etc/cinder/cinder.conf.sample /etc/cinder/cinder.conf
+mv /etc/cinder/logging.conf.sample /etc/cinder/logging.conf
+
+#cinder.conf setting
+cat << CINDER_SETUP | tee /etc/cinder/cinder.conf > /dev/null
+[DEFAULT]
+logging_exception_prefix = %(color)s%(asctime)s TRACE %(name)s ^[[01;35m%(instance)s^[[00m
+logging_debug_format_suffix = ^[[00;33mfrom (pid=%(process)d) %(funcName)s %(pathname)s:%(lineno)d^[[00m
+logging_default_format_string = %(asctime)s %(color)s%(levelname)s %(name)s [^[[00;36m-%(color)s] ^[[01;35m%(instance)s%(color)s%(message)s^[[00m
+logging_context_format_string = %(asctime)s %(color)s%(levelname)s %(name)s [^[[01;36m%(request_id)s ^[[00;36m%(user_id)s %(project_id)s%(color)s] ^[[01;35m%(instance)s%(color)s%(message)s^[[00m
+rabbit_password = $RABBIT_PASS
+rabbit_host = $NOVA_CONTOLLER_HOSTNAME
+root_helper = sudo /usr/local/bin/cinder-rootwrap /etc/cinder/rootwrap.conf
+api_paste_config = /etc/cinder/api-paste.ini
+sql_connection = mysql://cinder::$MYSQL_PASS_CINDER@$NOVA_CONTOLLER_HOSTNAME/cinder?charset=utf8
+iscsi_helper = tgtadm
+volume_name_template = volume-%s
+volume_group = nova-volumes
+verbose = True
+auth_strategy = keystone
+log-dir=/var/log/cinder
+log-file=cinder.log
+CINDER_SETUP
+
+sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sed -i "s#%SERVICE_TENANT_NAME%#$ADMIN_TENANT_NAME#" /etc/cinder/api-paste.ini
+sed -i "s#%SERVICE_USER%#$ADMIN_USERNAME#" /etc/cinder/api-paste.ini
+sed -i "s#%SERVICE_PASSWORD%#$ADMIN_PASSWORD#" /etc/cinder/api-paste.ini
+
+#cinder db make
+mysql -u root -pnova -e "create database cinder character set utf8;"
+mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
+mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
+mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
+cinder-manage db sync
+
+#cinder-api init script
+cat << 'CINDER_INIT' | tee /etc/init/cinder-api.conf > /dev/null
+description "Cinder API server"
+author "hagix9 <hagihara.shiro@fulltrust.co.jp>"
+
+start on (filesystem and net-device-up IFACE!=lo)
+stop on runlevel [016]
+
+
+chdir /var/run
+
+exec su -s /bin/sh -c "exec cinder-api --config-file=/etc/cinder/cinder.conf" cinder
+CINDER_INIT
+
+cat << 'CINDER_VOLUME_INIT' | tee /etc/init/cinder-volume.conf > /dev/null
+description "Cinder Volume server"
+author "hagix9 <hagihara.shiro@fulltrust.co.jp>"
+
+start on (filesystem and net-device-up IFACE!=lo)
+stop on runlevel [016]
+
+
+chdir /var/run
+
+exec su -s /bin/sh -c "exec cinder-volume --config-file=/etc/cinder/cinder.conf" cinder
+CINDER_VOLUME_INIT
+
+cat << 'CINDER_SCHEDULER_INIT' | sudo tee /etc/init/cinder-scheduler.conf > /dev/null
+description "Cinder Scheduler server"
+author "hagix9 <hagihara.shiro@fulltrust.co.jp>"
+
+start on (filesystem and net-device-up IFACE!=lo)
+stop on runlevel [016]
+
+
+chdir /var/run
+
+exec su -s /bin/sh -c "exec cinder-scheduler --config-file=/etc/cinder/cinder.conf" cinder
+CINDER_SCHEDULER_INIT
+
+#cinder process init
+
+for i in volume api scheduler
+do
+  start cinder-$i ; sudo restart cinder-$i
+done
+
 #nova download
 git clone https://github.com/openstack/nova.git /opt/nova
-cd /opt/nova && git checkout -b essex refs/tags/2012.1.2
+cd /opt/nova && git checkout -b folsom refs/tags/folsom-3
 
 #novaclient download
 git clone https://github.com/openstack/python-novaclient.git /opt/python-novaclient
-cd /opt/python-novaclient ; git checkout -b essex refs/tags/2012.1
-#workaround
-sed -i 's/prettytable/prettytable==0.5/' /opt/python-novaclient/tools/pip-requires
-sed -i 's/prettytable/prettytable==0.5/' /opt/python-novaclient/setup.py 
 
 #nova install
 pip install -r /opt/nova/tools/pip-requires
@@ -295,6 +410,7 @@ mkdir /etc/nova
 mkdir /var/log/nova
 mkdir /var/lib/nova/instances /var/lib/nova/images /var/lib/nova/keys /var/lib/nova/networks
 chown nova:nova /var/log/nova /var/lib/nova -R
+cp -a /opt/nova/etc/nova/* /etc/nova
 
 #nova.conf setting
 cat << NOVA_SETUP | tee /etc/nova/nova.conf > /dev/null
@@ -304,7 +420,7 @@ allow_admin_api=true
 api_paste_config=/etc/nova/api-paste.ini
 instances_path=/var/lib/nova/instances
 connection_type=libvirt
-root_helper=sudo nova-rootwrap
+root_helper=sudo /usr/local/bin/nova-rootwrap /etc/nova/rootwrap.conf
 multi_host=true
 send_arp_for_ha=true
 
@@ -316,10 +432,11 @@ resume_guests_state_on_host_boot=true
 logdir=/var/log/nova
 state_path=/var/lib/nova
 lock_path=/var/lock/nova
+
 #network
 libvirt_use_virtio_for_bridges = true
 network_manager=nova.network.manager.FlatDHCPManager
-dhcpbridge_flagfile=/etc/nova/nova.conf 
+dhcpbridge_config-file=/etc/nova/nova.conf 
 dhcpbridge=/usr/local/bin/nova-dhcpbridge
 public_interface=eth0
 flat_interface=eth0
@@ -334,6 +451,7 @@ use_ipv6=false
 #vnc
 novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
 xvpvncproxy_base_url=http://$NOVA_CONTOLLER_IP:6081/console
+
 #vnc compute node ip override
 vncserver_proxyclient_address=$NOVA_COMPUTE_IP
 vncserver_listen=$NOVA_COMPUTE_IP
@@ -357,9 +475,11 @@ rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 
 #nova database
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova
+sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova?charset=utf8
 
 #volumes
+volume_api_class=nova.volume.cinder.API
+enabled_apis=ec2,osapi_compute,metadata
 volume_group=nova-volumes
 aoe_eth_dev=eth0
 iscsi_ip_prefix=10.
@@ -380,14 +500,13 @@ libvirt_type=kvm
 NOVA_COMPUTE
 
 #nova_api setting
-cp -a /opt/nova/etc/nova/* /etc/nova
 sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_TENANT_NAME%#$ADMIN_TENANT_NAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_USER%#$ADMIN_USERNAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_PASSWORD%#$ADMIN_PASSWORD#" /etc/nova/api-paste.ini
 
 #nova db make
-mysql -u root -pnova -e "create database nova;"
+mysql -u root -pnova -e "create database nova character set latin1;"
 mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
 mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
 mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
@@ -412,7 +531,7 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -s /bin/sh -c "exec nova-api --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-api --config-file=/etc/nova/nova.conf" nova
 NOVA_API_INIT
 
 #nova-cert init script
@@ -434,7 +553,7 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -s /bin/sh -c "exec nova-cert --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-cert --config-file=/etc/nova/nova.conf" nova
 NOVA_CERT_INIT
 
 #nova-objectstore init script
@@ -455,7 +574,7 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -s /bin/sh -c "exec nova-objectstore --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-objectstore --config-file=/etc/nova/nova.conf" nova
 NOVA_OBJECT_INIT
 
 #nova-network init script
@@ -476,7 +595,7 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -s /bin/sh -c "exec nova-network --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-network --config-file=/etc/nova/nova.conf" nova
 NOVA_NETWORK_INIT
 
 #nova-scheduler init script
@@ -498,7 +617,7 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -s /bin/sh -c "exec nova-scheduler --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-scheduler --config-file=/etc/nova/nova.conf" nova
 NOVA_SCHEDULER_INIT
 
 #nova-compute init script
@@ -522,30 +641,30 @@ pre-start script
 	modprobe nbd
 end script
 
-exec su -s /bin/sh -c "exec nova-compute --flagfile=/etc/nova/nova.conf --flagfile=/etc/nova/nova-compute.conf" nova
+exec su -s /bin/sh -c "exec nova-compute --config-file=/etc/nova/nova.conf --config-file=/etc/nova/nova-compute.conf" nova
 NOVA_COMPUTE_INIT
 
 #nova-volume init script
-cat << 'NOVA_VOLUME_INIT' | tee /etc/init/nova-volume.conf > /dev/null
-description "Nova Volume server"
-author "Soren Hansen <soren@linux2go.dk>"
+#cat << 'NOVA_VOLUME_INIT' | tee /etc/init/nova-volume.conf > /dev/null
+#description "Nova Volume server"
+#author "Soren Hansen <soren@linux2go.dk>"
+#
+#start on (filesystem and net-device-up IFACE!=lo)
+#stop on runlevel [016]
+#
+#
+#chdir /var/run
+#
+#pre-start script
+#	mkdir -p /var/run/nova
+#	chown nova:root /var/run/nova/
+#
+#	mkdir -p /var/lock/nova
+#	chown nova:root /var/lock/nova/
+#end script
 
-start on (filesystem and net-device-up IFACE!=lo)
-stop on runlevel [016]
-
-
-chdir /var/run
-
-pre-start script
-	mkdir -p /var/run/nova
-	chown nova:root /var/run/nova/
-
-	mkdir -p /var/lock/nova
-	chown nova:root /var/lock/nova/
-end script
-
-exec su -s /bin/sh -c "exec nova-volume --flagfile=/etc/nova/nova.conf" nova
-NOVA_VOLUME_INIT
+#exec su -s /bin/sh -c "exec nova-volume --config-file=/etc/nova/nova.conf" nova
+#NOVA_VOLUME_INIT
 
 #nova-consoleauth init script
 cat << 'NOVA_CONSOLE_AUTH_INIT' | tee /etc/init/nova-consoleauth.conf > /dev/null
@@ -567,31 +686,31 @@ pre-start script
 	chown nova:root /var/lock/nova
 end script
 
-exec su -s /bin/sh -c "exec nova-consoleauth --flagfile=/etc/nova/nova.conf" nova
+exec su -s /bin/sh -c "exec nova-consoleauth --config-file=/etc/nova/nova.conf" nova
 NOVA_CONSOLE_AUTH_INIT
 
 #nova-console init script
-cat << 'NOVA_CONSOLE_INIT' | tee /etc/init/nova-console.conf > /dev/null
-description "Nova Console"
-author "Vishvananda Ishaya <vishvananda@gmail.com>"
-
-start on (filesystem and net-device-up IFACE!=lo)
-stop on runlevel [016]
-
-respawn
-
-chdir /var/run
-
-pre-start script
-	mkdir -p /var/run/nova
-	chown nova:root /var/run/nova
-
-	mkdir -p /var/lock/nova
-	chown nova:root /var/lock/nova
-end script
-
-exec su -s /bin/sh -c "exec nova-console --flagfile=/etc/nova/nova.conf" nova
-NOVA_CONSOLE_INIT
+#cat << 'NOVA_CONSOLE_INIT' | tee /etc/init/nova-console.conf > /dev/null
+#description "Nova Console"
+#author "Vishvananda Ishaya <vishvananda@gmail.com>"
+#
+#start on (filesystem and net-device-up IFACE!=lo)
+#stop on runlevel [016]
+#
+#respawn
+#
+#chdir /var/run
+#
+#pre-start script
+#	mkdir -p /var/run/nova
+#	chown nova:root /var/run/nova
+#
+#	mkdir -p /var/lock/nova
+#	chown nova:root /var/lock/nova
+#end script
+#
+#exec su -s /bin/sh -c "exec nova-console --config-file=/etc/nova/nova.conf" nova
+#NOVA_CONSOLE_INIT
 
 #vncproxy init script
 cat << 'NOVA_PROXY_INIT' | tee /etc/init/nova-xvpvncproxy.conf > /dev/null
@@ -612,31 +731,35 @@ pre-start script
 	chown nova:root /var/lock/nova/
 end script
 
-exec su -c "nova-xvpvncproxy --flagfile=/etc/nova/nova.conf" root
+exec su -c "nova-xvpvncproxy --config-file=/etc/nova/nova.conf" root
 NOVA_PROXY_INIT
 
 #sudo setting
 cat << 'NOVA_SUDO' | tee /etc/sudoers.d/nova > /dev/null
-Defaults:nova !requiretty
-
-nova ALL = (root) NOPASSWD: /usr/local/bin/nova-rootwrap
-nova ALL = (root) NOPASSWD: SETENV: NOVACMDS
+nova ALL=(root) NOPASSWD:ALL
+Defaults:stack secure_path=/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin
 NOVA_SUDO
-chmod 440 /etc/sudoers.d/nova
+cat << 'NOVA_SUDO' | tee /etc/sudoers.d/nova-rootwrap > /dev/null
+nova ALL=(root) NOPASSWD: /usr/local/bin/nova-rootwrap /etc/nova/rootwrap.conf *
+NOVA_SUDO
+cat << 'NOVA_SUDO' | tee /etc/sudoers.d/cinder-rootwrap > /dev/null
+cinder ALL=(root) NOPASSWD: /usr/local/bin/cinder-rootwrap /etc/cinder/rootwrap.conf *
+NOVA_SUDO
+chmod 440 /etc/sudoers.d/*
 
 #nova service init
 usermod -G libvirtd nova
-for i in api network objectstore scheduler compute volume xvpvncproxy console cert consoleauth
+#for i in api network objectstore scheduler compute volume xvpvncproxy console cert consoleauth
+for i in api network objectstore scheduler compute xvpvncproxy cert consoleauth
 do
   start nova-$i ; restart nova-$i
 done
 
 #horizon download
 git clone https://github.com/openstack/horizon.git /opt/horizon
-cd /opt/horizon ; git checkout -b essex refs/tags/2012.1
+cd /opt/horizon ; git checkout -b folsom refs/tags/folsom-3
 
 #horizon install
-sed -i 's/^-e/#-e/' /opt/horizon/tools/pip-requires
 pip install -r /opt/horizon/tools/pip-requires
 cd /opt/horizon && python setup.py install
 
@@ -661,17 +784,20 @@ HORIZON_CONFIG = {
     'user_home': 'openstack_dashboard.views.user_home',
 }
 SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
+OPENSTACK_KEYSTONE_ADMIN_URL="http://%s:35357/v2.0" % OPENSTACK_HOST
 HORIZON_SETUP
 
 #horizon db make
-mysql -u root -pnova -e "create database horizon;"
+mysql -u root -pnova -e "create database horizon character set utf8;"
 mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'%' identified by '$MYSQL_PASS_HORIZON';"
 mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'localhost' identified by '$MYSQL_PASS_HORIZON';"
 mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_HORIZON';"
-cd /opt/horizon && ./manage.py syncdb
+cd /opt/horizon && ./manage.py syncdb --noinput
 
 #horizon setting2
 mkdir -p /opt/horizon/.blackhole
+mkdir /opt/horizon/static
+chown www-data:www-data /opt/horizon/static
 cp -a /etc/apache2/sites-available/default /etc/apache2/sites-available/default_orig
 cat << 'APACHE_SETUP' | tee /etc/apache2/sites-available/default > /dev/null
 <VirtualHost *:80>
@@ -704,13 +830,13 @@ cat << 'APACHE_SETUP' | tee /etc/apache2/sites-available/default > /dev/null
 APACHE_SETUP
 
 #horizon work arround bug 
-sed -i 's/430/441/' /opt/horizon/horizon/dashboards/nova/templates/nova/instances_and_volumes/instances/_detail_vnc.html
+#sed -i 's/430/441/' /opt/horizon/horizon/dashboards/nova/templates/nova/instances_and_volumes/instances/_detail_vnc.html
 
 #apache2 restart
 service apache2 restart
 
 #novnc download
-git clone https://github.com/cloudbuilders/noVNC.git /opt/noVNC
+git clone https://github.com/kanaka/noVNC.git /opt/noVNC
 
 #novnc init script
 cat << 'noVNC_INIT' | tee /etc/init/nova-novncproxy.conf > /dev/null
@@ -721,7 +847,7 @@ start on runlevel [2345]
 stop on runlevel [016]
 
 post-start script
-  cd /opt/noVNC && ./utils/nova-novncproxy --flagfile=/etc/nova/nova.conf --web . >/dev/null 2>&1 &
+  cd /opt/noVNC && ./utils/nova-novncproxy --config-file=/etc/nova/nova.conf --web . >/dev/null 2>&1 &
 end script
 post-stop script
   kill $(ps -ef | grep nova-novncproxy | grep -v grep | awk '{print $2}')
@@ -733,8 +859,8 @@ stop nova-novncproxy ; start nova-novncproxy
 #env_file2 make
 . /home/$STACK_USER/keystonerc
 USER_ID=$(keystone user-list | awk '/admin / {print $2}')
-ACCESS_KEY=$(keystone ec2-credentials-list --user $USER_ID | awk '/admin / {print $4}')
-SECRET_KEY=$(keystone ec2-credentials-list --user $USER_ID | awk '/admin / {print $6}')
+ACCESS_KEY=$(keystone ec2-credentials-list | awk '/admin / {print $4}')
+SECRET_KEY=$(keystone ec2-credentials-list | awk '/admin / {print $6}')
 cd /home/$STACK_USER
 cat > novarc <<EOF
 export EC2_URL=http://$NOVA_CONTOLLER_HOSTNAME:8773/services/Cloud

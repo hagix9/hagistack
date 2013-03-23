@@ -3,10 +3,11 @@
 #author "Shiro Hagihara(Fulltrust.inc) <hagihara@fulltrust.co.jp @hagix9 fulltrust.co.jp>"
 #prerequisite install Ubuntu or CentOS
 
-#ENV
-BASE=ubuntu
-DIR=/opt/virt/
-OS=CentOS6.2
+#env
+DIR=/opt/virt
+
+#os judgement
+BASE=$(cat /etc/issue | awk '{print $1}' | grep -v "^$" | tr A-Z a-z)
 
 #read the configuration from external
 if [ -f ami.env ] ; then
@@ -21,18 +22,18 @@ else
   echo "Please enter your ubuntu or centos"
 fi
 
-mkdir -p /opt/virt/CentOS6.2
+mkdir -p $DIR/CentOS6.4
 mkdir /mnt/ec2-ami
-qemu-img create -f raw /opt/virt/CentOS6.2/CentOS6.2.img 10G
-mke2fs -t ext4 -F -j /opt/virt/CentOS6.2/CentOS6.2.img
-mount -o loop /opt/virt/CentOS6.2/CentOS6.2.img /mnt/ec2-ami
+qemu-img create -f raw $DIR/CentOS6.4/CentOS6.4.img 10G
+mke2fs -t ext4 -F -j $DIR/CentOS6.4/CentOS6.4.img
+mount -o loop $DIR/CentOS6.4/CentOS6.4.img /mnt/ec2-ami
 mkdir /mnt/ec2-ami/dev
 cd /mnt/ec2-ami/dev
 
 if [ $BASE == ubuntu ] ; then
   MAKEDEV consoleonly
   MAKEDEV null
-  ls | egrep -v 'console|null|zero' | xargs rm -r
+  #ls | egrep -v 'console|null|zero' | xargs rm -r
 elif [ $BASE == centos ] ; then
   for i in console null zero ; do /sbin/MAKEDEV -d /mnt/ec2-fs/dev -x $i; done
 else
@@ -62,13 +63,13 @@ reposdir=/dev/null
 
 [base]
 name=CentOS Linux - Base
-baseurl=http://ftp.riken.jp/Linux/centos/6.2/os/x86_64/
+baseurl=http://ftp.riken.jp/Linux/centos/6.4/os/x86_64/
 enabled=1
 gpgcheck=0
 
 [updates]  
 name=CentOS-6 - Updates  
-baseurl=http://ftp.riken.jp/Linux/centos/6.2/updates/x86_64/  
+baseurl=http://ftp.riken.jp/Linux/centos/6.4/updates/x86_64/  
 enabled=1
 gpgcheck=0
 YUM_AMI
@@ -91,7 +92,7 @@ NETWORKING=yes
 NETWORKING_AMI
 chroot /mnt/ec2-ami cp -p /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.org
 chroot /mnt/ec2-ami sed -i 's/^#baseurl/baseurl/g' /etc/yum.repos.d/CentOS-Base.repo
-chroot /mnt/ec2-ami sed -i 's/$releasever/6.2/g' /etc/yum.repos.d/CentOS-Base.repo
+chroot /mnt/ec2-ami sed -i 's/$releasever/6.4/g' /etc/yum.repos.d/CentOS-Base.repo
 cat << DNS_AMI | tee /mnt/ec2-ami/etc/resolv.conf > /dev/null
 nameserver 8.8.8.8
 DNS_AMI
@@ -115,8 +116,7 @@ cat << CREDS_AMI | tee -a /mnt/ec2-ami/usr/local/sbin/get-credentials.sh > /dev/
 
 PUB_KEY_URI=http://169.254.169.254/1.0/meta-data/public-keys/0/openssh-key
 PUB_KEY_FROM_HTTP=/tmp/openssh_id.pub
-PUB_KEY_FROM_EPHEMERAL=/mnt/openssh_id.pub
-ROOT_AUTHORIZED_KEYS=/root/.ssh/authorized_keys
+PUB_KEY_FROM_EPHEMERAL=/mnt/openssh_id.pub ROOT_AUTHORIZED_KEYS=/root/.ssh/authorized_keys
 
 
 
@@ -164,18 +164,28 @@ chmod 600 /root/.ssh/authorized_keys
 fi
 CREDS_AMI
 chmod 755 /mnt/ec2-ami/usr/local/sbin/get-credentials.sh
-cp /mnt/ec2-ami/boot/initramfs-*.x86_64.img /opt/virt/CentOS6.2
-cp /mnt/ec2-ami/boot/vmlinuz-*.x86_64 /opt/virt/CentOS6.2
+
+#Additional packages
+chroot /mnt/ec2-ami yum install http://ftp.riken.jp/Linux/fedora/epel/6/x86_64/epel-release-6-8.noarch.rpm -y
+chroot /mnt/ec2-ami yum install cloud-init telnet ftp -y
+
+cp /mnt/ec2-ami/boot/initramfs-*.x86_64.img $DIR/CentOS6.4
+cp /mnt/ec2-ami/boot/vmlinuz-*.x86_64 $DIR/CentOS6.4
 cd
 umount /mnt/ec2-ami/proc
 umount /mnt/ec2-ami
-tune2fs -L uec-rootfs /opt/virt/CentOS6.2/CentOS6.2.img
-cd /opt/virt/CentOS6.2
-qemu-img convert -O qcow2 -c CentOS6.2.img CentOS6.2.qcow2
-\rm CentOS6.2.img
-#glance add name="centos62_ramdisk" is_public=true container_format=ari disk_format=ari < $(ls | grep initram)
-#glance add name="centos62_kernel" is_public=true container_format=aki disk_format=aki < $(ls | grep vmlinuz)
-#RAMDISK_ID=$(glance index | grep centos62_ramdisk | awk '{print $1}')
-#KERNEL_ID=$(glance index | grep centos62_kernel | awk '{print $1}')
-#glance add name="centos62_ami" is_public=true container_format=ami disk_format=ami kernel_id=$KERNEL_ID ramdisk_id=$RAMDISK_ID < CentOS6.2.qcow2
-# ssh -i mykey root@10.0.0.2
+tune2fs -L uec-rootfs $DIR/CentOS6.4/CentOS6.4.img
+cd $DIR/CentOS6.4
+qemu-img convert -O qcow2 -c CentOS6.4.img CentOS6.4.qcow2
+\rm CentOS6.4.img
+
+#For OpenStack Example
+
+#cd $DIR/CentOS6.4
+#glance image-create --name="centos64_kernel" --is-public=true --container-format=aki --disk-format=aki < $(ls | grep vmlinuz)
+#glance image-create --name="centos64_ramdisk" --is-public=true --container-format=ari --disk-format=ari < $(ls | grep initram)
+#RAMDISK_ID=$(glance image-list | grep centos64_ramdisk | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+#KERNEL_ID=$(glance image-list | grep centos64_kernel | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+#glance image-create --name="centos64_ami" --is-public=true --container-format=ami --disk-format=ami --property kernel_id=$KERNEL_ID --property ramdisk_id=$RAMDISK_ID < CentOS6.4.qcow2
+#nova boot --flavor 1 --image centos64_ami centos64_001 --key_name mykey
+#ssh -i mykey root@10.0.0.2
