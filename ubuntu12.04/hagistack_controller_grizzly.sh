@@ -1,5 +1,5 @@
 #!/bin/bash
-#description "OpenStack Deploy Script for Ubuntu 13.04"
+#description "OpenStack Deploy Script for Ubuntu 12.04"
 #author "Shiro Hagihara <hagihara@fulltrust.co.jp @hagix9>"
 #prerequisite make lvm cinder-volumes and setting hosts
 
@@ -43,6 +43,10 @@ FLOAT_IP_RANGE=192.168.10.112/28
 if [ -f stack.env ] ; then
   . ./stack.env
 fi
+
+#grizzly repo add
+sudo apt-get install python-software-properties -y
+sudo add-apt-repository ppa:openstack-ubuntu-testing/grizzly-trunk-testing -y
 
 #os update
 sudo apt-get update

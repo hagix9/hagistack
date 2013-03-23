@@ -15,7 +15,7 @@ Read more at http://http://oss.fulltrust.co.jp/
 
 # Versions
 
-The hagistack master branch generally points to Folsom versions of OpenStack components.
+The hagistack master branch generally points to Folsom and Grizzly versions of OpenStack components.
 
 # Install Openstack
 

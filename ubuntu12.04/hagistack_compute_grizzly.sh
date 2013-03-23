@@ -20,6 +20,10 @@ if [ -f stack.env ] ; then
   . ./stack.env
 fi
 
+#grizzly repo add
+sudo apt-get install python-software-properties -y
+sudo add-apt-repository ppa:openstack-ubuntu-testing/grizzly-trunk-testing -y
+
 #os update
 sudo apt-get update
 sudo apt-get upgrade -y
@@ -43,14 +47,10 @@ sudo cp -a /etc/libvirt/libvirtd.conf /etc/libvirt/libvirtd.conf_orig
 sudo sed -i 's@#listen_tls = 0@listen_tls = 0@' /etc/libvirt/libvirtd.conf
 sudo sed -i 's@#listen_tcp = 1@listen_tcp = 1@' /etc/libvirt/libvirtd.conf
 sudo sed -i 's@#auth_tcp = "sasl"@auth_tcp = "none"@' /etc/libvirt/libvirtd.conf
-
 sudo cp -a /etc/init/libvirt-bin.conf /etc/init/libvirt-bin.conf_orig
 sudo sed -i 's@env libvirtd_opts="-d"@env libvirtd_opts="-d -l"@' /etc/init/libvirt-bin.conf
-
-
 sudo cp -a /etc/default/libvirt-bin /etc/default/libvirt-bin
 sudo sed -i 's@libvirtd_opts="-d"@libvirtd_opts="-d -l"@' /etc/default/libvirt-bin
-
 sudo service libvirt-bin restart
 
 #nova install
