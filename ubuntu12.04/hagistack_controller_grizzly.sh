@@ -94,7 +94,7 @@ sudo sed -i 's@#listen_tcp = 1@listen_tcp = 1@' /etc/libvirt/libvirtd.conf
 sudo sed -i 's@#auth_tcp = "sasl"@auth_tcp = "none"@' /etc/libvirt/libvirtd.conf
 sudo cp -a /etc/init/libvirt-bin.conf /etc/init/libvirt-bin.conf_orig
 sudo sed -i 's@env libvirtd_opts="-d"@env libvirtd_opts="-d -l"@' /etc/init/libvirt-bin.conf
-sudo cp -a /etc/default/libvirt-bin /etc/default/libvirt-bin
+sudo cp -a /etc/default/libvirt-bin /etc/default/libvirt-bin_orig
 sudo sed -i 's@libvirtd_opts="-d"@libvirtd_opts="-d -l"@' /etc/default/libvirt-bin
 sudo service libvirt-bin restart
 

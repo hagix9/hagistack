@@ -22,7 +22,6 @@ MYSQL_PASS_NOVA=password
 MYSQL_PASS_KEYSTONE=password
 MYSQL_PASS_GLANCE=password
 MYSQL_PASS_CINDER=password
-MYSQL_PASS_HORIZON=password 
 
 #openstack env
 #export ADMIN_TOKEN=$(openssl rand -hex 10)
@@ -131,11 +130,11 @@ sudo sed -i "s@keystone.contrib.ec2.backends.kvs.Ec2@keystone.contrib.ec2.backen
 sudo sed -i "s@#token_format = PKI@token_format = UUID@" /etc/keystone/keystone.conf
 
 #keystone db make
-sudo mysql -uroot -pnova -e "drop database if exists keystone;"
-sudo mysql -uroot -pnova -e "create database keystone character set utf8;"
-sudo mysql -uroot -pnova -e "grant all privileges on keystone.* to 'keystone'@'%' identified by '$MYSQL_PASS_KEYSTONE';"
-sudo mysql -uroot -pnova -e "grant all privileges on keystone.* to 'keystone'@'localhost' identified by '$MYSQL_PASS_KEYSTONE';"
-sudo mysql -uroot -pnova -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists keystone;"
+sudo mysql -uroot -p$MYSQL_PASS -e "create database keystone character set utf8;"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'%' identified by '$MYSQL_PASS_KEYSTONE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'localhost' identified by '$MYSQL_PASS_KEYSTONE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
 sudo keystone-manage db_sync
 
 #keystone service init
@@ -175,11 +174,11 @@ sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
 sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 sudo sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 
-sudo mysql -uroot -pnova -e "drop database if exists glance;"
-sudo mysql -uroot -pnova -e "create database glance character set utf8;"
-sudo mysql -uroot -pnova -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
-sudo mysql -uroot -pnova -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_GLANCE';"
-sudo mysql -uroot -pnova -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists glance;"
+sudo mysql -uroot -p$MYSQL_PASS -e "create database glance character set utf8;"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_GLANCE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
 sudo glance-manage db_sync
 
 ###warning workaround###
@@ -238,11 +237,11 @@ sudo sed -i "s/%SERVICE_PASSWORD%/$NOVA_ADMIN_PASS/" /etc/cinder/api-paste.ini
 sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 sudo sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 
-sudo mysql -uroot -pnova -e "drop database if exists cinder;"
-sudo mysql -uroot -pnova -e "create database cinder character set utf8;"
-sudo mysql -uroot -pnova -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
-sudo mysql -uroot -pnova -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
-sudo mysql -uroot -pnova -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
+sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists cinder;"
+sudo mysql -uroot -p$MYSQL_PASS -e "create database cinder character set utf8;"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
 sudo cinder-manage db sync
 
 #cinder service init
@@ -349,11 +348,11 @@ sudo sed -i "s#%SERVICE_USER%#$NOVA_ADMIN_NAME#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_PASSWORD%#$NOVA_ADMIN_PASS#" /etc/nova/api-paste.ini
 
 #nova db make
-sudo mysql -uroot -pnova -e "drop database if exists nova;"
-sudo mysql -u root -pnova -e "create database nova;"
-sudo mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
-sudo mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
-sudo mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
+sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists nova;"
+sudo mysql -uroot -p$MYSQL_PASS -e "create database nova;"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
 sudo nova-manage db sync
 
 #nova service init
