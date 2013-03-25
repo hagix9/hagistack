@@ -6,14 +6,14 @@ hagistack is a set of scripts to quickly deploy an OpenStack cloud.
 
 # And hagistack?
 
-* To easy install OpenStack environments in a clean Ubuntu12.04
+* To easy install OpenStack environments in a clean Ubuntu13.04
 * However, it does not install also Qauntum Swift.
 
 Read more at http://http://oss.fulltrust.co.jp/
 
 # Prerequisite
 
-* When you install the OS, please create a LVM named nova-volumes.
+* When you install the OS, please create a LVM named cinder-volumes.
 * IP address must have been fixed.
 * Please do not create the bridge interfaces.
 
@@ -42,14 +42,6 @@ If you want to use OpenStackAPI
     . /home/$STACK_USER/keystonerc
     # list instances
     nova list
-
-If you want to use EC2API
-
-    # source eucarc to generate EC2 credentials and set up the environment
-    # However, it is set to /etc/bashrc
-    . /home/$STACK_USER/eucarc
-    # list instances using ec2 api
-    euca-describe-instances
 
 # Customizing
 
