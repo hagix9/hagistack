@@ -146,9 +146,8 @@ sudo sed -i "s#%SERVICE_USER%#$NOVA_ADMIN_NAME#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_PASSWORD%#$NOVA_ADMIN_PASS#" /etc/nova/api-paste.ini
 
 #nova service init
-for proc in compute network
-do
-  sudo service nova-$proc stop
-  sudo service nova-$proc start
-done
+sudo usermod -G libvirtd nova
+sudo start nova-compute ; sudo restart nova-compute
+sleep 3
+sudo start nova-network ; sudo restart nova-network
 

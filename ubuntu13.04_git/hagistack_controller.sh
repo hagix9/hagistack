@@ -282,7 +282,7 @@ done
 
 #cinder download
 sudo git clone git://github.com/openstack/cinder /opt/cinder
-cd /opt/cinder ; sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/cinder ; sudo git checkout -b grizzly refs/tags/2013.1.rc3
 
 #cinderclient download
 sudo git clone git://github.com/openstack/python-cinderclient /opt/python-cinderclient
