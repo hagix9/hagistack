@@ -67,7 +67,7 @@ sudo service libvirt-bin restart
 
 #nova download
 sudo git clone https://github.com/openstack/nova.git /opt/nova
-cd /opt/nova && sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/nova && sudo git checkout -b grizzly origin/stable/grizzly
 
 #novaclient download
 sudo git clone https://github.com/openstack/python-novaclient.git /opt/python-novaclient

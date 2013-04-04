@@ -120,7 +120,7 @@ sudo chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
 #keystone download
 sudo git clone git://github.com/openstack/keystone /opt/keystone
-cd /opt/keystone ; sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/keystone ; sudo git checkout -b grizzly origin/stable/grizzly
 
 #dependency package install for keystone
 sudo apt-get install zlib1g-dev -y
@@ -195,7 +195,7 @@ sudo -E bash /usr/local/src/sample_data.sh
 #glance download
 sudo git clone git://github.com/openstack/glance /opt/glance
 sudo git clone git://github.com/openstack/python-glanceclient /opt/python-glanceclient
-cd /opt/glance ; sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/glance ; sudo git checkout -b grizzly origin/stable/grizzly
 
 #dependency package install for glance
 sudo apt-get install libssl-dev -y
@@ -282,7 +282,7 @@ done
 
 #cinder download
 sudo git clone git://github.com/openstack/cinder /opt/cinder
-cd /opt/cinder ; sudo git checkout -b grizzly refs/tags/2013.1.rc3
+cd /opt/cinder ; sudo git checkout -b grizzly origin/stable/grizzly
 
 #cinderclient download
 sudo git clone git://github.com/openstack/python-cinderclient /opt/python-cinderclient
@@ -437,17 +437,12 @@ done
 
 #nova download
 sudo git clone https://github.com/openstack/nova.git /opt/nova
-cd /opt/nova && sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/nova && sudo git checkout -b grizzly origin/stable/grizzly
 
 #novaclient download
 sudo git clone https://github.com/openstack/python-novaclient.git /opt/python-novaclient
 
 #nova install
-###workaround
-cat << PIP | sudo tee -a /opt/nova/tools/pip-requires > /dev/null
-prettytable>=0.6,<0.7
-PIP
-###
 sudo pip install -r /opt/nova/tools/pip-requires
 cd /opt/nova && sudo python setup.py install
 
@@ -555,9 +550,9 @@ NOVA_COMPUTE
 
 #nova_api setting
 sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_TENANT_NAME%#$ADMIN_TENANT_NAME#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_USER%#$ADMIN_USERNAME#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_PASSWORD%#$ADMIN_PASSWORD#" /etc/nova/api-paste.ini
+sudo sed -i "s/%SERVICE_TENANT_NAME%/$SERVICE_TENANT_NAME/" /etc/nova/api-paste.ini
+sudo sed -i "s/%SERVICE_USER%/$NOVA_ADMIN_NAME/" /etc/nova/api-paste.ini
+sudo sed -i "s/%SERVICE_PASSWORD%/$NOVA_ADMIN_PASS/" /etc/nova/api-paste.ini
 
 #nova db make
 sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists nova;"
@@ -800,7 +795,7 @@ sudo git clone git://github.com/kanaka/noVNC.git /opt/noVNC
 sudo ln -s /opt/noVNC /usr/share/novnc
 
 #nova service init
-usermod -G libvirtd nova
+sudo usermod -G libvirtd nova
 for i in api cert compute conductor consoleauth console network novncproxy objectstore scheduler
 do
   sudo start nova-$i ; sudo restart nova-$i
@@ -808,7 +803,7 @@ done
 
 #horizon download
 sudo git clone https://github.com/openstack/horizon.git /opt/horizon
-cd /opt/horizon ; sudo git checkout -b grizzly refs/tags/2013.1.rc1
+cd /opt/horizon ; sudo git checkout -b grizzly origin/stable/grizzly
 
 #horizon install
 sudo pip install -r /opt/horizon/tools/pip-requires
