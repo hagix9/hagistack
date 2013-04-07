@@ -362,12 +362,6 @@ do
   sudo service nova-$proc start
 done
 
-###horizon workaround
-sudo apt-get install node-less -y
-sudo sed -i "s#COMPRESS_OFFLINE = True#COMPRESS_OFFLINE = False#" /etc/openstack-dashboard/local_settings.py
-sudo service apache2 restart
-###
-
 #env
 cat << NOVARC | sudo tee -a /etc/bash.bashrc > /dev/null
 . /home/$STACK_USER/keystonerc
