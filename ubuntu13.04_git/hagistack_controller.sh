@@ -506,7 +506,7 @@ firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
 #vnc
 novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
 xvpvncproxy_base_url=http://$NOVA_CONTOLLER_IP:6081/console
-vncserver_proxyclient_address=127.0.0.1
+vncserver_proxyclient_address=\$my_ip
 vncserver_listen=0.0.0.0
 vnc_keymap=ja
 
