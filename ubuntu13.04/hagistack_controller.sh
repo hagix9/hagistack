@@ -388,15 +388,15 @@ nova secgroup-add-rule default icmp -1 -1 0.0.0.0/0
 nova secgroup-add-rule default  tcp 22 22 0.0.0.0/0 
 nova secgroup-list-rules default
 
-#ami ttylinux
-sudo mkdir -p /opt/virt/ttylinux; cd /opt/virt/ttylinux;
-sudo wget http://smoser.brickies.net/ubuntu/ttylinux-uec/ttylinux-uec-amd64-12.1_2.6.35-22_1.tar.gz
-sudo tar zxvf ttylinux-uec-amd64-12.1_2.6.35-22_1.tar.gz 
-glance image-create --name="tty-linux-kernel" --is-public=true --container-format=aki --disk-format=aki < ttylinux-uec-amd64-12.1_2.6.35-22_1-vmlinuz
-glance image-create --name="tty-linux-ramdisk" --is-public=true --container-format=ari --disk-format=ari < ttylinux-uec-amd64-12.1_2.6.35-22_1-loader
-RAMDISK_ID=$(glance image-list | grep tty-linux-ramdisk | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
-KERNEL_ID=$(glance image-list | grep tty-linux-kernel | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
-glance image-create --name="ttylinux" --is-public=true --container-format=ami --disk-format=ami --property kernel_id=$KERNEL_ID --property ramdisk_id=$RAMDISK_ID < ttylinux-uec-amd64-12.1_2.6.35-22_1.img
+#ami cirros
+sudo mkdir -p /opt/virt/cirros; cd /opt/virt/cirros;
+sudo wget http://download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-uec.tar.gz
+sudo tar zxvf cirros-0.3.1-x86_64-uec.tar.gz
+glance image-create --name="cirros-kernel" --is-public=true --container-format=aki --disk-format=aki < cirros-0.3.1-x86_64-vmlinuz
+glance image-create --name="cirros-ramdisk" --is-public=true --container-format=ari --disk-format=ari < cirros-0.3.1-x86_64-initrd
+RAMDISK_ID=$(glance image-list | grep cirros-ramdisk | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+KERNEL_ID=$(glance image-list | grep cirros-kernel | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+glance image-create --name="cirros" --is-public=true --container-format=ami --disk-format=ami --property kernel_id=$KERNEL_ID --property ramdisk_id=$RAMDISK_ID < cirros-0.3.1-x86_64-blank.img
 
 #ami ubuntu11.10
 #sudo mkdir /opt/virt/ubuntu11.10 ; cd /opt/virt/ubuntu11.10
@@ -428,16 +428,11 @@ glance image-create --name="ttylinux" --is-public=true --container-format=ami --
 #sudo wget http://berrange.fedorapeople.org/images/2012-11-15/f17-x86_64-openstack-sda.qcow2
 #glance image-create --name="f17-jeos" --is-public=true --container-format=ovf --disk-format=qcow2 < f17-x86_64-openstack-sda.qcow2
 
-#ami CirrOS3.0
-#sudo mkdir -p /opt/virt/cirros3.0 ; cd /opt/virt/cirros3.0;
-#sudo wget https://launchpad.net/cirros/trunk/0.3.0/+download/cirros-0.3.0-x86_64-disk.img
-#glance image-create --name="cirros-0.3-x86_64" --is-public=true --container-format=bare --disk-format=qcow2 < cirros-0.3.0-x86_64-disk.img
-
 #Login Example
 #For Ubuntu
 #ssh -i /home/stack/mykey ubuntu@10.0.0.2
 
-#For Fedora and ttylinux
+#For Fedora
 #ssh -i /home/stack/mykey root@10.0.0.2
 
 #For Cirros
