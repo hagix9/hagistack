@@ -908,8 +908,8 @@ glance image-create --name="cirros" --is-public=true --container-format=ami --di
 
 #ami ubuntu13.04
 #sudo mkdir -p /opt/virt/ubuntu13.04 ; cd /opt/virt/ubuntu13.04
-#sudo wget http://cloud-images.ubuntu.com/releases/13.04/beta-1/ubuntu-13.04-beta1-server-cloudimg-amd64-disk1.img
-#glance image-create --name="Ubuntu_13.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-13.04-beta1-server-cloudimg-amd64-disk1.img
+#sudo wget http://cloud-images.ubuntu.com/releases/13.04/release/ubuntu-13.04-server-cloudimg-amd64-disk1.img
+#glance image-create --name="Ubuntu_13.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-13.04-server-cloudimg-amd64-disk1.img
 
 #ami fedora16
 #sudo mkdir -p /opt/virt/fedora16; cd /opt/virt/fedora16;
