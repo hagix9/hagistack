@@ -23,13 +23,21 @@ Installing in a dedicated disposable vm is safer than installing on your dev mac
 
     bash ./hagistack_controller.sh
 
-If you want to add is ComputeNode
+or 
 
-    bash ./hagistack_compute.sh
+The Prepare two NIC If you want to do also install the Quantum
+
+    bash ./hagistack_controller_quantum.sh
+
+or
+
+If you want to do also install the Quantum (Number of necessary NIC 1)
+
+    bash ./hagistack_compute_quantum.sh
 
 When the script finishes executing, you should be able to access OpenStack endpoints, like so:
 
-* Horizon: http://$NOVA_CONTOLLER_IP/
+* Horizon: http://$NOVA_CONTOLLER_IP/horizon
 
 If you want to use OpenStackAPI
 
