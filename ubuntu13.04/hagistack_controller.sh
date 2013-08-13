@@ -48,12 +48,14 @@ sudo apt-get update
 sudo apt-get upgrade -y
 
 #kernel setting
-#cat << SYSCTL | sudo tee -a /etc/sysctl.conf > /dev/null
-#net.ipv6.conf.all.disable_ipv6 = 1
-#net.ipv4.ip_forward=1
+cat << SYSCTL | sudo tee -a /etc/sysctl.conf > /dev/null
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
 #net.bridge.bridge-nf-call-iptables = 0
 #net.bridge.bridge-nf-call-arptables = 0
-#SYSCTL
+SYSCTL
+sudo sysctl -p
 
 #mysql setting
 cat <<MYSQL_DEBCONF | sudo debconf-set-selections
