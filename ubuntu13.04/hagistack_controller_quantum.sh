@@ -168,8 +168,8 @@ sudo keystone-manage db_sync
 #keystone setting2
 sudo \rm -rf /usr/local/src/*keystone_basic.sh*
 sudo \rm -rf /usr/local/src/*keystone_endpoints_basic.sh*
-sudo wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_basic.sh
-sudo wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_endpoints_basic.sh
+sudo -E wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_basic.sh
+sudo -E wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_endpoints_basic.sh
 sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_basic.sh
 sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
 sudo sed -i "s@EXT_HOST_IP=192.168.100.51@EXT_HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
@@ -227,7 +227,7 @@ sudo sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PAS
 sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
 
 ###warning workaround###
-sudo wget -P /etc/glance https://raw.github.com/openstack/glance/master/etc/schema-image.json
+sudo -E wget -P /etc/glance https://raw.github.com/openstack/glance/master/etc/schema-image.json
 ########################
 
 #glance service init
@@ -599,7 +599,7 @@ chmod 600 mykey
 
 #ami cirros
 sudo mkdir -p /opt/virt/cirros; cd /opt/virt/cirros;
-sudo wget http://download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-uec.tar.gz
+sudo -E wget http://download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-uec.tar.gz
 sudo tar zxvf cirros-0.3.1-x86_64-uec.tar.gz
 glance image-create --name="cirros-kernel" --is-public=true --container-format=aki --disk-format=aki < cirros-0.3.1-x86_64-vmlinuz
 glance image-create --name="cirros-ramdisk" --is-public=true --container-format=ari --disk-format=ari < cirros-0.3.1-x86_64-initrd
@@ -609,32 +609,32 @@ glance image-create --name="cirros" --is-public=true --container-format=ami --di
 
 #ami ubuntu11.10
 #sudo mkdir /opt/virt/ubuntu11.10 ; cd /opt/virt/ubuntu11.10
-#sudo wget http://uec-images.ubuntu.com/releases/11.10/release/ubuntu-11.10-server-cloudimg-amd64-disk1.img
+#sudo -E wget http://uec-images.ubuntu.com/releases/11.10/release/ubuntu-11.10-server-cloudimg-amd64-disk1.img
 #glance image-create --name="Ubuntu_11.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-11.10-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu12.04
 #sudo mkdir /opt/virt/ubuntu12.04 ; cd /opt/virt/ubuntu12.04
-#sudo wget http://cloud-images.ubuntu.com/releases/precise/release/ubuntu-12.04-server-cloudimg-amd64-disk1.img
+#sudo -E wget http://cloud-images.ubuntu.com/releases/precise/release/ubuntu-12.04-server-cloudimg-amd64-disk1.img
 #glance image-create --name="Ubuntu_12.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.04-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu12.10
 #sudo mkdir /opt/virt/ubuntu12.10 ; cd /opt/virt/ubuntu12.10
-#sudo wget http://cloud-images.ubuntu.com/releases/quantal/release/ubuntu-12.10-server-cloudimg-amd64-disk1.img
+#sudo -E wget http://cloud-images.ubuntu.com/releases/quantal/release/ubuntu-12.10-server-cloudimg-amd64-disk1.img
 #glance image-create --name="Ubuntu_12.10" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-12.10-server-cloudimg-amd64-disk1.img
 
 #ami ubuntu13.04
 #sudo mkdir -p /opt/virt/ubuntu13.04 ; cd /opt/virt/ubuntu13.04
-#sudo wget http://cloud-images.ubuntu.com/releases/13.04/release/ubuntu-13.04-server-cloudimg-amd64-disk1.img
+#sudo -E wget http://cloud-images.ubuntu.com/releases/13.04/release/ubuntu-13.04-server-cloudimg-amd64-disk1.img
 #glance image-create --name="Ubuntu_13.04_LTS" --is-public=true --container-format=ovf --disk-format=qcow2 < ubuntu-13.04-server-cloudimg-amd64-disk1.img
 
 #ami fedora16
 #sudo mkdir -p /opt/virt/fedora16; cd /opt/virt/fedora16;
-#sudo wget http://berrange.fedorapeople.org/images/2012-02-29/f16-x86_64-openstack-sda.qcow2
+#sudo -E wget http://berrange.fedorapeople.org/images/2012-02-29/f16-x86_64-openstack-sda.qcow2
 #glance image-create --name="f16-jeos" --is-public=true --container-format=ovf --disk-format=qcow2 < f16-x86_64-openstack-sda.qcow2
 
 #ami fedora17
 #sudo mkdir -p /opt/virt/fedora17; cd /opt/virt/fedora17;
-#sudo wget http://berrange.fedorapeople.org/images/2012-11-15/f17-x86_64-openstack-sda.qcow2
+#sudo -E wget http://berrange.fedorapeople.org/images/2012-11-15/f17-x86_64-openstack-sda.qcow2
 #glance image-create --name="f17-jeos" --is-public=true --container-format=ovf --disk-format=qcow2 < f17-x86_64-openstack-sda.qcow2
 
 #Login Example
