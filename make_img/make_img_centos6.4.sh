@@ -47,7 +47,6 @@ tmpfs /dev/shm tmpfs defaults 0 0
 devpts /dev/pts devpts gid=5,mode=620 0 0
 sysfs /sys sysfs defaults 0 0
 proc /proc proc defaults 0 0
-/dev/sda2 /mnt ext3 defaults 0 0
 /dev/sda3 swap swap defaults 0 0
 FSTAB_AMI
 cd /mnt/ec2-ami/etc
@@ -96,84 +95,22 @@ chroot /mnt/ec2-ami sed -i 's/$releasever/6.4/g' /etc/yum.repos.d/CentOS-Base.re
 cat << DNS_AMI | tee /mnt/ec2-ami/etc/resolv.conf > /dev/null
 nameserver 8.8.8.8
 DNS_AMI
-chroot /mnt/ec2-ami yum install curl -y
-cat << RC_LOCAL_AMI | tee -a /mnt/ec2-ami/etc/rc.local > /dev/null
-depmod -a
-modprobe acpiphp
-/usr/local/sbin/get-credentials.sh
-RC_LOCAL_AMI
 chroot /mnt/ec2-ami sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
 chroot /mnt/ec2-ami chkconfig ip6tables off
 chroot /mnt/ec2-ami chkconfig iptables off
+chroot /mnt/ec2-ami chkconfig postfix off
+chroot /mnt/ec2-ami chkconfig kdump off
 chroot /mnt/ec2-ami chkconfig ntpd on
-cat << CREDS_AMI | tee -a /mnt/ec2-ami/usr/local/sbin/get-credentials.sh > /dev/null
-#!/bin/bash
-
-# Retreive the credentials from relevant sources.
-
-# Fetch any credentials presented at launch time and add them to
-# root's public keys
-
-PUB_KEY_URI=http://169.254.169.254/1.0/meta-data/public-keys/0/openssh-key
-PUB_KEY_FROM_HTTP=/tmp/openssh_id.pub
-PUB_KEY_FROM_EPHEMERAL=/mnt/openssh_id.pub ROOT_AUTHORIZED_KEYS=/root/.ssh/authorized_keys
-
-
-
-# We need somewhere to put the keys.
-if [ ! -d /root/.ssh ] ; then
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
-fi
-
-# Fetch credentials...
-
-# First try http
-curl --retry 3 --retry-delay 0 --silent --fail -o $PUB_KEY_FROM_HTTP $PUB_KEY_URI
-if [ $? -eq 0 -a -e $PUB_KEY_FROM_HTTP ] ; then
-if ! grep -q -f $PUB_KEY_FROM_HTTP $ROOT_AUTHORIZED_KEYS
-then
-cat $PUB_KEY_FROM_HTTP >> $ROOT_AUTHORIZED_KEYS
-echo "New key added to authrozied keys file from parameters"|logger -t "ec2"
-fi
-chmod 600 $ROOT_AUTHORIZED_KEYS
-rm -f $PUB_KEY_FROM_HTTP
-
-elif [ -e $PUB_KEY_FROM_EPHEMERAL ] ; then
-# Try back to ephemeral store if http failed.
-# NOTE: This usage is deprecated and will be removed in the future
-if ! grep -q -f $PUB_KEY_FROM_EPHEMERAL $ROOT_AUTHORIZED_KEYS
-then
-cat $PUB_KEY_FROM_EPHEMERAL >> $ROOT_AUTHORIZED_KEYS
-echo "New key added to authrozied keys file from ephemeral store"|logger -t "ec2"
-
-fi
-chmod 600 $ROOT_AUTHORIZED_KEYS
-chmod 600 $PUB_KEY_FROM_EPHEMERAL
-
-fi
-
-if [ -e /mnt/openssh_id.pub ] ; then
-if ! grep -q -f /mnt/openssh_id.pub /root/.ssh/authorized_keys
-then
-cat /mnt/openssh_id.pub >> /root/.ssh/authorized_keys
-echo "New key added to authrozied keys file from ephemeral store"|logger -t "ec2"
-
-fi
-chmod 600 /root/.ssh/authorized_keys
-fi
-CREDS_AMI
-chmod 755 /mnt/ec2-ami/usr/local/sbin/get-credentials.sh
 
 #Additional packages
-chroot /mnt/ec2-ami yum install http://ftp.riken.jp/Linux/fedora/epel/6/x86_64/epel-release-6-8.noarch.rpm -y
-chroot /mnt/ec2-ami yum install cloud-init telnet ftp -y
+chroot /mnt/ec2-ami yum install curl telnet ftp -y
 
 cp /mnt/ec2-ami/boot/initramfs-*.x86_64.img $DIR/CentOS6.4
 cp /mnt/ec2-ami/boot/vmlinuz-*.x86_64 $DIR/CentOS6.4
 cd
 umount /mnt/ec2-ami/proc
 umount /mnt/ec2-ami
+\rm -rf /mnt/ec2-ami
 tune2fs -L uec-rootfs $DIR/CentOS6.4/CentOS6.4.img
 cd $DIR/CentOS6.4
 qemu-img convert -O qcow2 -c CentOS6.4.img CentOS6.4.qcow2
