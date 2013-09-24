@@ -19,8 +19,8 @@ STACK_USER=stack
 STACK_PASS=stack
 
 #For nova.conf
-NOVA_CONTOLLER_IP=192.168.10.50
-NOVA_CONTOLLER_HOSTNAME=stack01
+NOVA_CONTROLLER_IP=192.168.10.50
+NOVA_CONTROLLER_HOSTNAME=stack01
 NOVA_COMPUTE_IP=192.168.10.51
 
 #mysql(root) pass
@@ -80,7 +80,7 @@ sudo cp -a  /etc/quantum /etc/quantum_bak
 #quantum plugin setting
 cat << QUANTUM_OVS | sudo tee /etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini > /dev/null
 [DATABASE]
-sql_connection = mysql://quantum:$MYSQL_PASS_QUANTUM@$NOVA_CONTOLLER_HOSTNAME/ovs_quantum?charset=utf8
+sql_connection = mysql://quantum:$MYSQL_PASS_QUANTUM@$NOVA_CONTROLLER_HOSTNAME/ovs_quantum?charset=utf8
 [OVS]
 tenant_network_type = gre
 tunnel_id_ranges = 1:1000
@@ -102,7 +102,7 @@ core_plugin = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPluginV2
 api_paste_config = /etc/quantum/api-paste.ini
 control_exchange = quantum
 rpc_backend = quantum.openstack.common.rpc.impl_kombu
-rabbit_host=$NOVA_CONTOLLER_IP
+rabbit_host=$NOVA_CONTROLLER_IP
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 rabbit_virtual_host=/nova
@@ -114,7 +114,7 @@ notification_topics = notifications
 [AGENT]
 root_helper = sudo quantum-rootwrap /etc/quantum/rootwrap.conf
 [keystone_authtoken]
-auth_host = $NOVA_CONTOLLER_HOSTNAME
+auth_host = $NOVA_CONTROLLER_HOSTNAME
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
@@ -146,7 +146,7 @@ libvirt_use_virtio_for_bridges=True
 NOVA_COMPUTE_SETUP
 
 #nova_api setting
-sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/nova/api-paste.ini
+sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_TENANT_NAME%#service#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_USER%#nova#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_PASSWORD%#$SERVICE_PASSWORD#" /etc/nova/api-paste.ini
@@ -160,12 +160,12 @@ lock_path=/run/lock/nova
 verbose=True
 api_paste_config=/etc/nova/api-paste.ini
 scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
-nova_url=http://$NOVA_CONTOLLER_IP:8774/v1.1/
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova
+nova_url=http://$NOVA_CONTROLLER_IP:8774/v1.1/
+sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
 root_helper=sudo nova-rootwrap /etc/nova/rootwrap.conf
 
 #auth
@@ -173,12 +173,12 @@ use_deprecated_auth=false
 auth_strategy=keystone
 
 #glance
-glance_api_servers=$NOVA_CONTOLLER_HOSTNAME:9292
+glance_api_servers=$NOVA_CONTROLLER_HOSTNAME:9292
 image_service=nova.image.glance.GlanceImageService
 
 #vnc
 novnc_enabled=true
-novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
+novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
 novncproxy_port=6080
 vncserver_proxyclient_address=\$my_ip
 vncserver_listen=0.0.0.0
@@ -186,12 +186,12 @@ vnc_keymap=ja
 
 #quantum
 network_api_class=nova.network.quantumv2.api.API
-quantum_url=http://$NOVA_CONTOLLER_IP:9696
+quantum_url=http://$NOVA_CONTROLLER_IP:9696
 quantum_auth_strategy=keystone
 quantum_admin_tenant_name=service
 quantum_admin_username=quantum
 quantum_admin_password=$SERVICE_PASSWORD
-quantum_admin_auth_url=http://$NOVA_CONTOLLER_IP:35357/v2.0
+quantum_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
 libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
 linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
 firewall_driver=nova.virt.firewall.NoopFirewallDriver
@@ -209,12 +209,9 @@ volume_api_class=nova.volume.cinder.API
 osapi_volume_listen_port=5900
 NOVA_SETUP
 
-#nova db sync
-sudo nova-manage db sync
-
 #nova service init
 sudo \rm -rf /var/log/nova/*
-for proc in proc in api cert compute
+for proc in proc in compute
 do
   sudo service nova-$proc stop
   sudo service nova-$proc start

@@ -29,8 +29,8 @@ STACK_PASS=stack
 EXT_NIC=eth1
 
 #For nova.conf
-NOVA_CONTOLLER_IP=192.168.10.50
-NOVA_CONTOLLER_HOSTNAME=stack01
+NOVA_CONTROLLER_IP=192.168.10.50
+NOVA_CONTROLLER_HOSTNAME=stack01
 NOVA_COMPUTE_IP=192.168.10.50
 
 #mysql(root) pass
@@ -111,35 +111,35 @@ sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists keystone;"
 sudo mysql -uroot -p$MYSQL_PASS -e "create database keystone character set utf8;"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'%' identified by '$MYSQL_PASS_KEYSTONE';"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'localhost' identified by '$MYSQL_PASS_KEYSTONE';"
-sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
 
 #glance db create
 sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists glance;"
 sudo mysql -uroot -p$MYSQL_PASS -e "create database glance character set utf8;"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_GLANCE';"
-sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
 
 #quantum db create
 sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists ovs_quantum;"
 sudo mysql -uroot -p$MYSQL_PASS -e "create database ovs_quantum character set utf8;"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on ovs_quantum.* to 'quantum'@'%' identified by '$MYSQL_PASS_QUANTUM';"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on ovs_quantum.* to 'quantum'@'localhost' identified by '$MYSQL_PASS_QUANTUM';"
-sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on ovs_quantum.* to 'quantum'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_QUANTUM';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on ovs_quantum.* to 'quantum'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_QUANTUM';"
 
 #cinder db create
 sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists cinder;"
 sudo mysql -uroot -p$MYSQL_PASS -e "create database cinder character set utf8;"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
-sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
 
 #nova db create
 sudo mysql -uroot -p$MYSQL_PASS -e "drop database if exists nova;"
 sudo mysql -uroot -p$MYSQL_PASS -e "create database nova;"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
 sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
-sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
+sudo mysql -uroot -p$MYSQL_PASS -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
 
 ### RabbitMQ ###
 #install rabbitmq
@@ -157,7 +157,7 @@ sudo apt-get install -y keystone
 
 #keystone setting
 sudo cp -a /etc/keystone /etc/keystone_bak
-sudo sed -i "s#sqlite:////var/lib/keystone/keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTOLLER_HOSTNAME/keystone?charset=utf8#" /etc/keystone/keystone.conf
+sudo sed -i "s#sqlite:////var/lib/keystone/keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTROLLER_HOSTNAME/keystone?charset=utf8#" /etc/keystone/keystone.conf
 
 #keystone service init
 sudo stop keystone ; sudo start keystone
@@ -170,9 +170,9 @@ sudo \rm -rf /usr/local/src/*keystone_basic.sh*
 sudo \rm -rf /usr/local/src/*keystone_endpoints_basic.sh*
 sudo -E wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_basic.sh
 sudo -E wget -P /usr/local/src https://raw.github.com/mseknibilel/OpenStack-Grizzly-Install-Guide/OVS_MultiNode/KeystoneScripts/keystone_endpoints_basic.sh
-sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_basic.sh
-sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
-sudo sed -i "s@EXT_HOST_IP=192.168.100.51@EXT_HOST_IP=$NOVA_CONTOLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
+sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTROLLER_IP@" /usr/local/src/keystone_basic.sh
+sudo sed -i "s@HOST_IP=10.10.10.51@HOST_IP=$NOVA_CONTROLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
+sudo sed -i "s@EXT_HOST_IP=192.168.100.51@EXT_HOST_IP=$NOVA_CONTROLLER_IP@" /usr/local/src/keystone_endpoints_basic.sh
 sudo sed -i "s@MYSQL_USER=keystoneUser@MYSQL_USER=keystone@" /usr/local/src/keystone_endpoints_basic.sh
 sudo sed -i "s@MYSQL_PASSWORD=keystonePass@MYSQL_PASSWORD=$MYSQL_PASS_KEYSTONE@" /usr/local/src/keystone_endpoints_basic.sh
 sudo chmod +x /usr/local/src/keystone_basic.sh
@@ -186,7 +186,7 @@ cat << KEYSTONERC | sudo tee keystonerc > /dev/null
 export OS_TENANT_NAME=admin
 export OS_USERNAME=admin
 export OS_PASSWORD=$ADMIN_PASSWORD
-export OS_AUTH_URL=http://$NOVA_CONTOLLER_HOSTNAME:5000/v2.0/
+export OS_AUTH_URL=http://$NOVA_CONTROLLER_HOSTNAME:5000/v2.0/
 KEYSTONERC
 sudo chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
@@ -198,7 +198,7 @@ sudo apt-get install -y glance
 sudo cp -a /etc/glance /etc/glance_bak
 
 cat << GLANCE_API_PASTE | sudo tee -a /etc/glance/glance-api-paste.ini > /dev/null
-auth_host = $NOVA_CONTOLLER_IP
+auth_host = $NOVA_CONTROLLER_IP
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
@@ -207,7 +207,7 @@ admin_password = $SERVICE_PASSWORD
 GLANCE_API_PASTE
 
 cat << GLANCE_REGISTRY_PASTE | sudo tee -a /etc/glance/glance-registry-paste.ini > /dev/null
-auth_host = $NOVA_CONTOLLER_IP
+auth_host = $NOVA_CONTROLLER_IP
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
@@ -215,15 +215,15 @@ admin_user = glance
 admin_password = $SERVICE_PASSWORD
 GLANCE_REGISTRY_PASTE
 
-sudo sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-api.conf
+sudo sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTROLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-api.conf
 sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-api.conf
 sudo sed -i "s/notifier_strategy = noop/notifier_strategy = rabbit/" /etc/glance/glance-api.conf
-sudo sed -i "s/rabbit_host = localhost/rabbit_host=$NOVA_CONTOLLER_HOSTNAME/" /etc/glance/glance-api.conf
+sudo sed -i "s/rabbit_host = localhost/rabbit_host=$NOVA_CONTROLLER_HOSTNAME/" /etc/glance/glance-api.conf
 sudo sed -i "s/rabbit_userid = guest/rabbit_userid = nova/" /etc/glance/glance-api.conf
 sudo sed -i "s/rabbit_password = guest/rabbit_password = $RABBIT_PASS/" /etc/glance/glance-api.conf
 sudo sed -i "s@rabbit_virtual_host = /@rabbit_virtual_host = /nova@" /etc/glance/glance-api.conf
 
-sudo sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-registry.conf
+sudo sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTROLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-registry.conf
 sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
 
 ###warning workaround###
@@ -261,7 +261,7 @@ sudo cp -a  /etc/quantum /etc/quantum_bak
 #quantum plugin setting
 cat << QUANTUM_OVS | sudo tee /etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini > /dev/null
 [DATABASE]
-sql_connection = mysql://quantum:$MYSQL_PASS_QUANTUM@$NOVA_CONTOLLER_HOSTNAME/ovs_quantum?charset=utf8
+sql_connection = mysql://quantum:$MYSQL_PASS_QUANTUM@$NOVA_CONTROLLER_HOSTNAME/ovs_quantum?charset=utf8
 [OVS]
 tenant_network_type = gre
 tunnel_id_ranges = 1:1000
@@ -290,7 +290,7 @@ paste.filter_factory = quantum.auth:QuantumKeystoneContext.factory
 
 [filter:authtoken]
 paste.filter_factory = keystoneclient.middleware.auth_token:filter_factory
-auth_host = $NOVA_CONTOLLER_IP
+auth_host = $NOVA_CONTROLLER_IP
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
@@ -317,7 +317,7 @@ core_plugin = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPluginV2
 api_paste_config = /etc/quantum/api-paste.ini
 control_exchange = quantum
 rpc_backend = quantum.openstack.common.rpc.impl_kombu
-rabbit_host=$NOVA_CONTOLLER_IP
+rabbit_host=$NOVA_CONTROLLER_IP
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 rabbit_virtual_host=/nova
@@ -329,7 +329,7 @@ notification_topics = notifications
 [AGENT]
 root_helper = sudo quantum-rootwrap /etc/quantum/rootwrap.conf
 [keystone_authtoken]
-auth_host = $NOVA_CONTOLLER_HOSTNAME
+auth_host = $NOVA_CONTROLLER_HOSTNAME
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
@@ -341,12 +341,12 @@ QUANTUM_SERVER
 #quantum metadata setting
 cat << QUANTUM_META | sudo tee /etc/quantum/metadata_agent.ini > /dev/null
 [DEFAULT]
-auth_url = http://$NOVA_CONTOLLER_IP:35357/v2.0
+auth_url = http://$NOVA_CONTROLLER_IP:35357/v2.0
 auth_region = RegionOne
 admin_tenant_name = service
 admin_user = quantum
 admin_password = $SERVICE_PASSWORD
-nova_metadata_ip = $NOVA_CONTOLLER_IP
+nova_metadata_ip = $NOVA_CONTROLLER_IP
 nova_metadata_port = 8775
 metadata_proxy_shared_secret = stack
 QUANTUM_META
@@ -365,7 +365,7 @@ sudo apt-get install -y openstack-dashboard memcached
 sudo apt-get install -y nova-compute
 
 #memcached setting
-sudo sed -i "s/127.0.0.1/$NOVA_CONTOLLER_IP/" /etc/memcached.conf
+sudo sed -i "s/127.0.0.1/$NOVA_CONTROLLER_IP/" /etc/memcached.conf
 sudo service memcached restart
 
 #nova.conf setting
@@ -381,7 +381,7 @@ libvirt_use_virtio_for_bridges=True
 NOVA_COMPUTE_SETUP
 
 #nova_api setting
-sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/nova/api-paste.ini
+sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_TENANT_NAME%#service#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_USER%#nova#" /etc/nova/api-paste.ini
 sudo sed -i "s#%SERVICE_PASSWORD%#$SERVICE_PASSWORD#" /etc/nova/api-paste.ini
@@ -395,12 +395,12 @@ lock_path=/run/lock/nova
 verbose=True
 api_paste_config=/etc/nova/api-paste.ini
 scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
-nova_url=http://$NOVA_CONTOLLER_IP:8774/v1.1/
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova
+nova_url=http://$NOVA_CONTROLLER_IP:8774/v1.1/
+sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
 root_helper=sudo nova-rootwrap /etc/nova/rootwrap.conf
 
 #auth
@@ -408,12 +408,12 @@ use_deprecated_auth=false
 auth_strategy=keystone
 
 #glance
-glance_api_servers=$NOVA_CONTOLLER_HOSTNAME:9292
+glance_api_servers=$NOVA_CONTROLLER_HOSTNAME:9292
 image_service=nova.image.glance.GlanceImageService
 
 #vnc
 novnc_enabled=true
-novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
+novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
 novncproxy_port=6080
 vncserver_proxyclient_address=\$my_ip
 vncserver_listen=0.0.0.0
@@ -421,12 +421,12 @@ vnc_keymap=ja
 
 #quantum
 network_api_class=nova.network.quantumv2.api.API
-quantum_url=http://$NOVA_CONTOLLER_IP:9696
+quantum_url=http://$NOVA_CONTROLLER_IP:9696
 quantum_auth_strategy=keystone
 quantum_admin_tenant_name=service
 quantum_admin_username=quantum
 quantum_admin_password=$SERVICE_PASSWORD
-quantum_admin_auth_url=http://$NOVA_CONTOLLER_IP:35357/v2.0
+quantum_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
 libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
 linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
 firewall_driver=nova.virt.firewall.NoopFirewallDriver
@@ -465,13 +465,13 @@ sudo cp -a /etc/cinder /etc/cinder_bak
 sudo sed -i "s/%SERVICE_TENANT_NAME%/service/" /etc/cinder/api-paste.ini
 sudo sed -i "s/%SERVICE_USER%/cinder/" /etc/cinder/api-paste.ini
 sudo sed -i "s/%SERVICE_PASSWORD%/$SERVICE_PASSWORD/" /etc/cinder/api-paste.ini
-sudo sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
-sudo sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sudo sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 
 cat << CINDER | sudo tee /etc/cinder/cinder.conf > /dev/null
 [DEFAULT]
 rootwrap_config=/etc/cinder/rootwrap.conf
-sql_connection=mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTOLLER_HOSTNAME/cinder?charset=utf8
+sql_connection=mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTROLLER_HOSTNAME/cinder?charset=utf8
 api_paste_config=/etc/cinder/api-paste.ini
 iscsi_helper=tgtadm
 volume_name_template=volume-%s
@@ -480,8 +480,8 @@ state_path=/var/lib/cinder
 volumes_dir=/var/lib/cinder/volumes
 verbose=True
 auth_strategy=keystone
-iscsi_ip_address=$NOVA_CONTOLLER_HOSTNAME
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+iscsi_ip_address=$NOVA_CONTROLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
@@ -580,7 +580,7 @@ cat << KEYSTONERC | sudo tee keystonerc01 > /dev/null
 export OS_TENANT_NAME=$TENANT_NAME
 export OS_USERNAME=$TENANT_ADMIN
 export OS_PASSWORD=$TENANT_ADMIN_PASS
-export OS_AUTH_URL=http://$NOVA_CONTOLLER_HOSTNAME:5000/v2.0/
+export OS_AUTH_URL=http://$NOVA_CONTROLLER_HOSTNAME:5000/v2.0/
 KEYSTONERC
 sudo chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc01
 
@@ -597,15 +597,21 @@ nova keypair-add mykey > mykey
 chown $STACK_USER:$STACK_USER mykey
 chmod 600 mykey
 
+#ami CoreOS
+sudo mkdir -p /opt/virt/coreos ; cd /opt/virt/coreos
+sudo -E wget http://storage.core-os.net/coreos/amd64-generic/dev-channel/coreos_production_openstack_image.img.bz2
+sudo bunzip2 coreos_production_openstack_image.img.bz2
+glance image-create --name="CoreOS" --is-public=true --container-format=ovf --disk-format=qcow2 < coreos_production_openstack_image.img
+
 #ami cirros
-sudo mkdir -p /opt/virt/cirros; cd /opt/virt/cirros;
-sudo -E wget http://download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-uec.tar.gz
-sudo tar zxvf cirros-0.3.1-x86_64-uec.tar.gz
-glance image-create --name="cirros-kernel" --is-public=true --container-format=aki --disk-format=aki < cirros-0.3.1-x86_64-vmlinuz
-glance image-create --name="cirros-ramdisk" --is-public=true --container-format=ari --disk-format=ari < cirros-0.3.1-x86_64-initrd
-RAMDISK_ID=$(glance image-list | grep cirros-ramdisk | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
-KERNEL_ID=$(glance image-list | grep cirros-kernel | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
-glance image-create --name="cirros" --is-public=true --container-format=ami --disk-format=ami --property kernel_id=$KERNEL_ID --property ramdisk_id=$RAMDISK_ID < cirros-0.3.1-x86_64-blank.img
+#sudo mkdir -p /opt/virt/cirros; cd /opt/virt/cirros;
+#sudo -E wget http://download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-uec.tar.gz
+#sudo tar zxvf cirros-0.3.1-x86_64-uec.tar.gz
+#glance image-create --name="cirros-kernel" --is-public=true --container-format=aki --disk-format=aki < cirros-0.3.1-x86_64-vmlinuz
+#glance image-create --name="cirros-ramdisk" --is-public=true --container-format=ari --disk-format=ari < cirros-0.3.1-x86_64-initrd
+#RAMDISK_ID=$(glance image-list | grep cirros-ramdisk | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+#KERNEL_ID=$(glance image-list | grep cirros-kernel | awk -F"|" '{print $2}' | sed -e 's/^[ ]*//g')
+#glance image-create --name="cirros" --is-public=true --container-format=ami --disk-format=ami --property kernel_id=$KERNEL_ID --property ramdisk_id=$RAMDISK_ID < cirros-0.3.1-x86_64-blank.img
 
 #ami ubuntu11.10
 #sudo mkdir /opt/virt/ubuntu11.10 ; cd /opt/virt/ubuntu11.10

@@ -37,7 +37,7 @@ If you want to do also install the Quantum (Number of necessary NIC 1)
 
 When the script finishes executing, you should be able to access OpenStack endpoints, like so:
 
-* Horizon: http://$NOVA_CONTOLLER_IP/horizon
+* Horizon: http://$NOVA_CONTROLLER_IP/horizon
 
 If you want to use OpenStackAPI
 
