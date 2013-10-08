@@ -246,3 +246,11 @@ sudo cp -a /etc/default/libvirt-bin /etc/default/libvirt-bin
 sudo sed -i 's@libvirtd_opts="-d"@libvirtd_opts="-d -l"@' /etc/default/libvirt-bin
 sudo service libvirt-bin restart
 
+#For WorkAround
+#If the following error occurs
+# cat /var/log/quantum/openvswitch-agent.log
+# ERROR [quantum.plugins.openvswitch.agent.ovs_quantum_agent] Failed to create OVS patch port. Cannot have tunneling enabled on this agent, since this version of OVS does not support tunnels or patch ports. Agent terminated!
+# apt-get remove openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# reboot
+# apt-get install openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# reboot

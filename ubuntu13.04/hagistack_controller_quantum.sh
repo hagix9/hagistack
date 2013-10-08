@@ -653,4 +653,15 @@ glance image-create --name="CoreOS" --is-public=true --container-format=ovf --di
 #For Cirros
 #ssh -i /home/stack/mykey cirros@10.0.0.2
 
+#For WorkAround
+#If the following error occurs
+# cat /var/log/quantum/openvswitch-agent.log
+# ERROR [quantum.plugins.openvswitch.agent.ovs_quantum_agent] Failed to create OVS patch port. Cannot have tunneling enabled on this agent, since this version of OVS does not support tunnels or patch ports. Agent terminated!
+# apt-get remove openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# reboot
+# apt-get install openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# reboot	
+
+
+
 
