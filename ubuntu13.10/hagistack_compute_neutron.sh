@@ -29,7 +29,7 @@ MYSQL_PASS=nova
 #rabbitmq setting for common
 RABBIT_PASS=password
 
-MYSQL_PASS_QUANTUM=password
+MYSQL_PASS_NEUTRON=password
 MYSQL_PASS_NOVA=password
 
 #openstack env
@@ -71,16 +71,16 @@ sudo apt-get install openvswitch-switch openvswitch-datapath-dkms -y
 sudo ovs-vsctl --no-wait -- --may-exist add-br br-int
 
 ### QUANTUM ###
-#quantum install
-sudo apt-get install quantum-plugin-openvswitch-agent -y
+#neutron install
+sudo apt-get install neutron-plugin-openvswitch-agent -y
 
-#quantum settings backup
-sudo cp -a  /etc/quantum /etc/quantum_bak
+#neutron settings backup
+sudo cp -a  /etc/neutron /etc/neutron_bak
 
-#quantum plugin setting
-cat << QUANTUM_OVS | sudo tee /etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini > /dev/null
+#neutron plugin setting
+cat << QUANTUM_OVS | sudo tee /etc/neutron/plugins/openvswitch/ovs_neutron_plugin.ini > /dev/null
 [DATABASE]
-sql_connection = mysql://quantum:$MYSQL_PASS_QUANTUM@$NOVA_CONTROLLER_HOSTNAME/ovs_quantum?charset=utf8
+sql_connection = mysql://neutron:$MYSQL_PASS_NEUTRON@$NOVA_CONTROLLER_HOSTNAME/ovs_neutron?charset=utf8
 [OVS]
 tenant_network_type = gre
 tunnel_id_ranges = 1:1000
@@ -89,44 +89,44 @@ tunnel_bridge = br-tun
 local_ip = $NOVA_COMPUTE_IP
 enable_tunneling = True
 [SECURITYGROUP]
-firewall_driver = quantum.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+firewall_driver = neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
 QUANTUM_OVS
 
-#quantum server setting
-cat << QUANTUM_SERVER | sudo tee /etc/quantum/quantum.conf > /dev/null
+#neutron server setting
+cat << QUANTUM_SERVER | sudo tee /etc/neutron/neutron.conf > /dev/null
 [DEFAULT]
 lock_path = \$state_path/lock
 bind_host = 0.0.0.0
 bind_port = 9696
-core_plugin = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPluginV2
-api_paste_config = /etc/quantum/api-paste.ini
-control_exchange = quantum
-rpc_backend = quantum.openstack.common.rpc.impl_kombu
+core_plugin = neutron.plugins.openvswitch.ovs_neutron_plugin.OVSQuantumPluginV2
+api_paste_config = /etc/neutron/api-paste.ini
+control_exchange = neutron
+rpc_backend = neutron.openstack.common.rpc.impl_kombu
 rabbit_host=$NOVA_CONTROLLER_IP
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 rabbit_virtual_host=/nova
-notification_driver = quantum.openstack.common.notifier.rpc_notifier
+notification_driver = neutron.openstack.common.notifier.rpc_notifier
 default_notification_level = INFO
 notification_topics = notifications
 [QUOTAS]
 [DEFAULT_SERVICETYPE]
 [AGENT]
-root_helper = sudo quantum-rootwrap /etc/quantum/rootwrap.conf
+root_helper = sudo neutron-rootwrap /etc/neutron/rootwrap.conf
 [keystone_authtoken]
 auth_host = $NOVA_CONTROLLER_HOSTNAME
 auth_port = 35357
 auth_protocol = http
 admin_tenant_name = service
-admin_user = quantum
+admin_user = neutron
 admin_password = $SERVICE_PASSWORD
-signing_dir = /var/lib/quantum/keystone-signing
+signing_dir = /var/lib/neutron/keystone-signing
 QUANTUM_SERVER
 
-sudo \rm -rf /var/log/quantum/*
+sudo \rm -rf /var/log/neutron/*
 for i in plugin-openvswitch-agent
 do
-  sudo stop quantum-$i ; sudo start quantum-$i
+  sudo stop neutron-$i ; sudo start neutron-$i
 done
 
 ### NOVA ###
@@ -184,22 +184,22 @@ vncserver_proxyclient_address=\$my_ip
 vncserver_listen=0.0.0.0
 vnc_keymap=ja
 
-#quantum
-network_api_class=nova.network.quantumv2.api.API
-quantum_url=http://$NOVA_CONTROLLER_IP:9696
-quantum_auth_strategy=keystone
-quantum_admin_tenant_name=service
-quantum_admin_username=quantum
-quantum_admin_password=$SERVICE_PASSWORD
-quantum_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
+#neutron
+network_api_class=nova.network.neutronv2.api.API
+neutron_url=http://$NOVA_CONTROLLER_IP:9696
+neutron_auth_strategy=keystone
+neutron_admin_tenant_name=service
+neutron_admin_username=neutron
+neutron_admin_password=$SERVICE_PASSWORD
+neutron_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
 libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
 linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
 firewall_driver=nova.virt.firewall.NoopFirewallDriver
-security_group_api=quantum
+security_group_api=neutron
 
 #metadata
-service_quantum_metadata_proxy=True
-quantum_metadata_proxy_shared_secret=stack
+service_neutron_metadata_proxy=True
+neutron_metadata_proxy_shared_secret=stack
 
 #compute
 compute_driver=libvirt.LibvirtDriver
@@ -248,9 +248,9 @@ sudo service libvirt-bin restart
 
 #For WorkAround
 #If the following error occurs
-# cat /var/log/quantum/openvswitch-agent.log
-# ERROR [quantum.plugins.openvswitch.agent.ovs_quantum_agent] Failed to create OVS patch port. Cannot have tunneling enabled on this agent, since this version of OVS does not support tunnels or patch ports. Agent terminated!
-# apt-get remove openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# cat /var/log/neutron/openvswitch-agent.log
+# ERROR [neutron.plugins.openvswitch.agent.ovs_neutron_agent] Failed to create OVS patch port. Cannot have tunneling enabled on this agent, since this version of OVS does not support tunnels or patch ports. Agent terminated!
+# apt-get remove openvswitch-switch openvswitch-datapath-dkms neutron-plugin-openvswitch-agent -y
 # reboot
-# apt-get install openvswitch-switch openvswitch-datapath-dkms quantum-plugin-openvswitch-agent -y
+# apt-get install openvswitch-switch openvswitch-datapath-dkms neutron-plugin-openvswitch-agent -y
 # reboot
