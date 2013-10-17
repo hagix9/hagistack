@@ -254,7 +254,8 @@ sudo ovs-vsctl add-port br-ex $EXT_NIC
 
 ### NEUTRON ###
 #neutron install
-sudo apt-get install neutron-server neutron-plugin-openvswitch-agent neutron-dhcp-agent neutron-l3-agent neutron-metadata-agent -y
+sudo apt-get install neutron-server neutron-dhcp-agent neutron-l3-agent neutron-metadata-agent -y
+sudo apt-get install neutron-plugin-openvswitch-agent neutron-lbaas-agent neutron-plugin-vpn-agent -y
 
 #neutron settings backup
 sudo cp -a  /etc/neutron /etc/neutron_bak
@@ -286,6 +287,26 @@ cat << NEUTRON_DHCP | sudo tee /etc/neutron/dhcp_agent.ini > /dev/null
 interface_driver = neutron.agent.linux.interface.OVSInterfaceDriver
 NEUTRON_DHCP
 
+#neutron lbaas setting
+cat << NEUTRON_LB | sudo tee /etc/neutron/lbaas_agent.ini > /dev/null
+[DEFAULT]
+ovs_use_veth=False
+interface_driver=neutron.agent.linux.interface.OVSInterfaceDriver
+NEUTRON_LB
+
+#neutron fbaas setting
+cat << NEUTRON_LB | sudo tee /etc/neutron/fwaas_driver.ini > /dev/null
+[fwaas]
+enabled=True
+driver=neutron.services.firewall.drivers.linux.iptables_fwaas.IptablesFwaasDriver
+NEUTRON_LB
+
+#neutron vpnaas setting
+cat << NEUTRON_VPN | sudo tee /etc/neutron/vpn_agent.ini > /dev/null
+[DEFAULT]
+interface_driver = neutron.agent.linux.interface.OVSInterfaceDriver
+NEUTRON_VPN
+
 #neutron server setting
 cat << NEUTRON_SERVER | sudo tee /etc/neutron/neutron.conf > /dev/null
 [DEFAULT]
@@ -295,6 +316,7 @@ api_paste_config = /etc/neutron/api-paste.ini
 control_exchange = neutron
 state_path = /var/lib/neutron
 lock_path = \$state_path/lock
+service_plugins = neutron.services.loadbalancer.plugin.LoadBalancerPlugin,neutron.services.vpn.plugin.VPNDriverPlugin,neutron.services.firewall.fwaas_plugin.FirewallPlugin
 core_plugin = neutron.plugins.openvswitch.ovs_neutron_plugin.OVSNeutronPluginV2
 notification_driver = neutron.openstack.common.notifier.rpc_notifier
 rpc_backend = neutron.openstack.common.rpc.impl_kombu
@@ -316,10 +338,11 @@ admin_user = neutron
 admin_password = $SERVICE_PASSWORD
 signing_dir = \$state_path/keystone-signing
 
-[lbaas]
 [database]
 connection = mysql://neutron:$MYSQL_PASS_NEUTRON@$NOVA_CONTOLLER_HOSTNAME/ovs_neutron?charset=utf8
 [service_providers]
+service_provider=LOADBALANCER:Haproxy:neutron.services.loadbalancer.drivers.haproxy.plugin_driver.HaproxyOnHostPluginDriver:default
+[radware]
 NEUTRON_SERVER
 
 #neutron metadata setting
@@ -337,7 +360,7 @@ NEUTRON_META
 
 #neutron service init
 sudo \rm -rf /var/log/neutron/*
-for i in dhcp-agent l3-agent metadata-agent server plugin-openvswitch-agent
+for i in dhcp-agent l3-agent metadata-agent server plugin-openvswitch-agent neutron-lbaas-agent plugin-vpn-agent
 do
   sudo stop neutron-$i ; sudo start neutron-$i
 done
@@ -347,6 +370,13 @@ done
 sudo apt-get install -y nova-api nova-cert novnc nova-consoleauth nova-scheduler nova-novncproxy nova-doc nova-conductor
 sudo apt-get install -y openstack-dashboard memcached
 sudo apt-get install -y nova-compute
+
+#horizon neutron_settings
+sudo cp -a /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py_bak
+sudo sed -i "s/'enable_lb': False,/'enable_lb': True,/" /etc/openstack-dashboard/local_settings.py
+sudo sed -i "s/'enable_firewall': False,/'enable_firewall': True,/" /etc/openstack-dashboard/local_settings.py
+sudo sed -i "s/'enable_vpn': False,/'enable_vpn': True,/" /etc/openstack-dashboard/local_settings.py
+sudo service apache2 restart
 
 #memcached setting
 sudo sed -i "s/127.0.0.1/$NOVA_CONTOLLER_IP/" /etc/memcached.conf
@@ -432,6 +462,10 @@ NOVA_SETUP
 
 #nova db sync
 sudo nova-manage db sync
+
+###Disk Image Error Workaround###
+sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
+sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
 
 #nova service init
 sudo \rm -rf /var/log/nova/*
