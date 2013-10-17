@@ -280,6 +280,12 @@ cat << NEUTRON_L3 | sudo tee /etc/neutron/l3_agent.ini > /dev/null
 interface_driver = neutron.agent.linux.interface.OVSInterfaceDriver
 NEUTRON_L3
 
+#neutron dhcp_agent setting
+cat << NEUTRON_DHCP | sudo tee /etc/neutron/dhcp_agent.ini > /dev/null
+[DEFAULT]
+interface_driver = neutron.agent.linux.interface.OVSInterfaceDriver
+NEUTRON_DHCP
+
 #neutron server setting
 cat << NEUTRON_SERVER | sudo tee /etc/neutron/neutron.conf > /dev/null
 [DEFAULT]
@@ -354,7 +360,8 @@ cat << NOVA_COMPUTE_SETUP | sudo tee /etc/nova/nova-compute.conf
 libvirt_type=kvm
 libvirt_ovs_bridge=br-int
 libvirt_vif_type=ethernet
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
 libvirt_use_virtio_for_bridges=True
 NOVA_COMPUTE_SETUP
 
@@ -405,7 +412,8 @@ neutron_admin_tenant_name=service
 neutron_admin_username=neutron
 neutron_admin_password=$SERVICE_PASSWORD
 neutron_admin_auth_url=http://$NOVA_CONTOLLER_IP:35357/v2.0
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
 linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
 firewall_driver=nova.virt.firewall.NoopFirewallDriver
 security_group_api=neutron
