@@ -619,7 +619,7 @@ chown $STACK_USER:$STACK_USER mykey
 chmod 600 mykey
 
 ### Horizon workaround ###
-sudo apt-get remove openstack-dashboard-ubuntu-theme -y
+#sudo apt-get remove openstack-dashboard-ubuntu-theme -y
 
 #ami CoreOS
 sudo mkdir -p /opt/virt/coreos ; cd /opt/virt/coreos

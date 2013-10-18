@@ -141,7 +141,8 @@ cat << NOVA_COMPUTE_SETUP | sudo tee /etc/nova/nova-compute.conf
 libvirt_type=kvm
 libvirt_ovs_bridge=br-int
 libvirt_vif_type=ethernet
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
 libvirt_use_virtio_for_bridges=True
 NOVA_COMPUTE_SETUP
 
@@ -192,7 +193,8 @@ neutron_admin_tenant_name=service
 neutron_admin_username=neutron
 neutron_admin_password=$SERVICE_PASSWORD
 neutron_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
+libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
 linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
 firewall_driver=nova.virt.firewall.NoopFirewallDriver
 security_group_api=neutron
@@ -208,6 +210,10 @@ compute_driver=libvirt.LibvirtDriver
 volume_api_class=nova.volume.cinder.API
 osapi_volume_listen_port=5900
 NOVA_SETUP
+
+###Disk Image Error Workaround###
+sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
+sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
 
 #nova service init
 sudo \rm -rf /var/log/nova/*
