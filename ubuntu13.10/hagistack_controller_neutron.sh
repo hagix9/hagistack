@@ -623,7 +623,7 @@ chmod 600 mykey
 
 #nova flavor m1.tiny change
 nova flavor-delete 1
-nova flavor-create m1.tiny 1 512 1 0
+nova flavor-create m1.tiny 1 512 0 1
 
 ### Horizon Ubuntu Theme Remove ###
 #sudo apt-get remove openstack-dashboard-ubuntu-theme -y
