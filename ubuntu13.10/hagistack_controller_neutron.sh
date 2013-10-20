@@ -464,10 +464,6 @@ NOVA_SETUP
 #nova db sync
 sudo nova-manage db sync
 
-###Disk Image Error Workaround###
-#sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
-#sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
-
 #nova service init
 sudo \rm -rf /var/log/nova/*
 for proc in proc in api cert console consoleauth scheduler compute novncproxy conductor
@@ -531,6 +527,13 @@ cgroup_device_acl = [
 "/dev/rtc", "/dev/hpet","/dev/net/tun"
 ]
 CGROUP
+
+#AppArmor Setting for Libvirtd
+sudo ln -s /etc/apparmor.d/usr.sbin.libvirtd /etc/apparmor.d/disable/
+sudo ln -s /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper /etc/apparmor.d/disable/
+sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.libvirtd
+sudo apparmor_parser -R /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper
+service apparmor restart
 
 #delete default virtual bridge
 sudo virsh net-destroy default
@@ -618,7 +621,11 @@ nova keypair-add mykey > mykey
 chown $STACK_USER:$STACK_USER mykey
 chmod 600 mykey
 
-### Horizon workaround ###
+#nova flavor m1.tiny change
+nova flavor-delete 1
+nova flavor-create m1.tiny 1 512 1 0
+
+### Horizon Ubuntu Theme Remove ###
 #sudo apt-get remove openstack-dashboard-ubuntu-theme -y
 
 #ami CoreOS

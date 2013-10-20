@@ -211,10 +211,6 @@ volume_api_class=nova.volume.cinder.API
 osapi_volume_listen_port=5900
 NOVA_SETUP
 
-###Disk Image Error Workaround###
-sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
-sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
-
 #nova service init
 sudo \rm -rf /var/log/nova/*
 for proc in proc in compute
@@ -236,6 +232,13 @@ cgroup_device_acl = [
 "/dev/rtc", "/dev/hpet","/dev/net/tun"
 ]
 CGROUP
+
+#AppArmor Setting for Libvirtd
+sudo ln -s /etc/apparmor.d/usr.sbin.libvirtd /etc/apparmor.d/disable/
+sudo ln -s /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper /etc/apparmor.d/disable/
+sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.libvirtd
+sudo apparmor_parser -R /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper
+service apparmor restart
 
 #delete default virtual bridge
 sudo virsh net-destroy default
