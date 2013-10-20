@@ -533,7 +533,7 @@ sudo ln -s /etc/apparmor.d/usr.sbin.libvirtd /etc/apparmor.d/disable/
 sudo ln -s /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper /etc/apparmor.d/disable/
 sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.libvirtd
 sudo apparmor_parser -R /etc/apparmor.d/usr.lib.libvirt.virt-aa-helper
-service apparmor restart
+sudo service apparmor restart
 
 #delete default virtual bridge
 sudo virsh net-destroy default
