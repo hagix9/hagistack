@@ -1,5 +1,5 @@
 #!/bin/bash
-#description "OpenStack Deploy Script for Ubuntu 13.04"
+#description "OpenStack Deploy Script for Ubuntu 13.10"
 #author "Shiro Hagihara <hagihara@fulltrust.co.jp @hagix9>"
 #prerequisite make lvm cinder-volumes and setting hosts
 #Number of necessary NIC 2
@@ -465,8 +465,8 @@ NOVA_SETUP
 sudo nova-manage db sync
 
 ###Disk Image Error Workaround###
-sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
-sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
+#sudo cp -a /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py_bak
+#sudo sed -i '306,312s/^/#/' /usr/lib/python2.7/dist-packages/nova/virt/libvirt/imagebackend.py
 
 #nova service init
 sudo \rm -rf /var/log/nova/*
