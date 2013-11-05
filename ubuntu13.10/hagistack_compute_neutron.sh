@@ -1,5 +1,5 @@
 #!/bin/bash
-#description "OpenStack Deploy Script for Ubuntu 13.04"
+#description "OpenStack Deploy Script for Ubuntu 13.10"
 #author "Shiro Hagihara <hagihara@fulltrust.co.jp @hagix9>"
 #prerequisite make lvm cinder-volumes and setting hosts
 #Number of necessary NIC 1
