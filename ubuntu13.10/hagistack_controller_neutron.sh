@@ -466,7 +466,7 @@ sudo nova-manage db sync
 
 #nova service init
 sudo \rm -rf /var/log/nova/*
-for proc in proc in api cert console consoleauth scheduler compute novncproxy conductor
+for proc in api cert console consoleauth scheduler compute novncproxy conductor
 do
   sudo service nova-$proc stop
   sudo service nova-$proc start
