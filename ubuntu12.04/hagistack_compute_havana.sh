@@ -44,7 +44,7 @@ fi
 sudo apt-get update
 sudo apt-get install python-software-properties -y
 sudo apt-get install software-properties-common -y
-sudo add-apt-repository ppa:openstack-ubuntu-testing/havana -y
+sudo add-apt-repository cloud-archive:havana -y
 
 ### Preparing Ubuntu ###
 #os update

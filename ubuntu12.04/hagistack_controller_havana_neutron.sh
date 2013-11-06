@@ -73,7 +73,7 @@ fi
 sudo apt-get update
 sudo apt-get install python-software-properties -y
 sudo apt-get install software-properties-common -y
-sudo add-apt-repository ppa:openstack-ubuntu-testing/havana -y
+sudo add-apt-repository cloud-archive:havana -y
 
 ### Preparing Ubuntu ###
 #os update
@@ -376,7 +376,7 @@ sudo apt-get install -y novnc nova-novncproxy
 sudo apt-get install -y openstack-dashboard memcached
 sudo apt-get install -y nova-compute
 #novnc workaround
-sudo sed -i.bak '/nova_token/d' /usr/share/novnc/include/rfb.js
+#sudo sed -i.bak '/nova_token/d' /usr/share/novnc/include/rfb.js
 
 #horizon neutron_settings
 sudo cp -a /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py_bak
