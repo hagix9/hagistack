@@ -246,6 +246,7 @@ sudo glance-manage db_sync
 #neutron install
 sudo apt-get install neutron-server neutron-dhcp-agent neutron-l3-agent neutron-metadata-agent -y
 sudo apt-get install neutron-lbaas-agent neutron-plugin-vpn-agent -y
+sudo apt-get install neutron-plugin-linuxbridge neutron-plugin-linuxbridge-agent -y
 
 #neutron settings backup
 sudo cp -a  /etc/neutron /etc/neutron_bak
