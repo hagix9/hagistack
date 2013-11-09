@@ -5,8 +5,8 @@
 
 #ENV
 #For nova.conf
-NOVA_CONTOLLER_IP=192.168.10.50
-NOVA_CONTOLLER_HOSTNAME=stack01
+NOVA_CONTROLLER_IP=192.168.10.50
+NOVA_CONTROLLER_HOSTNAME=stack01
 NOVA_COMPUTE_IP=192.168.10.51
 
 #rabbitmq setting for common
@@ -87,8 +87,8 @@ use_ipv6=false
 firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
 
 #vnc
-novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
-xvpvncproxy_base_url=http://$NOVA_CONTOLLER_IP:6081/console
+novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
+xvpvncproxy_base_url=http://$NOVA_CONTROLLER_IP:6081/console
 #vnc compute node ip override
 vncserver_proxyclient_address=$NOVA_COMPUTE_IP
 vncserver_listen=$NOVA_COMPUTE_IP
@@ -98,21 +98,21 @@ vnc_keymap=ja
 scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
 
 #object
-s3_host=$NOVA_CONTOLLER_HOSTNAME
+s3_host=$NOVA_CONTROLLER_HOSTNAME
 use_cow_images=yes
 
 #glance
 image_service=nova.image.glance.GlanceImageService
-glance_api_servers=$NOVA_CONTOLLER_HOSTNAME:9292
+glance_api_servers=$NOVA_CONTROLLER_HOSTNAME:9292
 
 #rabbit
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 
 #nova database
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova
+sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
 
 #use cinder
 enabled_apis=ec2,osapi_compute,metadata
@@ -120,10 +120,10 @@ volume_api_class=nova.volume.cinder.API
 
 #keystone
 auth_strategy=keystone
-keystone_ec2_url=http://$NOVA_CONTOLLER_HOSTNAME:5000/v2.0/ec2tokens
+keystone_ec2_url=http://$NOVA_CONTROLLER_HOSTNAME:5000/v2.0/ec2tokens
 
 #memcache
-#memcached_servers=$NOVA_CONTOLLER_HOSTNAME:11211
+#memcached_servers=$NOVA_CONTROLLER_HOSTNAME:11211
 NOVA_SETUP
 
 #nova service init

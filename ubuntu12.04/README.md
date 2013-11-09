@@ -29,7 +29,7 @@ If you want to add is ComputeNode
 
 When the script finishes executing, you should be able to access OpenStack endpoints, like so:
 
-* Horizon: http://$NOVA_CONTOLLER_IP/
+* Horizon: http://$NOVA_CONTROLLER_IP/
 
 If you want to use OpenStackAPI
 

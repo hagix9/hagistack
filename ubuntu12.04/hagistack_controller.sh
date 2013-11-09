@@ -9,8 +9,8 @@ STACK_USER=stack
 STACK_PASS=stack
 
 #For nova.conf
-NOVA_CONTOLLER_IP=192.168.10.50
-NOVA_CONTOLLER_HOSTNAME=stack01
+NOVA_CONTROLLER_IP=192.168.10.50
+NOVA_CONTROLLER_HOSTNAME=stack01
 NOVA_COMPUTE_IP=192.168.10.50
 
 #rabbitmq setting for common
@@ -91,7 +91,7 @@ apt-get install -y open-iscsi open-iscsi-utils kvm kvm-ipxe \
                    libvirt-bin bridge-utils python-libvirt
 
 #memcached setting for controller node
-sed -i "s/127.0.0.1/$NOVA_CONTOLLER_IP/" /etc/memcached.conf
+sed -i "s/127.0.0.1/$NOVA_CONTROLLER_IP/" /etc/memcached.conf
 /etc/init.d/memcached restart
 
 #env_file make
@@ -101,7 +101,7 @@ export OS_NO_CACHE=True
 export OS_USERNAME=$ADMIN_USERNAME
 export OS_PASSWORD=$ADMIN_PASSWORD
 export OS_TENANT_NAME=$ADMIN_TENANT_NAME
-export OS_AUTH_URL=http://$NOVA_CONTOLLER_HOSTNAME:5000/v2.0/
+export OS_AUTH_URL=http://$NOVA_CONTROLLER_HOSTNAME:5000/v2.0/
 EOF
 chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
@@ -121,14 +121,14 @@ sed -i "s@# compute_port = 8774@compute_port = 8774@" /etc/keystone/keystone.con
 sed -i "s@# verbose = False@verbose = True@" /etc/keystone/keystone.conf
 sed -i "s@# debug = False@debug = True@" /etc/keystone/keystone.conf
 sed -i "s@log_config = /etc/keystone/logging.conf@# log_config = /etc/keystone/logging.conf@" /etc/keystone/keystone.conf
-sed -i "s#sqlite:////var/lib/keystone/keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTOLLER_HOSTNAME/keystone#" /etc/keystone/keystone.conf
+sed -i "s#sqlite:////var/lib/keystone/keystone.db#mysql://keystone:$MYSQL_PASS_KEYSTONE@$NOVA_CONTROLLER_HOSTNAME/keystone#" /etc/keystone/keystone.conf
 sed -i "s@# idle_timeout = 200@idle_timeout = 200@" /etc/keystone/keystone.conf
 
 #keystone db make
 mysql -u root -pnova -e "create database keystone character set utf8;"
 mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'%' identified by '$MYSQL_PASS_KEYSTONE';"
 mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'localhost' identified by '$MYSQL_PASS_KEYSTONE';"
-mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
+mysql -u root -pnova -e "grant all privileges on keystone.* to 'keystone'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_KEYSTONE';"
 keystone-manage db_sync
 
 #keystone service init
@@ -137,10 +137,10 @@ stop keystone ; start keystone
 #keystone setting2
 sleep 3
 cd /usr/local/src ; sudo cp -a /usr/share/keystone/sample_data.sh .
-export SERVICE_ENDPOINT=http://$NOVA_CONTOLLER_HOSTNAME:35357/v2.0/
+export SERVICE_ENDPOINT=http://$NOVA_CONTROLLER_HOSTNAME:35357/v2.0/
 export ADMIN_PASSWORD=$ADMIN_PASSWORD
-sed -i "s/127.0.0.1/$NOVA_CONTOLLER_HOSTNAME/" /usr/local/src/sample_data.sh
-sed -i "s/localhost/$NOVA_CONTOLLER_HOSTNAME/" /usr/local/src/sample_data.sh
+sed -i "s/127.0.0.1/$NOVA_CONTROLLER_HOSTNAME/" /usr/local/src/sample_data.sh
+sed -i "s/localhost/$NOVA_CONTROLLER_HOSTNAME/" /usr/local/src/sample_data.sh
 export ENABLE_ENDPOINTS=yes
 /usr/local/src/sample_data.sh
 
@@ -149,31 +149,31 @@ apt-get install -y glance
 
 #glance setting
 cp -a /etc/glance /etc/glance_bak
-sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-api.conf
+sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTROLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-api.conf
 sed -i "s/%SERVICE_TENANT_NAME%/$SERVICE_TENANT_NAME/" /etc/glance/glance-api.conf
 sed -i "s/%SERVICE_USER%/$GLANCE_ADMIN_NAME/" /etc/glance/glance-api.conf
 sed -i "s/%SERVICE_PASSWORD%/$GLANCE_ADMIN_PASS/" /etc/glance/glance-api.conf
 sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-api.conf
 sed -i "s/notifier_strategy = noop/notifier_strategy = rabbit/" /etc/glance/glance-api.conf
-sed -i "s/rabbit_host = localhost/rabbit_host=$NOVA_CONTOLLER_HOSTNAME/" /etc/glance/glance-api.conf
+sed -i "s/rabbit_host = localhost/rabbit_host=$NOVA_CONTROLLER_HOSTNAME/" /etc/glance/glance-api.conf
 sed -i "s/rabbit_userid = guest/rabbit_userid = nova/" /etc/glance/glance-api.conf
 sed -i "s/rabbit_password = guest/rabbit_password = $RABBIT_PASS/" /etc/glance/glance-api.conf
 sed -i "s@rabbit_virtual_host = /@rabbit_virtual_host = /nova@" /etc/glance/glance-api.conf
-sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api.conf
-sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-api.conf
+sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-api.conf
+sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-api.conf
 
-sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTOLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-registry.conf
+sed -i "s#sqlite:////var/lib/glance/glance.sqlite#mysql://glance:$MYSQL_PASS_GLANCE@$NOVA_CONTROLLER_HOSTNAME/glance?charset=utf8#" /etc/glance/glance-registry.conf
 sed -i "s/%SERVICE_TENANT_NAME%/$SERVICE_TENANT_NAME/" /etc/glance/glance-registry.conf
 sed -i "s/%SERVICE_USER%/$GLANCE_ADMIN_NAME/" /etc/glance/glance-registry.conf
 sed -i "s/%SERVICE_PASSWORD%/$GLANCE_ADMIN_PASS/" /etc/glance/glance-registry.conf
 sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
-sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
-sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/glance/glance-registry.conf
+sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-registry.conf
+sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 
 mysql -u root -pnova -e "create database glance character set utf8;"
 mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'%' identified by '$MYSQL_PASS_GLANCE';"
 mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'localhost' identified by '$MYSQL_PASS_GLANCE';"
-mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
+mysql -u root -pnova -e "grant all privileges on glance.* to 'glance'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_GLANCE';"
 glance-manage db_sync
 
 #glance service init
@@ -207,13 +207,13 @@ log_dir=/var/log/cinder
 osapi_volume_extension = cinder.api.openstack.volume.contrib.standard_extensions
 
 #rabbit
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 
 #sql
-sql_connection = mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTOLLER_HOSTNAME/cinder?charset=utf8
+sql_connection = mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTROLLER_HOSTNAME/cinder?charset=utf8
 
 #volume
 volume_name_template = volume-%s
@@ -226,13 +226,13 @@ EOF
 sed -i "s/%SERVICE_TENANT_NAME%/$SERVICE_TENANT_NAME/" /etc/cinder/api-paste.ini
 sed -i "s/%SERVICE_USER%/$CINDER_ADMIN_NAME/" /etc/cinder/api-paste.ini
 sed -i "s/%SERVICE_PASSWORD%/$CINDER_ADMIN_PASS/" /etc/cinder/api-paste.ini
-sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
-sed -i "s#localhost#$NOVA_CONTOLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
 
 mysql -u root -pnova -e "create database cinder character set utf8;"
 mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'%' identified by '$MYSQL_PASS_CINDER';"
 mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'localhost' identified by '$MYSQL_PASS_CINDER';"
-mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
+mysql -u root -pnova -e "grant all privileges on cinder.* to 'cinder'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_CINDER';"
 cinder-manage db sync
 
 export SERVICE_TOKEN=$ADMIN_TOKEN
@@ -258,9 +258,9 @@ CINDER_SERVICE=$(get_id keystone service-create \
 keystone endpoint-create \
     --region RegionOne \
     --service_id $CINDER_SERVICE \
-    --publicurl "http://$NOVA_CONTOLLER_HOSTNAME:8776/v1/\$(tenant_id)s" \
-    --adminurl "http://$NOVA_CONTOLLER_HOSTNAME:8776/v1/\$(tenant_id)s" \
-    --internalurl "http://$NOVA_CONTOLLER_HOSTNAME:8776/v1/\$(tenant_id)s"
+    --publicurl "http://$NOVA_CONTROLLER_HOSTNAME:8776/v1/\$(tenant_id)s" \
+    --adminurl "http://$NOVA_CONTROLLER_HOSTNAME:8776/v1/\$(tenant_id)s" \
+    --internalurl "http://$NOVA_CONTROLLER_HOSTNAME:8776/v1/\$(tenant_id)s"
 
 #cinder service init
 chown cinder:cinder /var/log/cinder/*
@@ -316,8 +316,8 @@ use_ipv6=false
 firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
 
 #vnc
-novncproxy_base_url=http://$NOVA_CONTOLLER_IP:6080/vnc_auto.html
-xvpvncproxy_base_url=http://$NOVA_CONTOLLER_IP:6081/console
+novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
+xvpvncproxy_base_url=http://$NOVA_CONTROLLER_IP:6081/console
 #vnc compute node ip override
 vncserver_proxyclient_address=$NOVA_COMPUTE_IP
 vncserver_listen=$NOVA_COMPUTE_IP
@@ -327,21 +327,21 @@ vnc_keymap=ja
 scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
 
 #object
-s3_host=$NOVA_CONTOLLER_HOSTNAME
+s3_host=$NOVA_CONTROLLER_HOSTNAME
 use_cow_images=yes
 
 #glance
 image_service=nova.image.glance.GlanceImageService
-glance_api_servers=$NOVA_CONTOLLER_HOSTNAME:9292
+glance_api_servers=$NOVA_CONTROLLER_HOSTNAME:9292
 
 #rabbit
-rabbit_host=$NOVA_CONTOLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
 rabbit_virtual_host=/nova
 rabbit_userid=nova
 rabbit_password=$RABBIT_PASS
 
 #nova database
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTOLLER_HOSTNAME/nova
+sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
 
 #use cinder
 enabled_apis=ec2,osapi_compute,metadata
@@ -349,14 +349,14 @@ volume_api_class=nova.volume.cinder.API
 
 #keystone
 auth_strategy=keystone
-keystone_ec2_url=http://$NOVA_CONTOLLER_HOSTNAME:5000/v2.0/ec2tokens
+keystone_ec2_url=http://$NOVA_CONTROLLER_HOSTNAME:5000/v2.0/ec2tokens
 
 #memcache
-#memcached_servers=$NOVA_CONTOLLER_HOSTNAME:11211
+#memcached_servers=$NOVA_CONTROLLER_HOSTNAME:11211
 NOVA_SETUP
 
 #nova_api setting
-sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/nova/api-paste.ini
+sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_TENANT_NAME%#$SERVICE_TENANT_NAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_USER%#$NOVA_ADMIN_NAME#" /etc/nova/api-paste.ini
 sed -i "s#%SERVICE_PASSWORD%#$NOVA_ADMIN_PASS#" /etc/nova/api-paste.ini
@@ -365,7 +365,7 @@ sed -i "s#%SERVICE_PASSWORD%#$NOVA_ADMIN_PASS#" /etc/nova/api-paste.ini
 mysql -u root -pnova -e "create database nova;"
 mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'%' identified by '$MYSQL_PASS_NOVA';"
 mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'localhost' identified by '$MYSQL_PASS_NOVA';"
-mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
+mysql -u root -pnova -e "grant all privileges on nova.* to 'nova'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_NOVA';"
 nova-manage db sync
 
 #nova service init
@@ -380,7 +380,7 @@ apt-get install -y openstack-dashboard libapache2-mod-wsgi
 
 #horizon setting
 cp -a /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py_bak
-sed -i "s#127.0.0.1#$NOVA_CONTOLLER_HOSTNAME#" /etc/openstack-dashboard/local_settings.py
+sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/openstack-dashboard/local_settings.py
 
 cat << HORIZON_SETUP | tee -a /etc/openstack-dashboard/local_settings.py > /dev/null
 DATABASES = {
@@ -389,7 +389,7 @@ DATABASES = {
         'NAME': 'horizon',
         'USER': 'horizon',
         'PASSWORD': '$MYSQL_PASS_HORIZON',
-        'HOST': '$NOVA_CONTOLLER_HOSTNAME',
+        'HOST': '$NOVA_CONTROLLER_HOSTNAME',
         'default-character-set': 'utf8'
     }
 }
@@ -405,7 +405,7 @@ HORIZON_SETUP
 mysql -u root -pnova -e "create database horizon;"
 mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'%' identified by '$MYSQL_PASS_HORIZON';"
 mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'localhost' identified by '$MYSQL_PASS_HORIZON';"
-mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'$NOVA_CONTOLLER_HOSTNAME' identified by '$MYSQL_PASS_HORIZON';"
+mysql -u root -pnova -e "grant all privileges on horizon.* to 'horizon'@'$NOVA_CONTROLLER_HOSTNAME' identified by '$MYSQL_PASS_HORIZON';"
 cd /usr/share/openstack-dashboard && ./manage.py syncdb --noinput
 
 #apache2 restart
@@ -419,7 +419,7 @@ SECRET_KEY=$(keystone ec2-credentials-list --user_id $USER_ID | awk "/$ADMIN_USE
 
 cd /home/$STACK_USER
 cat > novarc <<EOF
-export EC2_URL=http://$NOVA_CONTOLLER_HOSTNAME:8773/services/Cloud
+export EC2_URL=http://$NOVA_CONTROLLER_HOSTNAME:8773/services/Cloud
 export EC2_ACCESS_KEY=$ACCESS_KEY
 export EC2_SECRET_KEY=$SECRET_KEY
 EOF
