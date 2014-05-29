@@ -226,7 +226,7 @@ sudo chown $STACK_USER:$STACK_USER /home/$STACK_USER/keystonerc
 
 ### Glance ###
 ###warning workaround###
-sudo apt-get install sheepdog -y
+#sudo apt-get install sheepdog -y
 
 #glance install
 sudo apt-get install -y glance
@@ -253,10 +253,6 @@ sudo sed -i "s/#flavor=/flavor = keystone/" /etc/glance/glance-registry.conf
 sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 sudo sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/glance/glance-registry.conf
 
-###warning workaround###
-sudo -E wget -P /etc/glance https://raw.github.com/openstack/glance/master/etc/schema-image.json
-########################
-
 #glance service init
 sudo \rm -rf /var/log/glance/*
 for i in api registry
@@ -268,15 +264,155 @@ done
 sudo glance-manage db_sync
 
 ### OpenVswitch ###
-#openvswitch install
-
 #create bridge
 # br-int is vm integration
 sudo ovs-vsctl --no-wait -- --may-exist add-br br-int
 
+### NOVA ###
+#nova install
+sudo apt-get install -y nova-api nova-cert novnc nova-consoleauth nova-scheduler nova-novncproxy nova-doc nova-conductor
+sudo apt-get install -y openstack-dashboard memcached
+sudo apt-get install -y nova-compute
+
+#horizon neutron_settings
+sudo cp -a /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py_bak
+sudo sed -i "s/'enable_lb': False,/'enable_lb': True,/" /etc/openstack-dashboard/local_settings.py
+sudo sed -i "s/'enable_firewall': False,/'enable_firewall': True,/" /etc/openstack-dashboard/local_settings.py
+sudo sed -i "s/'enable_vpn': False,/'enable_vpn': True,/" /etc/openstack-dashboard/local_settings.py
+sudo service apache2 restart
+
+#memcached setting
+sudo sed -i "s/127.0.0.1/$NOVA_CONTROLLER_IP/" /etc/memcached.conf
+sudo service memcached restart
+
+#nova.conf setting
+sudo cp -a /etc/nova /etc/nova_bak
+
+cat << NOVA_SETUP | sudo tee /etc/nova/nova.conf > /dev/null
+[DEFAULT]
+my_ip=$NOVA_COMPUTE_IP
+use_ipv6=false
+auth_strategy=keystone
+rootwrap_config=/etc/nova/rootwrap.conf
+connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
+logdir=/var/log/nova
+state_path=/var/lib/nova
+lock_path=/run/lock/nova
+verbose=True
+api_paste_config=/etc/nova/api-paste.ini
+osapi_compute_listen="0.0.0.0"
+osapi_compute_listen_port=8774
+scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
+rabbit_virtual_host=/nova
+rabbit_userid=nova
+rabbit_password=$RABBIT_PASS
+
+#glance
+glance_host=$NOVA_CONTROLLER_HOSTNAME
+glance_port=9292
+rpc_backend=nova.openstack.common.rpc.impl_kombu
+notification_driver=nova.openstack.common.notifier.rpc_notifier
+
+#memcached
+memcached_servers=$NOVA_CONTROLLER_HOSTNAME:11211
+
+#vnc
+novnc_enabled=true
+novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
+novncproxy_port=6080
+vncserver_proxyclient_address=\$my_ip
+vncserver_listen=0.0.0.0
+vnc_keymap=ja
+
+#legacy_network
+#network_driver=nova.network.linux_net
+#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
+#linuxnet_interface_driver=nova.network.linux_net.LinuxBridgeInterfaceDriver
+#firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
+#network_api_class=nova.network.api.API
+#security_group_api=nova
+#network_manager=nova.network.manager.FlatDHCPManager
+#network_size=254
+#allow_same_net_traffic=False
+#multi_host=True
+#send_arp_for_ha=True
+#share_dhcp_address=True
+#force_dhcp_release=True
+#public_interface=eth0
+#flat_network_bridge=br100
+#flat_interface=eth0
+
+#neutron
+network_api_class=nova.network.neutronv2.api.API
+security_group_api=neutron
+
+[keystone_authtoken]
+auth_host = $NOVA_CONTROLLER_HOSTNAME
+auth_port = 35357
+auth_protocol = http
+admin_tenant_name = service
+admin_user = nova
+admin_password = $SERVICE_PASSWORD
+NOVA_SETUP
+
+#nova db sync
+sudo nova-manage db sync
+
+#nova service init
+sudo \rm -rf /var/log/nova/*
+for proc in api cert console consoleauth scheduler compute novncproxy conductor
+do
+  sudo service nova-$proc stop
+  sudo service nova-$proc start
+done
+
+### CINDER ###
+#cinder install
+sudo apt-get install cinder-api cinder-scheduler cinder-volume tgt -y
+
+#cinder setting
+sudo cp -a /etc/cinder /etc/cinder_bak
+
+sudo sed -i "s/%SERVICE_TENANT_NAME%/service/" /etc/cinder/api-paste.ini
+sudo sed -i "s/%SERVICE_USER%/cinder/" /etc/cinder/api-paste.ini
+sudo sed -i "s/%SERVICE_PASSWORD%/$SERVICE_PASSWORD/" /etc/cinder/api-paste.ini
+sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+sudo sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
+
+cat << CINDER | sudo tee /etc/cinder/cinder.conf > /dev/null
+[DEFAULT]
+rootwrap_config=/etc/cinder/rootwrap.conf
+sql_connection=mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTROLLER_HOSTNAME/cinder?charset=utf8
+api_paste_config=/etc/cinder/api-paste.ini
+iscsi_helper=tgtadm
+volume_name_template=volume-%s
+volume_group=cinder-volumes
+state_path=/var/lib/cinder
+volumes_dir=/var/lib/cinder/volumes
+verbose=True
+auth_strategy=keystone
+iscsi_ip_address=$NOVA_CONTROLLER_HOSTNAME
+rabbit_host=$NOVA_CONTROLLER_HOSTNAME
+rabbit_virtual_host=/nova
+rabbit_userid=nova
+rabbit_password=$RABBIT_PASS
+CINDER
+
+#cinder db sync
+sudo cinder-manage db sync
+
+#cinder service init
+sudo \rm -rf /var/log/cinder/*
+for i in volume api scheduler
+do
+  sudo start cinder-$i ; sudo restart cinder-$i
+done
+
+
 ### NEUTRON ###
 #neutron install
-sudo apt-get install neutron-server neutron-dhcp-agent neutron-l3-agent neutron-metadata-agent -y
+sudo apt-get install neutron-server neutron-dhcp-agent neutron-plugin-ml2 neutron-l3-agent neutron-metadata-agent -y
 sudo apt-get install neutron-plugin-openvswitch-agent neutron-lbaas-agent neutron-plugin-vpn-agent -y
 
 #neutron settings backup
@@ -338,9 +474,12 @@ api_paste_config = /etc/neutron/api-paste.ini
 control_exchange = neutron
 state_path = /var/lib/neutron
 lock_path = \$state_path/lock
-service_plugins = neutron.services.loadbalancer.plugin.LoadBalancerPlugin,neutron.services.vpn.plugin.VPNDriverPlugin,neutron.services.firewall.fwaas_plugin.FirewallPlugin
-core_plugin = neutron.plugins.openvswitch.ovs_neutron_plugin.OVSNeutronPluginV2
+service_plugins = neutron.services.l3_router.l3_router_plugin.L3RouterPlugin,neutron.services.loadbalancer.plugin.LoadBalancerPlugin,neutron.services.vpn.plugin.VPNDriverPlugin,neutron.services.firewall.fwaas_plugin.FirewallPlugin
+core_plugin = neutron.plugins.ml2.plugin.Ml2Plugin
 notification_driver = neutron.openstack.common.notifier.rpc_notifier
+auth_strategy = keystone
+dhcp_agent_notification = True
+control_exchange = neutron
 rpc_backend = neutron.openstack.common.rpc.impl_kombu
 rabbit_host=$NOVA_CONTROLLER_IP
 rabbit_userid=nova
@@ -385,154 +524,6 @@ sudo \rm -rf /var/log/neutron/*
 for i in dhcp-agent l3-agent metadata-agent server plugin-openvswitch-agent neutron-lbaas-agent plugin-vpn-agent
 do
   sudo stop neutron-$i ; sudo start neutron-$i
-done
-
-### NOVA ###
-#nova install
-sudo apt-get install -y nova-api nova-cert novnc nova-consoleauth nova-scheduler nova-novncproxy nova-doc nova-conductor
-sudo apt-get install -y openstack-dashboard memcached
-sudo apt-get install -y nova-compute
-
-#horizon neutron_settings
-sudo cp -a /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py_bak
-sudo sed -i "s/'enable_lb': False,/'enable_lb': True,/" /etc/openstack-dashboard/local_settings.py
-sudo sed -i "s/'enable_firewall': False,/'enable_firewall': True,/" /etc/openstack-dashboard/local_settings.py
-sudo sed -i "s/'enable_vpn': False,/'enable_vpn': True,/" /etc/openstack-dashboard/local_settings.py
-sudo service apache2 restart
-
-#memcached setting
-sudo sed -i "s/127.0.0.1/$NOVA_CONTROLLER_IP/" /etc/memcached.conf
-sudo service memcached restart
-
-#nova.conf setting
-sudo cp -a /etc/nova /etc/nova_bak
-
-cat << NOVA_COMPUTE_SETUP | sudo tee /etc/nova/nova-compute.conf
-[DEFAULT]
-libvirt_type=kvm
-libvirt_ovs_bridge=br-int
-libvirt_vif_type=ethernet
-#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
-libvirt_use_virtio_for_bridges=True
-NOVA_COMPUTE_SETUP
-
-#nova_api setting
-sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_TENANT_NAME%#service#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_USER%#nova#" /etc/nova/api-paste.ini
-sudo sed -i "s#%SERVICE_PASSWORD%#$SERVICE_PASSWORD#" /etc/nova/api-paste.ini
-
-cat << NOVA_SETUP | sudo tee /etc/nova/nova.conf > /dev/null
-[DEFAULT]
-my_ip=$NOVA_COMPUTE_IP
-logdir=/var/log/nova
-state_path=/var/lib/nova
-lock_path=/run/lock/nova
-verbose=True
-api_paste_config=/etc/nova/api-paste.ini
-scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
-rabbit_host=$NOVA_CONTROLLER_HOSTNAME
-rabbit_virtual_host=/nova
-rabbit_userid=nova
-rabbit_password=$RABBIT_PASS
-nova_url=http://$NOVA_CONTROLLER_IP:8774/v1.1/
-sql_connection=mysql://nova:$MYSQL_PASS_NOVA@$NOVA_CONTROLLER_HOSTNAME/nova
-root_helper=sudo nova-rootwrap /etc/nova/rootwrap.conf
-
-#auth
-use_deprecated_auth=false
-auth_strategy=keystone
-
-#glance
-glance_api_servers=$NOVA_CONTROLLER_HOSTNAME:9292
-image_service=nova.image.glance.GlanceImageService
-
-#vnc
-novnc_enabled=true
-novncproxy_base_url=http://$NOVA_CONTROLLER_IP:6080/vnc_auto.html
-novncproxy_port=6080
-vncserver_proxyclient_address=\$my_ip
-vncserver_listen=0.0.0.0
-vnc_keymap=ja
-
-#neutron
-network_api_class=nova.network.neutronv2.api.API
-neutron_url=http://$NOVA_CONTROLLER_IP:9696
-neutron_auth_strategy=keystone
-neutron_admin_tenant_name=service
-neutron_admin_username=neutron
-neutron_admin_password=$SERVICE_PASSWORD
-neutron_admin_auth_url=http://$NOVA_CONTROLLER_IP:35357/v2.0
-#libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtHybridOVSBridgeDriver
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
-linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
-firewall_driver=nova.virt.firewall.NoopFirewallDriver
-security_group_api=neutron
-
-#metadata
-service_neutron_metadata_proxy=True
-neutron_metadata_proxy_shared_secret=stack
-
-#compute
-compute_driver=libvirt.LibvirtDriver
-
-#cinder
-volume_api_class=nova.volume.cinder.API
-osapi_volume_listen_port=5900
-NOVA_SETUP
-
-#nova db sync
-sudo nova-manage db sync
-
-#nova service init
-sudo \rm -rf /var/log/nova/*
-for proc in api cert console consoleauth scheduler compute novncproxy conductor
-do
-  sudo service nova-$proc stop
-  sudo service nova-$proc start
-done
-
-### CINDER ###
-#cinder install
-sudo apt-get install cinder-api cinder-scheduler cinder-volume tgt -y
-
-#cinder setting
-sudo cp -a /etc/cinder /etc/cinder_bak
-
-sudo sed -i "s/%SERVICE_TENANT_NAME%/service/" /etc/cinder/api-paste.ini
-sudo sed -i "s/%SERVICE_USER%/cinder/" /etc/cinder/api-paste.ini
-sudo sed -i "s/%SERVICE_PASSWORD%/$SERVICE_PASSWORD/" /etc/cinder/api-paste.ini
-sudo sed -i "s#127.0.0.1#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
-sudo sed -i "s#localhost#$NOVA_CONTROLLER_HOSTNAME#" /etc/cinder/api-paste.ini
-
-cat << CINDER | sudo tee /etc/cinder/cinder.conf > /dev/null
-[DEFAULT]
-rootwrap_config=/etc/cinder/rootwrap.conf
-sql_connection=mysql://cinder:$MYSQL_PASS_CINDER@$NOVA_CONTROLLER_HOSTNAME/cinder?charset=utf8
-api_paste_config=/etc/cinder/api-paste.ini
-iscsi_helper=tgtadm
-volume_name_template=volume-%s
-volume_group=cinder-volumes
-state_path=/var/lib/cinder
-volumes_dir=/var/lib/cinder/volumes
-verbose=True
-auth_strategy=keystone
-iscsi_ip_address=$NOVA_CONTROLLER_HOSTNAME
-rabbit_host=$NOVA_CONTROLLER_HOSTNAME
-rabbit_virtual_host=/nova
-rabbit_userid=nova
-rabbit_password=$RABBIT_PASS
-CINDER
-
-#cinder db sync
-sudo cinder-manage db sync
-
-#cinder service init
-sudo \rm -rf /var/log/cinder/*
-for i in volume api scheduler
-do
-  sudo start cinder-$i ; sudo restart cinder-$i
 done
 
 ### KVM ###
