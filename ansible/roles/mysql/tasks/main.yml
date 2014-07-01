@@ -1,0 +1,54 @@
+---
+
+- name: install mysql
+  apt: >
+    name={{ item.filename }}
+    state=present
+  with_items: mysql_server_pkgs
+
+- name: start mysql
+  service: >
+    name=mysql
+    state=started enabled=yes
+
+- name: check .my.cnf exists or not
+  stat: "path={{ mysql_root_home }}/.my.cnf"
+  register: mycnf_file
+
+- name: set root password
+  mysql_user: >
+    name=root
+    host={{ item }}
+    password={{ mysql_root_password }}
+  with_items:
+    - 127.0.0.1
+    - ::1
+    - localhost
+  when: mycnf_file.stat.exists == false
+
+- name: set root password file
+  template: >
+    src=my.cnf.j2
+    dest={{ mysql_root_home }}/.my.cnf
+    owner=root group=root mode=600
+
+- name: anonymous user delete
+  mysql_user: >
+    name=""
+    state=absent
+
+- name: create databases
+  mysql_db: >
+    name={{ item.dbname }}
+    state=present 
+    encoding=utf8
+  with_items: mysql_databases
+
+
+#- name: create database users
+#  mysql_user: name={{ item.dbuser }}  password={{ item.password|default("hogehoge") }}  
+#                priv={{ item.priv|default("*.*:ALL") }} state=present
+#  with_items: mysql_databases
+#  when: mysql_users|lower() != 'none'
+#
+
