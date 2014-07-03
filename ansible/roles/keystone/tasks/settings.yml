@@ -1,0 +1,10 @@
+---
+
+- name: create tenants
+  keystone_user: >
+    endpoint={{ endpoint_int_url }}
+    token={{ admin_token }}
+    tenant={{ item.name }}
+    tenant_description={{ item.description }}
+  with_items: tenants
+

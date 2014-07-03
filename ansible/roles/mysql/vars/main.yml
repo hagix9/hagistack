@@ -1,23 +1,4 @@
 mysql_server_pkgs:
-  - filename: mysql-server
-  - filename: python-mysqldb
+  - mysql-server
+  - python-mysqldb
 
-mysql_root_password: root
-mysql_root_home: /root
-
-mysql_databases:
-  - dbname: keystone
-    dbuser: keystone
-    password: password
-  - dbname: glance
-    dbuser: glance
-    password: password
-  - dbname: cinder
-    dbuser: cinder
-    password: password
-  - dbname: nova
-    dbuser: nova
-    password: password
-  - dbname: neutron
-    dbuser: neutron
-    password: password

@@ -1,0 +1,26 @@
+---
+
+# NTP Options
+ntp_servers:
+  - ntp1.jst.mfeed.ad.jp
+  - ntp2.jst.mfeed.ad.jp
+  - ntp3.jst.mfeed.ad.jp
+
+# Controller Host IP's
+controller_ext_ip: 192.168.122.50
+controller_int_ip: 192.168.122.50
+
+# MySQL Options
+mysql_root_password: root
+
+# Keystone Options
+mysql_keystone_password: password
+admin_token: ADMIN
+cert_subject_cn: JP
+cert_subject_st: Tokyo
+cert_subject_ln: Chiyoda
+cert_subject_on: openstack
+cert_subject_cn: openstack.server
+
+
+

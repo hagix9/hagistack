@@ -1,0 +1,1 @@
+endpoint_int_url: http://{{ controller_int_ip }}:35357/v2.0/

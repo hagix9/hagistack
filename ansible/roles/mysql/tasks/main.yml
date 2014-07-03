@@ -1,10 +1,20 @@
 ---
 
-- name: install mysql
+- name: install mysql pkg
   apt: >
-    name={{ item.filename }}
+    name={{ item }}
     state=present
   with_items: mysql_server_pkgs
+
+- name: set my.cnf
+  template: >
+    src=my.cnf.j2
+    dest=/etc/mysql/my.cnf
+    owner=root
+    group=root
+    mode=0664
+  notify:
+    - restart mysql
 
 - name: start mysql
   service: >
@@ -20,15 +30,12 @@
     name=root
     host={{ item }}
     password={{ mysql_root_password }}
-  with_items:
-    - 127.0.0.1
-    - ::1
-    - localhost
-  when: mycnf_file.stat.exists == false
+  with_items: mysql_root_hosts
+  when: not mycnf_file.stat.exists
 
 - name: set root password file
   template: >
-    src=my.cnf.j2
+    src=.my.cnf.j2
     dest={{ mysql_root_home }}/.my.cnf
     owner=root group=root mode=600
 
@@ -36,19 +43,26 @@
   mysql_user: >
     name=""
     state=absent
-
-- name: create databases
+ 
+- name: remove mysql test database
   mysql_db: >
-    name={{ item.dbname }}
-    state=present 
-    encoding=utf8
-  with_items: mysql_databases
+    name=test
+    state=absent
 
-
-#- name: create database users
-#  mysql_user: name={{ item.dbuser }}  password={{ item.password|default("hogehoge") }}  
-#                priv={{ item.priv|default("*.*:ALL") }} state=present
-#  with_items: mysql_databases
-#  when: mysql_users|lower() != 'none'
-#
-
+#  - name: create databases
+#    mysql_db: >
+#      name={{ item.dbname }}
+#      state=present 
+#      encoding=utf8
+#    with_items: mysql_databases
+  
+  #- name: create database users
+  #  mysql_user: >
+  #   name={{ item.dbuser }}
+  #   password={{ item.password }}  
+  #   priv={{ item.priv|default("*.*:ALL") }}
+  #   state=present
+  #  with_items: mysql_databases
+  #  when: mysql_users|lower() != 'none'
+  #
+  

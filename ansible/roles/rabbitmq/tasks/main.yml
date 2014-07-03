@@ -1,0 +1,13 @@
+---
+
+- name: install rabbitmq
+  apt: pkg=rabbitmq-server state=installed
+
+- name: remove guest user
+  rabbitmq_user:
+    user=guest
+    vhost=/
+    state=absent
+
+#- name: start  service
+#  service: name=ntp state=started enabled=yes

@@ -1,0 +1,13 @@
+---
+
+- name: Install OpenStack
+  hosts: all
+  sudo: true
+  roles:
+    #- common
+    #- { role: ntp }
+    #- { role: rabbitmq }
+    #- { role: mysql }
+    #- { role: memcached }
+    - { role: keystone }
+

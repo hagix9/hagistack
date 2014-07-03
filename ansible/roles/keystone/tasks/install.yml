@@ -1,0 +1,37 @@
+---
+
+- name: create databases
+  mysql_db: >
+    name=keystone
+    state=present
+    encoding=utf8
+
+- name: ensure keystone database user is present
+  mysql_user: >
+    name=keystone
+    host={{ item }}
+    password={{ mysql_keystone_password }}
+    priv=keystone.*:ALL
+  with_items: 
+    - '%'
+    - 'localhost'
+
+- name: install keystone
+  apt: >
+    pkg=keystone
+    state=installed
+
+- name: setting keystone config
+  template: >
+    src=keystone.conf.j2
+    dest=/etc/keystone/keystone.conf
+    owner=keystone
+    group=keystone
+    mode=0644
+  notify: restart keystone
+
+- name: keystone setup
+  command: /usr/bin/keystone-manage pki_setup --keystone-user keystone --keystone-group keystone
+  command: /usr/bin/keystone-manage db_sync
+  notify: restart keystone
+

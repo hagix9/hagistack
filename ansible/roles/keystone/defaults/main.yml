@@ -1,0 +1,6 @@
+tenants:
+  - name: admin
+    description: "Admin_Tenant"
+  - name: service
+    description: "Service_Tenant"
+
