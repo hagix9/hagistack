@@ -2,9 +2,36 @@
 
 - name: create tenants
   keystone_user: >
-    endpoint={{ endpoint_int_url }}
     token={{ admin_token }}
     tenant={{ item.name }}
-    tenant_description={{ item.description }}
+    tenant_description="{{ item.description }}"
   with_items: tenants
+
+- name: create users
+  keystone_user: >
+    token={{ admin_token }}
+    tenant={{ item.tenant }}
+    user={{ item.name }}
+    password={{ item.password }}
+  with_items: users
+
+- name: is added to the role you create a user
+  keystone_user: >
+    token={{ admin_token }}
+    role={{ item.role }}
+    user={{ item.name }}
+    tenant={{ item.tenant }}
+  with_items: users
+
+- name: ensure each service exists
+  keystone_service: >
+    token={{ admin_token }}
+    name={{ item.name }}
+    type={{ item.type }}
+    description="{{ item.description}}"
+    public_url={{ item.public_url }}
+    internal_url={{ item.internal_url }}
+    admin_url={{ item.admin_url }}
+    region={{ region }}
+  with_items: services
 

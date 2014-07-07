@@ -12,15 +12,28 @@ controller_int_ip: 192.168.122.50
 
 # MySQL Options
 mysql_root_password: root
+mysql_keystone_password: password
 
 # Keystone Options
-mysql_keystone_password: password
+endpoint_int_url: http://{{ controller_int_ip }}:35357/v2.0/
 admin_token: ADMIN
 cert_subject_cn: JP
 cert_subject_st: Tokyo
 cert_subject_ln: Chiyoda
 cert_subject_on: openstack
 cert_subject_cn: openstack.server
+admin_tenant: admin
+admin_user: admin
+admin_password: secrete
+generic_tenant01: stack
+generic_user01: stack
+generic_password01: secrete
+generic_role01: admin
+#generic_role01: Member
 
+# Glance Options
+glance_keystone_password: secrete
 
+# Nova Options
+nova_keystone_password: secrete
 

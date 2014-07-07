@@ -1,7 +1,0 @@
----
-
-- hosts: openstack_ctl
-  sudo: true
-  roles:
-    - mysql
-
