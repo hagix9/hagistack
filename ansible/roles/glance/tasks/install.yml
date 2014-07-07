@@ -1,0 +1,30 @@
+---
+
+- name: install glance
+  apt: >
+    pkg=glance
+    state=installed
+
+- name: setting glance registry config
+  template: >
+    src=glance-registry.conf.j2
+    dest=/etc/glance/glance-registry.conf
+    owner=glance
+    group=glance
+    mode=0644
+
+- name: setting glance api config
+  template: >
+    src=glance-api.conf.j2
+    dest=/etc/glance/glance-api.conf
+    owner=glance
+    group=glance
+    mode=0644
+
+- name: glance db sync
+  command: /usr/bin/glance-manage db_sync
+  notify: 
+    - restart glance-api
+    - restart glance-registry
+
+

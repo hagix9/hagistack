@@ -9,5 +9,3 @@
     vhost=/
     state=absent
 
-#- name: start  service
-#  service: name=ntp state=started enabled=yes

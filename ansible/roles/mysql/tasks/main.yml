@@ -49,20 +49,3 @@
     name=test
     state=absent
 
-#  - name: create databases
-#    mysql_db: >
-#      name={{ item.dbname }}
-#      state=present 
-#      encoding=utf8
-#    with_items: mysql_databases
-  
-  #- name: create database users
-  #  mysql_user: >
-  #   name={{ item.dbuser }}
-  #   password={{ item.password }}  
-  #   priv={{ item.priv|default("*.*:ALL") }}
-  #   state=present
-  #  with_items: mysql_databases
-  #  when: mysql_users|lower() != 'none'
-  #
-  

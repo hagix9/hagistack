@@ -16,14 +16,6 @@ users:
     tenant: "{{ generic_tenant01 }}"
     role: "{{ generic_role01 }}"
 
-#service_users:
-#  - name: glance
-#    password: {{ glance_keystone_password }}
-#  - name: nova
-#    password: {{ nova_keystone_password }}
-
-region: RegionOne
-
 services:
   - name: keystone
     type: identity
@@ -31,5 +23,4 @@ services:
     public_url: http://{{ controller_ext_ip }}:5000/v2.0
     internal_url: http://{{ controller_int_ip }}:5000/v2.0
     admin_url: http://{{ controller_int_ip }}:35357/v2.0
-
 

@@ -9,5 +9,6 @@
     #- { role: rabbitmq }
     #- { role: mysql }
     #- { role: memcached }
-    - { role: keystone }
+    #- { role: keystone }
+    - { role: glance }
 

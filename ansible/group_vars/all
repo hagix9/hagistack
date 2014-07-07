@@ -7,14 +7,14 @@ ntp_servers:
   - ntp3.jst.mfeed.ad.jp
 
 # Controller Host IP's
-controller_ext_ip: 192.168.122.50
-controller_int_ip: 192.168.122.50
+controller_ext_ip: 192.168.10.50
+controller_int_ip: 192.168.10.50
 
 # MySQL Options
 mysql_root_password: root
-mysql_keystone_password: password
 
 # Keystone Options
+mysql_keystone_password: password
 endpoint_int_url: http://{{ controller_int_ip }}:35357/v2.0/
 admin_token: ADMIN
 cert_subject_cn: JP
@@ -32,8 +32,14 @@ generic_role01: admin
 #generic_role01: Member
 
 # Glance Options
+mysql_glance_password: password
 glance_keystone_password: secrete
+glance_mq_user: glance
+glance_mq_password: secrete
 
 # Nova Options
 nova_keystone_password: secrete
+
+#region
+region: RegionOne
 
