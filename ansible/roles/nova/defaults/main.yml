@@ -1,0 +1,11 @@
+service_users:
+  - name: nova
+    password: "{{ nova_keystone_password }}"
+
+services:
+  - name: nova
+    type: image
+    description: "Nova Compute Service"
+    public_url: http://{{ controller_ext_ip }}:8774/v2/%(tenant_id)s
+    internal_url: http://{{ controller_int_ip }}:8774/v2/%(tenant_id)s
+    admin_url: http://{{ controller_int_ip }}:8774/v2/%(tenant_id)s

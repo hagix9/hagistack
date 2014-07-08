@@ -1,0 +1,44 @@
+---
+
+- name: install kvm
+  apt: >
+    pkg={{ item }}
+    state=installed
+  with_items:
+   - qemu-kvm
+   - libvirt-bin
+   - pm-utils
+   - vlan
+   - virtinst
+   - bridge-utils
+
+- name: install nova-compute
+  apt: >
+    pkg={{ item }}
+    state=installed
+  with_items:
+   - nova-compute-kvm
+   - nova-api-metadata
+   - python-novaclient
+
+- name: setting nova config for nova-network
+  template: >
+    src=nova.conf_nova-network
+    dest=/etc/nova/nova.conf
+    owner=nova
+    group=nova
+    mode=0640
+  when: network_type == "nova_network"
+
+- name: setting nova config for neutron
+  template: >
+    src=nova.conf_neutron
+    dest=/etc/nova/nova.conf
+    owner=nova
+    group=nova
+    mode=0640
+  when: network_type == "neutron"
+
+- name: restart nova-compute
+  service: name=nova-compute state=restarted
+

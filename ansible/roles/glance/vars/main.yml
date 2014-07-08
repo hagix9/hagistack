@@ -1,0 +1,60 @@
+---
+
+glance_direct_images:
+  - name: cirros-0.3.2-x86_64
+    base_url: http://cdn.download.cirros-cloud.net/0.3.2
+    file_name: cirros-0.3.2-x86_64-disk.img
+    format: qcow2
+# - name: f16-jeos
+#   base_url: http://berrange.fedorapeople.org/images/2012-02-29
+#   file_name: f16-x86_64-openstack-sda.qcow2
+#   format: qcow2
+# - name: f17-jeos
+#   base_url: http://berrange.fedorapeople.org/images/2012-11-15
+#   file_name: f17-x86_64-openstack-sda.qcow2
+#   format: qcow2
+# - name: f18-jeos
+#   base_url: http://derekh.fedorapeople.org/images/f18/20130210
+#   file_name: f18-x86_64-openstack-sda.qcow2
+#   format: qcow2
+# - name: F19-x86_64
+#   base_url: http://ftp.jaist.ac.jp/pub/Linux/Fedora/releases/19/Images/x86_64
+#   file_name: Fedora-x86_64-19-20130627-sda.qcow2
+#   format: qcow2
+# - name: F20-x86_64
+#   base_url: http://download.fedoraproject.org/pub/fedora/linux/updates/20/Images/x86_64
+#   file_name: Fedora-x86_64-20-20140407-sda.qcow2
+#   format: qcow2
+#  - name: ubuntu-11.10-x86_64
+#    base_url: http://cloud-images.ubuntu.com/releases/11.10/release
+#    file_name: ubuntu-11.10-server-cloudimg-amd64-disk1.img
+#    format: qcow2
+#  - name: ubuntu-12.04-x86_64
+#    base_url: http://cloud-images.ubuntu.com/releases/12.04/release
+#    file_name: ubuntu-12.04-server-cloudimg-amd64-disk1.img
+#    format: qcow2
+#  - name: ubuntu-12.10-x86_64
+#    base_url: http://cloud-images.ubuntu.com/releases/12.10/release
+#    file_name: ubuntu-12.10-server-cloudimg-amd64-disk1.img
+#    format: qcow2
+#  - name: ubuntu-13.04-x86_64
+#    base_url: http://cloud-images.ubuntu.com/releases/13.04/release
+#    file_name: ubuntu-13.04-server-cloudimg-amd64-disk1.img
+#    format: qcow2
+#  - name: ubuntu-13.10-x86_64
+#    base_url: http://cloud-images.ubuntu.com/releases/13.10/release
+#    file_name: ubuntu-13.10-server-cloudimg-amd64-disk1.img
+#    format: qcow2
+  - name: ubuntu-14.04-x86_64
+    base_url: http://cloud-images.ubuntu.com/releases/14.04/release
+    file_name: ubuntu-14.04-server-cloudimg-amd64-disk1.img
+    format: qcow2
+
+#For Ubuntu
+##ssh -i /home/stack/mykey ubuntu@10.0.0.2
+#
+##For Fedora
+##ssh -i /home/stack/mykey root@10.0.0.2
+#
+##For Cirros
+##ssh -i /home/stack/mykey cirros@10.0.0.2

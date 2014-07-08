@@ -19,7 +19,7 @@ users:
 services:
   - name: keystone
     type: identity
-    description: Keystone Identity Service
+    description: "Keystone Identity Service"
     public_url: http://{{ controller_ext_ip }}:5000/v2.0
     internal_url: http://{{ controller_int_ip }}:5000/v2.0
     admin_url: http://{{ controller_int_ip }}:35357/v2.0

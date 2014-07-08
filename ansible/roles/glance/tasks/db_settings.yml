@@ -6,7 +6,7 @@
     state=present
     encoding=utf8
 
-- name: ensure keystone database user is present
+- name: database user create
   mysql_user: >
     name=glance
     host={{ item }}

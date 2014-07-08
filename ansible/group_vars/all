@@ -1,5 +1,11 @@
 ---
 
+# Proxy
+http_proxy: http://192.168.1.1:8888/
+proxy_env:
+  http_proxy: "{{ http_proxy }}"
+  https_proxy: "{{ http_proxy }}"
+
 # NTP Options
 ntp_servers:
   - ntp1.jst.mfeed.ad.jp
@@ -7,8 +13,8 @@ ntp_servers:
   - ntp3.jst.mfeed.ad.jp
 
 # Controller Host IP's
-controller_ext_ip: 192.168.10.50
-controller_int_ip: 192.168.10.50
+controller_ext_ip: 192.168.122.50
+controller_int_ip: 192.168.122.50
 
 # MySQL Options
 mysql_root_password: root
@@ -36,10 +42,25 @@ mysql_glance_password: password
 glance_keystone_password: secrete
 glance_mq_user: glance
 glance_mq_password: secrete
+glance_image_tmp_dir: /opt/openstack/images
+
+#Glance Image Options
+#cirros_password: test
 
 # Nova Options
+mysql_nova_password: password
 nova_keystone_password: secrete
+nova_mq_user: nova
+nova_mq_password: secrete
 
-#region
+# Network(nova_network or neutron)
+#network: neutron
+network_type: nova_network
+
+# Region
 region: RegionOne
+
+# Log Options
+log_debug: False
+log_verbose: False
 

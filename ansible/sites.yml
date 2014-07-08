@@ -10,5 +10,6 @@
     #- { role: mysql }
     #- { role: memcached }
     #- { role: keystone }
-    - { role: glance }
+    #- { role: glance }
+    - { role: nova }
 
