@@ -1,0 +1,8 @@
+---
+
+- name: restart horizon
+  service: name={{ item }} state=restarted
+  with_items:
+    - "nova-novncproxy"
+    - "apache2"
+

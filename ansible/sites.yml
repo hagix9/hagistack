@@ -1,15 +1,77 @@
 ---
 
-- name: Install OpenStack
+- name: Cmmon Settings
   hosts: all
   sudo: true
   roles:
-    #- common
-    #- { role: ntp }
-    #- { role: rabbitmq }
-    #- { role: mysql }
-    #- { role: memcached }
-    #- { role: keystone }
-    #- { role: glance }
-    - { role: nova }
+    - { role: common }
+
+- name: Install NTP
+  hosts: all
+  sudo: true
+  roles:
+    - { role: ntp }
+
+- name: Install RabbitMQ
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: rabbitmq }
+
+- name: Install MySQL
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: mysql }
+
+- name: Install Memcached
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: memcached }
+
+- name: Install Keystone
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: keystone }
+
+- name: Install Glance
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: glance }
+
+- name: Image Registry
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: glance_image }
+
+- name: Install Nova Controller
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: nova_control }
+
+- name: Install Nova Compute
+  hosts: all
+  sudo: true
+  roles:
+    - { role: nova_compute }
+
+- name: Install Horizon
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: horizon }
+
+#- name: Network Settings
+#  hosts: all
+#  sudo: true
+#  roles:
+#    - { role: nova_network }
+#    - { role: neutron }
+
+
 

@@ -10,11 +10,19 @@
 
 - name: get direct images
   get_url: >
-    url={{ item.base_url }}/{{ item.file_name }}
-    dest={{ glance_image_tmp_dir }}
+    url={{ item.url }}
+    dest={{ glance_image_tmp_dir }}/{{ item.filename }}
+    mode=0644
+  with_items: glance_direct_images
+
+- name: get direct images
+  get_url: >
+    url={{ item.url }}
+    dest={{ glance_image_tmp_dir }}/{{ item.filename }}
     mode=0644
   with_items: glance_direct_images
   environment: "{{ proxy_env }}"
+  when: "http_proxy is defined"
 
 #- name: install libguestfs-tools
 #  apt: >
@@ -34,7 +42,7 @@
 - name: direct image registeration
   glance: >
     name={{ item.name }}
-    file={{ glance_image_tmp_dir }}/{{ item.file_name }}
+    file={{ glance_image_tmp_dir }}/{{ item.filename }}
     format={{ item.format }}
     is_public=true
     auth_url=http://{{ controller_int_ip }}:5000/v2.0

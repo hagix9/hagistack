@@ -23,7 +23,7 @@
     tenant={{ item.tenant }}
   with_items: users
 
-- name: ensure each service exists
+- name: endpoint create
   keystone_service: >
     token={{ admin_token }}
     name={{ item.name }}

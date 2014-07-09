@@ -1,0 +1,4 @@
+---
+
+- include: nova_compute.yml
+

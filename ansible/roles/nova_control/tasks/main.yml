@@ -4,6 +4,4 @@
 - include: db_settings.yml 
 - include: keystone_settings.yml
 - include: nova_controller.yml
-- include: nova_compute.yml
-- include: nova_network.yml
 

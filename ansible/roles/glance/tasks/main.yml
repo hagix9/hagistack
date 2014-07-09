@@ -4,5 +4,4 @@
 - include: db_settings.yml 
 - include: keystone_settings.yml
 - include: install.yml
-- include: image_registration_yml
 

@@ -1,7 +1,11 @@
 ---
 
+# AllInOne
+#allinone: no
+allinone: yes
+
 # Proxy
-http_proxy: http://192.168.1.1:8888/
+#http_proxy: http://192.168.1.1:8888/
 proxy_env:
   http_proxy: "{{ http_proxy }}"
   https_proxy: "{{ http_proxy }}"
@@ -13,8 +17,8 @@ ntp_servers:
   - ntp3.jst.mfeed.ad.jp
 
 # Controller Host IP's
-controller_ext_ip: 192.168.122.50
-controller_int_ip: 192.168.122.50
+controller_ext_ip: 192.168.10.50
+controller_int_ip: 192.168.10.50
 
 # MySQL Options
 mysql_root_password: root
@@ -53,14 +57,16 @@ nova_keystone_password: secrete
 nova_mq_user: nova
 nova_mq_password: secrete
 
-# Network(nova_network or neutron)
+# Network(nova-network or neutron)
 #network: neutron
-network_type: nova_network
+network_type: nova-network
 
 # Region
 region: RegionOne
 
 # Log Options
-log_debug: False
-log_verbose: False
+log_debug: True
+log_verbose: True
+#log_debug: False
+#log_verbose: False
 

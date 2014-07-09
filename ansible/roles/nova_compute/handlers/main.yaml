@@ -1,0 +1,8 @@
+---
+
+- name: restart nova-compute
+  service: name=nova-compute state=restarted
+
+- name: restart nova-network
+  service: name=nova-network state=restarted
+

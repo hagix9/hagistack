@@ -18,8 +18,15 @@
     state=installed
   with_items:
    - nova-compute-kvm
-   - nova-api-metadata
    - python-novaclient
+
+- name: install nova-compute
+  apt: >
+    pkg={{ item }}
+    state=installed
+  with_items:
+   - nova-api-metadata
+  when: network_type == "nova-network" and allinone == "yes"
 
 - name: setting nova config for nova-network
   template: >
@@ -28,7 +35,10 @@
     owner=nova
     group=nova
     mode=0640
-  when: network_type == "nova_network"
+  notify:
+    - restart nova-compute
+    - restart nova-network
+  when: network_type == "nova-network"
 
 - name: setting nova config for neutron
   template: >
@@ -37,8 +47,8 @@
     owner=nova
     group=nova
     mode=0640
+  notify:
+    - restart nova-compute
   when: network_type == "neutron"
 
-- name: restart nova-compute
-  service: name=nova-compute state=restarted
 

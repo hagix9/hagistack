@@ -58,26 +58,27 @@ vncserver_listen=0.0.0.0
 vnc_keymap=ja
 
 # NETWORK
-network_driver=nova.network.linux_net
-libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
-linuxnet_interface_driver=nova.network.linux_net.LinuxBridgeInterfaceDriver
-firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
-network_api_class=nova.network.api.API
-security_group_api=nova
-network_manager=nova.network.manager.FlatDHCPManager
-network_size=254
-allow_same_net_traffic=False
-multi_host=True
-send_arp_for_ha=True
-share_dhcp_address=True
-force_dhcp_release=True
-public_interface=eth0
-flat_network_bridge=br100
-flat_interface=lo
+network_api_class=nova.network.neutronv2.api.API
+security_group_api=neutron
+linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver
+firewall_driver=nova.virt.firewall.NoopFirewallDriver
+network_api_class=nova.network.neutronv2.api.API
+security_group_api=neutron
+neutron_url=http://{{ controller_int_ip }}:9696
+neutron_auth_strategy=keystone
+neutron_admin_tenant_name=service
+neutron_admin_username=neutron
+neutron_admin_password=secrete
+neutron_admin_auth_url=http://{{ controller_int_ip }}:35357/v2.0
+metadata_listen=0.0.0.0
+metadata_host= {{ controller_int_ip }}
+service_neutron_metadata_proxy=True
+neutron_metadata_proxy_shared_secret=metadata_secret
 
 # AUTHENTICATION
 auth_strategy=keystone
 [keystone_authtoken]
+auth_uri = http://{{ controller_int_ip }}:5000
 auth_host={{ controller_int_ip }}
 auth_port=35357
 auth_protocol=http
