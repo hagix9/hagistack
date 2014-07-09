@@ -17,5 +17,4 @@
 - name: keystone setup
   command: /usr/bin/keystone-manage pki_setup --keystone-user keystone --keystone-group keystone
   command: /usr/bin/keystone-manage db_sync
-  notify: restart keystone
 

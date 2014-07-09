@@ -12,6 +12,9 @@
     owner=glance
     group=glance
     mode=0644
+  notify: 
+    - restart glance-api
+    - restart glance-registry
 
 - name: setting glance api config
   template: >
@@ -20,11 +23,10 @@
     owner=glance
     group=glance
     mode=0644
-
-- name: glance db sync
-  command: /usr/bin/glance-manage db_sync
   notify: 
     - restart glance-api
     - restart glance-registry
 
+- name: glance db sync
+  command: /usr/bin/glance-manage db_sync
 
