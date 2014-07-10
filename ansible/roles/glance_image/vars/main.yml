@@ -1,10 +1,10 @@
 ---
 
 glance_direct_images:
-  - name: cirros-0.3.2-x86_64
-    url: http://cdn.download.cirros-cloud.net/0.3.2/cirros-0.3.2-x86_64-disk.img
-    filename: cirros-0.3.2-x86_64-disk.img
-    format: qcow2
+#  - name: cirros-0.3.2-x86_64
+#    url: http://cdn.download.cirros-cloud.net/0.3.2/cirros-0.3.2-x86_64-disk.img
+#    filename: cirros-0.3.2-x86_64-disk.img
+#    format: qcow2
 # - name: f16-jeos
 #   url: http://berrange.fedorapeople.org/images/2012-02-29
 #   filename: f16-x86_64-openstack-sda.qcow2
@@ -48,14 +48,20 @@ glance_direct_images:
   - name: ubuntu-14.04-x86_64
     url: http://cloud-images.ubuntu.com/releases/14.04/release/ubuntu-14.04-server-cloudimg-amd64-disk1.img
     filename: ubuntu-14.04-server-cloudimg-amd64-disk1.img
-    sha256sum: "58eb3a9bee962b3e53cefb7654c0437e805ac062280a41469546e94cb7196db7"
+    format: qcow2
+  - name: centos6.5
+    url: http://repos.fedorapeople.org/repos/openstack/guest-images/centos-6.5-20140117.0.x86_64.qcow2
+    filename: centos-6.5-20140117.0.x86_64.qcow2
     format: qcow2
 
 #For Ubuntu
-##ssh -i /home/stack/mykey ubuntu@10.0.0.2
-#
-##For Fedora
-##ssh -i /home/stack/mykey root@10.0.0.2
-#
-##For Cirros
-##ssh -i /home/stack/mykey cirros@10.0.0.2
+#ssh -i /home/stack/mykey ubuntu@10.0.0.2
+
+#For Fedora
+#ssh -i /home/stack/mykey root@10.0.0.2
+
+#For Cirros
+#ssh -i /home/stack/mykey cirros@10.0.0.2
+
+#For CentOS
+#ssh -i /home/stack/mykey root@10.0.0.2

@@ -1,0 +1,12 @@
+service_users:
+  - name: cinder
+    password: "{{ cinder_keystone_password }}"
+
+services:
+  - name: cinder
+    type: volume
+    description: "Cinder Volume Service"
+    public_url: http://{{ controller_ext_ip }}:8776/v1/\$(tenant_id)s
+    internal_url: http://{{controller_int_ip }}:8776/v1/\$(tenant_id)s
+    admin_url: http://{{controller_int_ip }}:8776/v1/\$(tenant_id)s
+

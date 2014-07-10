@@ -66,12 +66,23 @@
   roles:
     - { role: horizon }
 
+- name: Install Cinder Controller
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: cinder_control, when: use_cinder == "yes" }
+
+- name: Install Cinder volume
+  #hosts: openstack_volume
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: cinder_volume, when: use_cinder == "yes" }
+
 #- name: Network Settings
 #  hosts: all
 #  sudo: true
 #  roles:
 #    - { role: nova_network }
 #    - { role: neutron }
-
-
 

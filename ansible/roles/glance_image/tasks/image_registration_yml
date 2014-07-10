@@ -1,6 +1,6 @@
 ---
 
-- name: ensure temporary image directory exists
+- name: make temporary image directory
   file: >
     path={{ glance_image_tmp_dir }}
     owner=root
@@ -14,15 +14,16 @@
     dest={{ glance_image_tmp_dir }}/{{ item.filename }}
     mode=0644
   with_items: glance_direct_images
+  when: http_proxy is not defined
 
-- name: get direct images
+- name: get direct images use proxy
   get_url: >
     url={{ item.url }}
     dest={{ glance_image_tmp_dir }}/{{ item.filename }}
     mode=0644
   with_items: glance_direct_images
   environment: "{{ proxy_env }}"
-  when: "http_proxy is defined"
+  when: http_proxy is defined
 
 #- name: install libguestfs-tools
 #  apt: >

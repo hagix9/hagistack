@@ -1,0 +1,30 @@
+---
+
+- name: create users
+  keystone_user: >
+    token={{ admin_token }}
+    tenant="service"
+    user={{ item.name }}
+    password={{ item.password }}
+  with_items: service_users
+
+- name: is added to the role you create a user
+  keystone_user: >
+    token={{ admin_token }}
+    role="admin"
+    user={{ item.name }}
+    tenant="service"
+  with_items: service_users
+
+- name: endpoint create
+  keystone_service: >
+    token={{ admin_token }}
+    name={{ item.name }}
+    type={{ item.type }}
+    description="{{ item.description}}"
+    public_url={{ item.public_url }}
+    internal_url={{ item.internal_url }}
+    admin_url={{ item.admin_url }}
+    region={{ region }}
+  with_items: services
+

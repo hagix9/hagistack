@@ -1,0 +1,35 @@
+---
+
+- name: install cinder control
+  apt: >
+    pkg={{ item }}
+    state=installed
+  with_items:
+   - "cinder-api"
+   - "cinder-scheduler"
+
+- name: setting cinder config for lvm
+  template: >
+    src=cinder.conf_lvm.j2
+    dest=/etc/cinder/cinder.conf
+    owner=cinder
+    group=cinder
+    mode=0644
+  notify: 
+    - restart cinder controller
+  when: cinder_backend == "lvm"
+
+- name: setting cinder config for nfs
+  template: >
+    src=cinder.conf_nfs.j2
+    dest=/etc/cinder/cinder.conf
+    owner=cinder
+    group=cinder
+    mode=0644
+  notify: 
+    - restart cinder controller
+  when: cinder_backend == "nfs"
+
+- name: cinder db sync
+  command: /usr/bin/cinder-manage db sync
+

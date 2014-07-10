@@ -5,18 +5,17 @@ export OS_AUTH_URL=http://192.168.10.50:35357/v2.0/
 export PS1='\u@\h \W(keystone)\$ '
 
 nova-manage network create --label network01 --dns1 8.8.8.8 --fixed_range_v4=10.10.10.0/24
-nova secgroup-add-rule default tcp 22 22 0.0.0.0/0 
 
+nova secgroup-add-rule default tcp 22 22 0.0.0.0/0 
 nova secgroup-add-rule default icmp -1 -1 0.0.0.0/0 
 
-FLOAT_IP_RANGE=192.168.10.112/28
-nova-manage floating create --ip_range=192.168.10.112/28
+FLOAT_IP_RANGE=192.168.122.112/28
+nova-manage floating create --ip_range=192.168.122.112/28
 
-nova boot --flavor 2 --image Ubuntu14.04 --security_group default Ubuntu14.04_Pub
 
 cd
 nova keypair-add mykey > mykey
-chown $STACK_USER:$STACK_USER mykey
+chown stack:stack mykey
 chmod 600 mykey
 
 nova flavor-delete 1

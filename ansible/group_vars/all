@@ -1,11 +1,10 @@
 ---
 
 # AllInOne
-#allinone: no
-allinone: yes
+allinone: "yes"
 
 # Proxy
-#http_proxy: http://192.168.1.1:8888/
+http_proxy: http://192.168.16.12:9080/
 proxy_env:
   http_proxy: "{{ http_proxy }}"
   https_proxy: "{{ http_proxy }}"
@@ -17,8 +16,8 @@ ntp_servers:
   - ntp3.jst.mfeed.ad.jp
 
 # Controller Host IP's
-controller_ext_ip: 192.168.10.50
-controller_int_ip: 192.168.10.50
+controller_ext_ip: 192.168.122.50
+controller_int_ip: 192.168.122.50
 
 # MySQL Options
 mysql_root_password: root
@@ -56,6 +55,21 @@ mysql_nova_password: password
 nova_keystone_password: secrete
 nova_mq_user: nova
 nova_mq_password: secrete
+
+# Cinder Options
+use_cinder: "yes"
+mysql_cinder_password: password
+cinder_keystone_password: secrete
+cinder_mq_user: cinder
+cinder_mq_password: secrete
+cinder_storage_node_ip: "{{ controller_int_ip }}"
+#for lvm
+use_loopback_device: "no"
+cinder_backend: lvm
+use_loopback_device: False
+cinder_vg_name: cinder-volumes
+#for nfs
+#cinder_backend: nfs
 
 # Network(nova-network or neutron)
 #network: neutron
