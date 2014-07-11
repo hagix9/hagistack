@@ -1,13 +1,14 @@
 ---
 
-# AllInOne
-allinone: "yes"
-
 # Proxy
-http_proxy: http://192.168.1.1:8080/
+#http_proxy: http://192.168.1.1:8080/
 proxy_env:
   http_proxy: "{{ http_proxy }}"
   https_proxy: "{{ http_proxy }}"
+
+# NIC
+int_nic: eth0
+ext_nic: eth1
 
 # NTP Options
 ntp_servers:
@@ -24,7 +25,6 @@ mysql_root_password: root
 
 # Keystone Options
 mysql_keystone_password: password
-endpoint_int_url: http://{{ controller_int_ip }}:35357/v2.0/
 admin_token: ADMIN
 cert_subject_cn: JP
 cert_subject_st: Tokyo

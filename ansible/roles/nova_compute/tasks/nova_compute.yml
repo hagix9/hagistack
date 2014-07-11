@@ -20,14 +20,6 @@
    - nova-compute-kvm
    - python-novaclient
 
-- name: install nova-api-metadata
-  apt: >
-    pkg={{ item }}
-    state=installed
-  with_items:
-   - nova-api-metadata
-  when: network_type == "nova-network" and allinone != "yes"
-
 - name: setting nova config for nova-network
   template: >
     src=nova.conf_nova-network

@@ -16,7 +16,7 @@ volumes_path=/var/lib/nova/volumes
 enabled_apis=ec2,osapi_compute,metadata
 
 [DEFAULT]
-my_ip={{ controller_int_ip }}
+my_ip={{ ansible_ssh_host }}
 use_ipv6=false
 osapi_compute_listen="0.0.0.0"
 osapi_compute_listen_port=8774
