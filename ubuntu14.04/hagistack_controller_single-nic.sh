@@ -7,7 +7,7 @@
 #prerequisite make lvm cinder-volumes and setting hosts and Openvswitch Install and NIC Setting
 #Number of necessary NIC 1
 ###networking settings
-sudo apt-get install openvswitch-switch openvswitch-datapath-dkms -y
+sudo apt-get install openvswitch-switch -y
 # change interface settings
 ### Before Change Bridge Interface ###
 auto eth0
