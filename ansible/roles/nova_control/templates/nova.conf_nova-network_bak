@@ -57,19 +57,27 @@ vncserver_listen=0.0.0.0
 vnc_keymap=ja
 
 # NETWORK
-auto_assign_floating_ip=True
-libvirt_use_virtio_for_bridges=True
+network_driver=nova.network.linux_net
+libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtGenericVIFDriver
+linuxnet_interface_driver=nova.network.linux_net.LinuxBridgeInterfaceDriver
+firewall_driver=nova.virt.libvirt.firewall.IptablesFirewallDriver
+network_api_class=nova.network.api.API
+security_group_api=nova
 network_manager=nova.network.manager.FlatDHCPManager
-public_interface=br100
-flat_interface=eth0
+network_size=254
+allow_same_net_traffic=False
+multi_host=True
+send_arp_for_ha=True
+share_dhcp_address=True
+force_dhcp_release=True
+public_interface=eth0
 flat_network_bridge=br100
-network_size=255
-flat_injected=false
+flat_interface=lo
 
 # AUTHENTICATION
 auth_strategy=keystone
 [keystone_authtoken]
-auth_uri=http://{{ controller_int_ip }}:5000
+auth_uri = http://{{ controller_int_ip }}:5000
 auth_host={{ controller_int_ip }}
 auth_port=35357
 auth_protocol=http

@@ -6,8 +6,7 @@ glance_direct_images:
 #    filename: cirros-0.3.2-x86_64-disk.img
 #    format: qcow2
 # - name: f16-jeos
-#   url: http://berrange.fedorapeople.org/images/2012-02-29
-#   filename: f16-x86_64-openstack-sda.qcow2
+#   url: http://berrange.fedorapeople.org/images/2012-02-29 #   filename: f16-x86_64-openstack-sda.qcow2
 #   format: qcow2
 # - name: f17-jeos
 #   url: http://berrange.fedorapeople.org/images/2012-11-15
@@ -64,4 +63,4 @@ glance_direct_images:
 #ssh -i /home/stack/mykey cirros@10.0.0.2
 
 #For CentOS
-#ssh -i /home/stack/mykey root@10.0.0.2
+#ssh -i /home/stack/mykey cloud-user@10.0.0.2

@@ -20,6 +20,12 @@
    - nova-compute-kvm
    - python-novaclient
 
+- name: install nova-network
+  apt: >
+    pkg=nova-network
+    state=installed
+  when: network_type == "nova-network"
+
 - name: setting nova config for nova-network
   template: >
     src=nova.conf_nova-network
@@ -27,6 +33,7 @@
     owner=nova
     group=nova
     mode=0640
+    backup=yes
   notify:
     - restart nova-compute
     - restart nova-network
@@ -39,6 +46,7 @@
     owner=nova
     group=nova
     mode=0640
+    backup=yes
   notify:
     - restart nova-compute
   when: network_type == "neutron"

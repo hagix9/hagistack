@@ -28,9 +28,6 @@ verbose={{ log_verbose }}
 # ROOTWRAP
 rootwrap_config=/etc/nova/rootwrap.conf
 
-# DATABASE
-connection=mysql://nova:{{ mysql_nova_password }}@{{ controller_int_ip }}/nova
-
 # SCHEDULER
 scheduler_driver=nova.scheduler.filter_scheduler.FilterScheduler
 
@@ -51,9 +48,11 @@ rabbit_userid={{ nova_mq_user }}
 rabbit_password={{ nova_mq_password }}
 
 # NOVNC CONSOLE
+vnc_enabled=false
+novnc_enable=false
 novncproxy_base_url=http://{{ controller_int_ip }}:6080/vnc_auto.html
 novncproxy_port=6080
-vncserver_proxyclient_address={{ controller_int_ip }}
+vncserver_proxyclient_address=$my_ip
 vncserver_listen=0.0.0.0
 vnc_keymap=ja
 
@@ -85,4 +84,17 @@ auth_protocol=http
 admin_tenant_name=service
 admin_user=nova
 admin_password={{ nova_keystone_password }}
+
+# DATABASE
+[database]
+connection=mysql://nova:{{ mysql_nova_password }}@{{ controller_int_ip }}/nova
+
+# SPICE CONSOLE
+[spice]
+enabled=true
+agent_enabled=true
+html5proxy_base_url=http://192.168.10.50:6082/spice_auto.html
+server_listen=0.0.0.0
+server_proxyclient_address=$my_ip
+keymap=ja
 

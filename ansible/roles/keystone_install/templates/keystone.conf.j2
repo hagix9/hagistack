@@ -624,7 +624,7 @@ use_syslog=false
 # Deprecated group/name - [DATABASE]/sql_connection
 # Deprecated group/name - [sql]/connection
 #connection=<None>
-connection = sqlite:////var/lib/keystone/keystone.db
+connection = mysql://keystone:{{ mysql_keystone_password }}@{{ controller_int_ip }}/keystone
 
 # The SQL mode to be used for MySQL sessions. This option,
 # including the default, overrides any server-set SQL mode. To

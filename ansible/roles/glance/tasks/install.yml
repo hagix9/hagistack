@@ -12,6 +12,7 @@
     owner=glance
     group=glance
     mode=0644
+    backup=yes
   notify: 
     - restart glance-api
     - restart glance-registry
@@ -23,6 +24,7 @@
     owner=glance
     group=glance
     mode=0644
+    backup=yes
   notify: 
     - restart glance-api
     - restart glance-registry

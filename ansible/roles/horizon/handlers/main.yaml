@@ -1,8 +1,14 @@
 ---
 
-- name: restart horizon
+#- name: restart horizon use novnc
+#  service: name={{ item }} state=restarted
+#  with_items:
+#    - "nova-novncproxy"
+#    - "apache2"
+
+- name: restart horizon use spice
   service: name={{ item }} state=restarted
   with_items:
-    - "nova-novncproxy"
+    - "nova-spiceproxy"
     - "apache2"
 

@@ -5,6 +5,11 @@
     pkg=keystone
     state=installed
 
+- name: delete sqlite database
+  file: >
+    dest=/var/lib/keystone/keystone.db
+    state=absent
+
 - name: setting keystone config
   template: >
     src=keystone.conf.j2
@@ -12,9 +17,18 @@
     owner=keystone
     group=keystone
     mode=0644
+    backup=yes
   notify: restart keystone
 
 - name: keystone setup
   command: /usr/bin/keystone-manage pki_setup --keystone-user keystone --keystone-group keystone
   command: /usr/bin/keystone-manage db_sync
+
+- name: keystone pki file authority change
+  file: >
+    path=/etc/keystone/ssl
+    owner=keystone
+    group=keystone
+    mode=770
+
 

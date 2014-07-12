@@ -6,73 +6,79 @@
   roles:
     - { role: common }
 
-- name: Install NTP
+- name: NTP Install
   hosts: all
   sudo: true
   roles:
     - { role: ntp }
 
-- name: Install RabbitMQ
+- name: RabbitMQ Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: rabbitmq }
 
-- name: Install MySQL
+- name: MySQL Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: mysql }
 
-- name: Install Memcached
+- name: Memcached Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: memcached }
 
-- name: Install Keystone
+- name: Keystone Install
   hosts: openstack_ctl
   sudo: true
   roles:
-    - { role: keystone }
+    - { role: keystone_install }
 
-- name: Install Glance
+- name: Keystone Settings
+  hosts: openstack_ctl
+  sudo: true
+  roles:
+    - { role: keystone_settings }
+
+- name: Glance Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: glance }
 
-- name: Image Registry
+- name: OpenStack Image Registry
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: glance_image }
 
-- name: Install Nova Controller
+- name: Nova Controller Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: nova_control }
 
-- name: Install Nova Compute
+- name: Nova Compute Install
   hosts: all
   sudo: true
   roles:
     - { role: nova_compute }
 
-- name: Install Horizon
+- name: Horizon Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: horizon }
 
-- name: Install Cinder Controller
+- name: Cinder Controller Install
   hosts: openstack_ctl
   sudo: true
   roles:
     - { role: cinder_control, when: use_cinder == "yes" }
 
-- name: Install Cinder volume
+- name: Cinder Volume Install
   #hosts: openstack_volume
   hosts: openstack_ctl
   sudo: true

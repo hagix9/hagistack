@@ -17,8 +17,8 @@ ntp_servers:
   - ntp3.jst.mfeed.ad.jp
 
 # Controller Host IP's
-controller_ext_ip: 192.168.122.50
-controller_int_ip: 192.168.122.50
+controller_ext_ip: 192.168.10.50
+controller_int_ip: 192.168.10.50
 
 # MySQL Options
 mysql_root_password: root

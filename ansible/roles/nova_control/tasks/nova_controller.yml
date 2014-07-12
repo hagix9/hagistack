@@ -26,6 +26,7 @@
     owner=nova
     group=nova
     mode=0640
+    backup=yes
   notify:
     - restart nova control
     - restart nova-network
@@ -38,6 +39,7 @@
     owner=nova
     group=nova
     mode=0640
+    backup=yes
   notify:
     - restart nova control
   when: network_type == "neutron"

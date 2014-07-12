@@ -14,6 +14,7 @@
     owner=cinder
     group=cinder
     mode=0644
+    backup=yes
   notify:
     - restart cinder volume
   when: cinder_backend == "lvm"
@@ -25,6 +26,7 @@
     owner=cinder
     group=cinder
     mode=0644
+    backup=yes
   notify:
     - restart cinder volume
   when: cinder_backend == "nfs"
