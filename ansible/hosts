@@ -1,8 +1,0 @@
-[openstack_ctl]
-192.168.10.50 ansible_ssh_host=192.168.10.50 ansible_ssh_user=stack ansible_sudo_pass=stack
-
-[openstack_compute]
-192.168.10.51 ansible_ssh_host=192.168.10.51 ansible_ssh_user=stack ansible_sudo_pass=stack
-
-#[openstack_volume]
-#192.168.10.51 ansible_ssh_user=stack ansible_sudo_pass=stack

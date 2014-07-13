@@ -1,3 +1,0 @@
-[submodule "ansible/library"]
-	path = ansible/library
-	url = https://github.com/openstack-ansible/openstack-ansible-modules.git

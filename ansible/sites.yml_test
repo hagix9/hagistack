@@ -1,8 +1,0 @@
----
-
-- name: Install Keystone Install
-  hosts: openstack_ctl
-  sudo: true
-  roles:
-    - { role: keystone_install }
-

@@ -1,4 +1,0 @@
-mysql_server_pkgs:
-  - mysql-server
-  - python-mysqldb
-

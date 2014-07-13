@@ -1,7 +1,0 @@
----
-
-- include: mq_settings.yml
-- include: db_settings.yml 
-- include: keystone_settings.yml
-- include: install.yml
-
