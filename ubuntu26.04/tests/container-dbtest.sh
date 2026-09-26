@@ -107,12 +107,79 @@ vba="$(grep '^bind-address' /etc/mysql/mariadb.conf.d/99-hagistack.cnf | head -1
   || rec DB11-bind-loopback FAIL "bind-address lines=$nba value='$vba'"
 
 echo
+echo "== nova credential covers BOTH nova and nova_api (finding 3) =="
+# shellcheck disable=SC1091
+NOVA_PW="$(sed -n 's/^NOVA_DB_PASS=//p' /etc/hagistack/secrets.env)"
+if [ -z "$NOVA_PW" ]; then
+  rec DB17-nova-single-cred FAIL "NOVA_DB_PASS not present in secrets.env"
+else
+  rec DB17-nova-single-cred PASS "single NOVA_DB_PASS present"
+fi
+grep -q '^NOVA_API_DB_PASS=' /etc/hagistack/secrets.env \
+  && rec DB18-no-new-api-key FAIL "NOVA_API_DB_PASS was generated again" \
+  || rec DB18-no-new-api-key PASS "NOVA_API_DB_PASS no longer generated"
+# real logins as the nova user, to each database, using that one password
+if mariadb -unova -p"$NOVA_PW" -e "USE nova; SELECT 1" >/dev/null 2>&1; then
+  rec DB19-login-nova PASS "nova user logs into the 'nova' database"
+else rec DB19-login-nova FAIL "login to 'nova' failed"; fi
+if mariadb -unova -p"$NOVA_PW" -e "USE nova_api; SELECT 1" >/dev/null 2>&1; then
+  rec DB20-login-nova-api PASS "same credential logs into 'nova_api'"
+else rec DB20-login-nova-api FAIL "login to 'nova_api' failed"; fi
+# and it can actually write in both
+if mariadb -unova -p"$NOVA_PW" -e "CREATE TABLE IF NOT EXISTS nova_api.t(i INT); DROP TABLE nova_api.t;" >/dev/null 2>&1; then
+  rec DB21-grants-nova-api PASS "nova user has DDL rights on nova_api"
+else rec DB21-grants-nova-api FAIL "insufficient grants on nova_api"; fi
+# obsolete-key migration: plant the old key and confirm it is reported, kept, and not used
+printf 'NOVA_API_DB_PASS=legacy-value-should-be-ignored\n' >> /etc/hagistack/secrets.env
+o_mig="$("$H" "${ARGS[@]}" 2>&1)"
+grep -q "no longer uses" <<<"$o_mig" \
+  && rec DB22-obsolete-reported PASS "stale NOVA_API_DB_PASS reported as unused" \
+  || rec DB22-obsolete-reported FAIL "stale key not reported"
+grep -q '^NOVA_API_DB_PASS=legacy-value-should-be-ignored$' /etc/hagistack/secrets.env \
+  && rec DB23-obsolete-kept PASS "stale key left untouched (not rewritten, not rotated)" \
+  || rec DB23-obsolete-kept FAIL "stale key was modified or removed"
+if mariadb -unova -p"$NOVA_PW" -e "USE nova_api; SELECT 1" >/dev/null 2>&1; then
+  rec DB24-cred-unchanged PASS "nova credential still valid after the migration run"
+else rec DB24-cred-unchanged FAIL "credential changed by the migration run"; fi
+
+echo
+echo "== partial completion: MariaDB up, RabbitMQ down (finding 4 consistency) =="
+rc=0; "$H" "${ARGS[@]}" > /out/db-partial.log 2>&1 || rc=$?
+[ "$rc" = "4" ] && rec DB25-partial-exit PASS "exit 4 while any phase is skipped" \
+                || rec DB25-partial-exit FAIL "exit $rc, wanted 4"
+[ -e /var/lib/hagistack/state/database.done ] \
+  && rec DB26-done-marker-present PASS "database phase DID complete and is marked" \
+  || rec DB26-done-marker-present FAIL "database marker missing though it succeeded"
+[ -e /var/lib/hagistack/state/rabbitmq.done ] \
+  && rec DB27-skipped-no-marker FAIL "rabbitmq marked done though skipped" \
+  || rec DB27-skipped-no-marker PASS "skipped rabbitmq carries no marker"
+grep -q 'STEP 1 INCOMPLETE' /out/db-partial.log \
+  && rec DB28-partial-banner PASS "INCOMPLETE banner even though the DB succeeded" \
+  || rec DB28-partial-banner FAIL "banner does not report INCOMPLETE"
+st="$("$H" status 2>&1)"
+if grep -q 'base layer: INCOMPLETE' <<<"$st" && grep -qE 'missing:.*rabbitmq' <<<"$st"; then
+  rec DB29-status-names-gap PASS "status names rabbitmq as the missing phase"
+else rec DB29-status-names-gap FAIL "status does not identify the gap"; fi
+grep -qE '^  database +done' <<<"$st" \
+  && rec DB30-status-shows-done PASS "status shows database as done" \
+  || rec DB30-status-shows-done FAIL "status does not show database done"
+
+echo
 echo "== RabbitMQ =="
 if dpkg -l rabbitmq-server >/dev/null 2>&1; then
   RMQ_METHOD="rabbitmq-server -detached (manual, no systemd)"
-  RABBITMQ_NODENAME=rabbit@localhost rabbitmq-server -detached >/out/rmq.log 2>&1 || true
+  # `rabbitmq-server -detached` can itself block for many minutes on a slow
+  # node, so bound the launch as well as the readiness probes below.
+  # Every rabbit call is hard-bounded with `timeout -k`: rabbitmqctl ignores
+  # SIGTERM, so a plain `timeout` never returns on a node that will not start.
+  timeout -k 5 90 env RABBITMQ_NODENAME=rabbit@localhost \
+      rabbitmq-server -detached >/out/rmq.log 2>&1 || true
   ok=0
-  for i in $(seq 1 45); do rabbitmqctl status >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
+  deadline=$(( SECONDS + 90 ))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    timeout -k 5 10 rabbitmqctl status >/dev/null 2>&1 && { ok=1; break; }
+    sleep 3
+  done
   if [ "$ok" = "1" ]; then
     rec DB12-rabbitmq-start PASS "started via: $RMQ_METHOD"
     "$H" "${ARGS[@]}" > /out/db-run4.log 2>&1

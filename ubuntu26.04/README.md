@@ -32,6 +32,25 @@ cache. **You cannot create a network or boot an instance.** The command prints
 a banner saying exactly that, and `hagistack status` lists which phases are
 implemented versus pending.
 
+### Completion is not assumed
+
+A base service that cannot be reached is not quietly skipped. The run reports
+`STEP 1 INCOMPLETE`, names the phases it skipped, writes **no** state marker for
+them, and **exits 4**. `hagistack status` says `base layer: INCOMPLETE` and lists
+what is missing. Only a run in which every implemented phase actually did its
+work prints `STEP 1 COMPLETE (BASE LAYER)` and exits 0.
+
+This is the normal outcome in a container with no systemd, and it is not a
+failure of the shell — but it is not a completed step 1 either.
+
+| Exit | Meaning |
+|---|---|
+| 0 | success |
+| 1 | configuration or preflight error |
+| 2 | usage error |
+| 3 | subcommand not implemented yet |
+| 4 | ran to the end, base layer incomplete (a service was unreachable) |
+
 ## Usage
 
 ```sh
@@ -41,9 +60,31 @@ sudo ./hagistack all-in-one              # or: --check for preflight only
 ```
 
 Required settings: `EXT_NIC`, `PROVIDER_CIDR`, `PROVIDER_GATEWAY`,
-`FLOATING_START`, `FLOATING_END`. Everything else is autodetected or
-defaulted. Precedence: command line > environment > `./hagistack.env` >
-defaults.
+`FLOATING_START`, `FLOATING_END`. Everything else is autodetected or defaulted.
+
+### Configuration
+
+Precedence is **command line > environment > `./hagistack.env` > default**, and
+it applies to *every* option, including `--tenant-cidr`, `--dns-server` and
+`--virt-type`. `--check` prints the resolved value and its source for each key:
+
+```
+==> resolved configuration
+    EXT_NIC            eth0                   [command line]
+    TENANT_CIDR        10.1.1.0/24            [environment]
+    DNS_SERVER         172.24.4.1             [default]
+```
+
+Giving a key an empty value on any tier is an error rather than a silent
+fall-through, so "explicitly blank" is never mistaken for "not supplied".
+Repeating a flag is allowed; the last occurrence wins.
+
+**The config file is parsed, never executed.** Only blank lines, `#` comments
+and `KEY=VALUE` are accepted; `KEY` must be a known setting and `VALUE` may
+contain only letters, digits and `. _ - : / @ + =`. Unknown keys, duplicate
+keys, malformed lines and values containing shell metacharacters are refused,
+and a rejected value is never echoed back in the error. Use
+`--env-file /dev/null` to ignore all config files.
 
 ## Safety properties
 
@@ -56,21 +97,31 @@ rules that replace them:
 | an unconditional database drop on every run | **No `DROP DATABASE` anywhere.** An existing database is detected and left untouched. There is no flag to bypass this |
 | `cat … \| tee -a /etc/sysctl.conf` duplicating on every run | `ini_set` edits key-by-key and rewrites the file only when the content actually changes |
 | `rm -rf /var/log/nova/*` | Nothing is deleted |
-| No `set -e`; ran to completion after failures | `set -euo pipefail` plus an `ERR` trap that reports the failing line |
+| No `set -e`; ran to completion after failures | `set -Eeuo pipefail` plus an `ERR` trap that reports the failing line. `-E` matters: without it the trap is not inherited by functions, so it never fires |
+| Config file `source`d, making every value executable | The file is **parsed**. `KEY=$(command)` and backquoted values are refused, not run |
+| — | A service that cannot be reached does not count as done: no state marker, `STEP 1 INCOMPLETE`, exit 4 |
 | AppArmor disabled, libvirt opened on TCP with `auth_tcp="none"`, MariaDB bound to `0.0.0.0` | None of these. MariaDB is pinned to `127.0.0.1`, memcached to the management IP |
 
 Re-running `all-in-one` is safe and is part of the acceptance criteria.
 
 ## What has actually been verified
 
-Verified in an **Ubuntu 26.04 container** (no systemd): `bash -n`,
+Verified in an **Ubuntu 26.04.1 LTS amd64 container** (no systemd): `bash -n`,
 ShellCheck, `--help`, subcommand resolution, the `compute-add`
 not-implemented path, input validation, config-generation idempotence,
-secret file permissions and value stability across runs.
+secret file permissions and value stability across runs, refusal of
+code-execution payloads in the config file, the full precedence matrix, and the
+incomplete-run reporting and exit code.
 
-**Not verified anywhere yet**: service startup under systemd, unit ordering,
-MariaDB/RabbitMQ operation, and every OpenStack service. Those are GCE
-acceptance items — see `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
+With **MariaDB started by hand** inside the container (`mariadbd-safe
+--skip-networking`, recorded as such): database and user creation, login as the
+`nova` user to both the `nova` and `nova_api` databases with one credential, and
+survival of a planted row across three consecutive runs.
+
+**Not verified anywhere yet**: service startup *under systemd*, unit ordering
+and dependency resolution, **RabbitMQ** (it would not start in the container,
+even by hand), and every OpenStack service. Those are GCE acceptance items —
+see `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
 
 Nothing in this shell has been run on real Ubuntu 26.04 hardware or on a
 GCE VM.

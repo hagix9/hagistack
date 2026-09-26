@@ -108,13 +108,22 @@ expect_exit C9-bad-ip-octet 1 'not a valid IPv4 address' \
     "$H" all-in-one --check --env-file /dev/null --ext-nic "$NIC" \
     --provider-cidr 172.24.4.0/24 --provider-gateway 172.24.4.999 \
     --floating-start 172.24.4.100 --floating-end 172.24.4.200 --mgmt-ip 10.0.0.5
-# malformed env file rejected rather than sourced
+# A line that is not an assignment must be refused outright.
 printf 'EXT_NIC=%s\nrm -rf /tmp/pwned\n' "$NIC" > /tmp/bad.env
-mkdir -p /tmp/pwned
-expect_exit C10-envfile-not-sourced 1 'are not KEY=VALUE' \
+expect_exit C10-envfile-malformed 1 'not a KEY=VALUE assignment' \
     "$H" all-in-one --check --env-file /tmp/bad.env
-[ -d /tmp/pwned ] && rec C11-envfile-no-exec PASS "injected command did not run" \
-                  || rec C11-envfile-no-exec FAIL "env file executed arbitrary code"
+# The real hazard: a well-formed KEY=VALUE whose VALUE is a command
+# substitution. Under the old `source` implementation this executed. The marker
+# file is positive proof either way — it does not exist unless code ran.
+rm -f /tmp/CODEEXEC_MARKER
+printf 'EXT_NIC=%s\nTENANT_CIDR=$(touch /tmp/CODEEXEC_MARKER)\n' "$NIC" > /tmp/exec.env
+"$H" all-in-one --check --env-file /tmp/exec.env "${BASE[@]}" >/dev/null 2>&1 || true
+if [ -e /tmp/CODEEXEC_MARKER ]; then
+    rec C11-envfile-no-exec FAIL "config file value was EXECUTED (marker created)"
+else
+    rec C11-envfile-no-exec PASS "command substitution in a value did not execute"
+fi
+rm -f /tmp/CODEEXEC_MARKER
 # happy path preflight
 expect_exit C12-preflight-ok 0 'preflight passed' \
     "$H" all-in-one --check --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}"
@@ -203,6 +212,7 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 SEOF
 sed -n '/^gen_secret() {/,/^}$/p'  "$H" >> /tmp/sectest.sh
 sed -n '/^SECRET_KEYS=/,/METADATA_PROXY_SECRET"$/p' "$H" >> /tmp/sectest.sh
+sed -n '/^OBSOLETE_SECRET_KEYS=/p'                   "$H" >> /tmp/sectest.sh
 sed -n '/^phase_secrets() {/,/^}$/p' "$H" >> /tmp/sectest.sh
 echo 'phase_secrets' >> /tmp/sectest.sh
 o1="$(bash /tmp/sectest.sh 2>&1)"; echo "$o1" | sed 's/^/    [run1] /'
@@ -221,8 +231,13 @@ else rec E3-values-stable FAIL "secrets changed on 2nd run"; fi
 [ "$perm2" = "600" ] && rec E4-mode-after-rerun PASS "still 600 after re-run" \
                      || rec E4-mode-after-rerun FAIL "mode $perm2"
 nkeys="$(grep -cE '^[A-Z_]+=' /etc/hagistack/secrets.env || echo 0)"
-[ "$nkeys" -ge 11 ] && rec E5-key-count PASS "$nkeys keys generated" \
-                    || rec E5-key-count FAIL "only $nkeys keys"
+want="$(sed -n '/^SECRET_KEYS=/,/METADATA_PROXY_SECRET"$/p' "$H" | tr -d '\n' \
+        | sed 's/.*SECRET_KEYS="//; s/".*//' | wc -w)"
+[ "$nkeys" = "$want" ] && rec E5-key-count PASS "$nkeys keys, matching SECRET_KEYS" \
+                       || rec E5-key-count FAIL "$nkeys keys, SECRET_KEYS declares $want"
+grep -q '^NOVA_API_DB_PASS=' /etc/hagistack/secrets.env \
+    && rec E5b-no-nova-api-key FAIL "obsolete NOVA_API_DB_PASS was generated" \
+    || rec E5b-no-nova-api-key PASS "obsolete NOVA_API_DB_PASS not generated"
 # entropy: no two secrets equal, none short
 dups="$(cut -d= -f2 /etc/hagistack/secrets.env | grep -v '^$' | sort | uniq -d | wc -l)"
 shortv="$(awk -F= 'length($2)<24 && $0 ~ /^[A-Z_]+=/' /etc/hagistack/secrets.env | wc -l)"
@@ -323,15 +338,23 @@ echo "== G. services under no-systemd =="
 rm -rf /var/lib/hagistack
 o="$("$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" 2>&1 || true)"
 echo "$o" > /out/all-in-one-run1.log
+echo "$o" > /out/all-in-one-nosystemd.log
 if grep -q 'systemd is not running here' <<<"$o"; then
     rec G1-systemd-absent-detected PASS "shell detected no systemd and said so"
 else rec G1-systemd-absent-detected FAIL "did not report missing systemd"; fi
-if grep -q 'NOT VERIFIED' <<<"$o"; then
-    rec G2-marks-unverified PASS "reports NOT VERIFIED instead of claiming success"
+if grep -qE 'SKIPPED|NOT VERIFIED' <<<"$o"; then
+    rec G2-marks-unverified PASS "reports SKIPPED/NOT VERIFIED instead of claiming success"
 else rec G2-marks-unverified FAIL "did not mark unverified"; fi
-if grep -q 'NOT A WORKING OPENSTACK' <<<"$o"; then
-    rec G3-stage-banner PASS "prints the 'not a working OpenStack' banner"
+if grep -qE 'STEP 1 (COMPLETE|INCOMPLETE)' <<<"$o"; then
+    rec G3-stage-banner PASS "prints a stage banner ($(grep -oE 'STEP 1 [A-Z]+' <<<"$o" | head -1))"
 else rec G3-stage-banner FAIL "no stage banner"; fi
+# With no systemd the base layer cannot come up, so the run must say INCOMPLETE
+# and exit 4 rather than claiming success.
+o_rc=0; "$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" >/dev/null 2>&1 || o_rc=$?
+[ "$o_rc" = "4" ] && rec G3b-incomplete-exit PASS "exit 4 when the base layer is incomplete" \
+                  || rec G3b-incomplete-exit FAIL "exit $o_rc, wanted 4"
+grep -q 'STEP 1 COMPLETE' <<<"$o" && rec G3c-no-false-complete FAIL "claimed COMPLETE with services down" \
+                                  || rec G3c-no-false-complete PASS "did not claim COMPLETE"
 rec G4-mariadb-start UNVERIFIED "not started here (no systemd); manual-start case covered in db-results.tsv; systemd case = GCE B0b"
 rec G5-rabbitmq-start UNVERIFIED "not started here; would not start manually either (see db-results.tsv); GCE B0b"
 rec G6-unit-ordering UNVERIFIED "systemd unit ordering; GCE acceptance item B0a"

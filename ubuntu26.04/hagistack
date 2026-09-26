@@ -13,6 +13,15 @@
 #
 set -Eeuo pipefail   # -E: the ERR trap must fire inside functions too
 
+# Associative arrays and other bash 4 features are used throughout. Say so
+# plainly instead of failing later with "declare: -A: invalid option" — which
+# is what macOS's bash 3.2 produces.
+if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "hagistack: needs bash 4 or newer; this is ${BASH_VERSION:-unknown}." >&2
+    echo "  Ubuntu Server 26.04 (the only supported target) ships bash 5." >&2
+    exit 1
+fi
+
 HAGISTACK_VERSION="0.1.0-step1"
 HAGISTACK_STAGE="step1: skeleton + preflight + base services (no OpenStack services yet)"
 
@@ -75,14 +84,27 @@ _need_privilege() {
 }
 
 # Deterministic, URL-safe secret. No fixed passwords anywhere in this file.
+# A consumer-side `head` closes the pipe while the producer is still writing;
+# the producer takes SIGPIPE and the pipeline reports 141 under `set -o pipefail`.
+# `tr -dc … < /dev/urandom | head -c N` does that deterministically (measured:
+# 141 on 200/200 runs). Bound the *producer* instead and trim with a shell
+# substring, so no pipe is ever broken.
 gen_secret() {
-    local n="${1:-32}"
-    if have openssl; then
-        openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "$n"
-    else
-        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$n"
-    fi
-    echo
+    local n="${1:-32}" out="" chunk tries=0
+    while [ "${#out}" -lt "$n" ]; do
+        tries=$((tries + 1))
+        [ "$tries" -le 12 ] \
+            || die "could not gather $n characters of randomness after $tries attempts"
+        if have openssl; then
+            chunk="$(openssl rand -base64 256 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' || true)"
+        else
+            chunk="$(head -c 4096 /dev/urandom 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' || true)"
+        fi
+        [ -n "$chunk" ] \
+            || die "no usable entropy source (tried openssl and /dev/urandom)"
+        out="$out$chunk"
+    done
+    printf '%s\n' "${out:0:n}"
 }
 
 # ---------------------------------------------------------------------------
@@ -178,30 +200,128 @@ phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done
 #
 # Precedence: CLI flags > environment > ./hagistack.env > defaults/autodetect.
 # ---------------------------------------------------------------------------
+# Every value the operator can set, in one place. Used by the argument parser,
+# the config-file parser (as its key allowlist) and the precedence resolver.
+CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
+             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE"
+
+declare -A CLI_VAL=()  CLI_SET=()
+declare -A ENV_VAL=()  ENV_SET=()
+declare -A FILE_VAL=() FILE_SET=()
+declare -A CONFIG_SOURCE=()
+
+# Capture the inherited environment BEFORE the defaults below blank these
+# variables, otherwise the environment tier can never be observed.
+# `printenv` succeeds only for a variable that is actually exported, and it
+# distinguishes "exported but empty" from "not set" — which the resolver needs.
+_capture_env() {
+    local k
+    for k in $CONFIG_KEYS; do
+        if printenv "$k" >/dev/null 2>&1; then
+            ENV_VAL[$k]="$(printenv "$k")"
+            ENV_SET[$k]=1
+        fi
+    done
+}
+_capture_env
+
 MGMT_IP="" EXT_NIC="" PROVIDER_CIDR="" PROVIDER_GATEWAY=""
 FLOATING_START="" FLOATING_END="" DNS_SERVER="" TENANT_CIDR="" VIRT_TYPE=""
 DRY_RUN=0 ENV_FILE=""
 
+# ---------------------------------------------------------------------------
+# config file
+#
+# The file is PARSED, never sourced. Sourcing it made every value a shell
+# command: `TENANT_CIDR=$(...)` or a backquoted value executed on load, even
+# though each line looked like a harmless KEY=VALUE assignment.
+#
+# Accepted: blank lines, `#` comments, and `KEY=VALUE` where KEY is one of
+# CONFIG_KEYS and VALUE contains only [A-Za-z0-9._:/@+=-]. One optional layer
+# of matching quotes is stripped. Unknown keys, duplicate keys, malformed
+# lines and values with any other character are refused.
+# ---------------------------------------------------------------------------
+ENVFILE_VALUE_RE='^[A-Za-z0-9._:/@+=-]*$'
+
 load_env_file() {
     local f="${ENV_FILE:-}"
     if [ -z "$f" ]; then
-        if   [ -f "./hagistack.env" ];            then f="./hagistack.env"
-        elif [ -f "$SELF_DIR/hagistack.env" ];    then f="$SELF_DIR/hagistack.env"
+        if   [ -f "./hagistack.env" ];             then f="./hagistack.env"
+        elif [ -f "$SELF_DIR/hagistack.env" ];     then f="$SELF_DIR/hagistack.env"
         elif [ -f "$HAGISTACK_ETC/hagistack.env" ];then f="$HAGISTACK_ETC/hagistack.env"
         fi
     fi
     [ -n "$f" ] || return 0
-    # Accept any readable path, not just regular files, so that an operator can
-    # pass --env-file /dev/null to mean "ignore every config file".
+    # Any readable path, not just a regular file, so --env-file /dev/null works.
     [ -r "$f" ] || die "env file not readable: $f"
-    # Reject anything that is not KEY=VALUE rather than sourcing arbitrary code.
-    local bad
-    bad="$(grep -vnE '^[[:space:]]*(#|$|[A-Z_][A-Z0-9_]*=)' "$f" || true)"
-    [ -z "$bad" ] || die "env file $f has lines that are not KEY=VALUE:
-$bad"
-    log_info "config file: $f"
-    # shellcheck disable=SC1090
-    . "$f"
+
+    local -A seen=()
+    local lineno=0 line key val
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        line="${line%$'\r'}"                       # tolerate CRLF
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+
+        if [[ ! "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+            die "$f line $lineno: not a KEY=VALUE assignment.
+     Only blank lines, '#' comments and KEY=VALUE are allowed."
+        fi
+        key="${BASH_REMATCH[1]}"
+        val="${BASH_REMATCH[2]}"
+        val="${val%"${val##*[![:space:]]}"}"        # trim trailing blanks
+        # strip one matching quote pair, if present
+        if   [[ "$val" =~ ^\"(.*)\"$ ]]; then val="${BASH_REMATCH[1]}"
+        elif [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"
+        fi
+
+        case " $CONFIG_KEYS " in
+            *" $key "*) ;;
+            *) die "$f line $lineno: unknown key '$key'.
+     Allowed keys: $(echo $CONFIG_KEYS | tr '\n' ' ')" ;;
+        esac
+        [ -z "${seen[$key]:-}" ] || die "$f line $lineno: duplicate key '$key'"
+        seen[$key]=1
+
+        # The value is deliberately NOT echoed back on failure.
+        if [[ ! "$val" =~ $ENVFILE_VALUE_RE ]]; then
+            die "$f line $lineno: the value of '$key' contains characters that are
+     not allowed. Permitted: letters, digits and . _ - : / @ + =
+     (the value itself is not shown). Shell metacharacters such as \$ \` ( ) ; & |
+     are refused because this file is configuration, not a script."
+        fi
+        FILE_VAL[$key]="$val"
+        FILE_SET[$key]=1
+    done < "$f"
+    log_info "config file: $f (parsed, not executed)"
+}
+
+# Precedence: command line > environment > config file > default.
+# A tier that sets a key to the empty string is an error rather than a silent
+# fall-through, so "explicitly blank" can never be mistaken for "not given".
+resolve_config() {
+    local k val src
+    for k in $CONFIG_KEYS; do
+        if   [ -n "${CLI_SET[$k]:-}" ];  then val="${CLI_VAL[$k]}";  src="command line"
+        elif [ -n "${ENV_SET[$k]:-}" ];  then val="${ENV_VAL[$k]}";  src="environment"
+        elif [ -n "${FILE_SET[$k]:-}" ]; then val="${FILE_VAL[$k]}"; src="config file"
+        else                                  val="";                src="default"
+        fi
+        if [ "$src" != "default" ] && [ -z "$val" ]; then
+            die "$k was given an empty value on the $src.
+     Remove it to fall back to the default, or give it a real value."
+        fi
+        CONFIG_SOURCE[$k]="$src"
+        printf -v "$k" '%s' "$val"
+    done
+}
+
+print_resolved_config() {
+    local k
+    echo
+    log_step "resolved configuration"
+    for k in $CONFIG_KEYS; do
+        printf '    %-18s %-22s [%s]\n' "$k" "${!k:-<unset>}" "${CONFIG_SOURCE[$k]:-default}"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -445,9 +565,18 @@ phase_preflight() {
 # Generated once, stored 0600 outside the repo, and reused verbatim on every
 # later run so that re-running never rotates a live credential.
 # ---------------------------------------------------------------------------
+# One credential per DB *user*. The `nova` user owns both the `nova` and the
+# `nova_api` databases, so it has one password: generating a second one only
+# produced an unused key, because `CREATE USER IF NOT EXISTS` for the second
+# database is a no-op and the user keeps the first password.
 SECRET_KEYS="MYSQL_ROOT_PASS RABBIT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS
-             PLACEMENT_DB_PASS NOVA_DB_PASS NOVA_API_DB_PASS NEUTRON_DB_PASS
+             PLACEMENT_DB_PASS NOVA_DB_PASS NEUTRON_DB_PASS
              ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET"
+
+# Keys written by an earlier version that are no longer used. They are reported
+# and then left alone: rewriting a live secrets file to drop a key is a bigger
+# risk than carrying a stale line, and removing it could not rotate anything.
+OBSOLETE_SECRET_KEYS="NOVA_API_DB_PASS"
 
 phase_secrets() {
     log_step "secrets"
@@ -485,6 +614,15 @@ phase_secrets() {
 
     # shellcheck disable=SC1090
     . <($SUDO cat "$SECRETS_FILE")
+
+    local ok
+    for ok in ${OBSOLETE_SECRET_KEYS:-}; do
+        if $SUDO grep -q "^${ok}=" "$SECRETS_FILE"; then
+            log_warn "$SECRETS_FILE still contains '$ok', which this version no longer uses."
+            log_warn "  It is left in place and ignored. The 'nova' user has a single"
+            log_warn "  credential (NOVA_DB_PASS) covering both the nova and nova_api databases."
+        fi
+    done
 
     local perm; perm="$($SUDO stat -c '%a' "$SECRETS_FILE")"
     [ "$perm" = "600" ] || die "$SECRETS_FILE has mode $perm; expected 600"
@@ -527,10 +665,37 @@ phase_base_packages() {
 # ---------------------------------------------------------------------------
 declare -A SERVICE_START_METHOD
 
+# Phases that could not be carried out. A run with any of these is NOT a
+# completed step 1, however far the rest of it got.
+SKIPPED_PHASES=""
+note_skip() {
+    SKIPPED_PHASES="${SKIPPED_PHASES}${SKIPPED_PHASES:+ }$1"
+    log_warn "phase '$1' SKIPPED: $2"
+    log_warn "  -> this run will NOT be reported as a completed step 1"
+}
+
+# True only when we can positively observe the unit running.
+service_active() {
+    [ "$HAS_SYSTEMD" -eq 1 ] || return 1
+    $SUDO systemctl is-active --quiet "$1"
+}
+
 mysql_root() { $SUDO mariadb -uroot "$@"; }
 
-mariadb_reachable() { mysql_root -e "SELECT 1" >/dev/null 2>&1; }
-rabbitmq_reachable() { $SUDO rabbitmqctl status >/dev/null 2>&1; }
+# Reachability probes are bounded. `rabbitmqctl status` in particular can sit
+# for many minutes on a node that is starting up or wedged, and an unbounded
+# probe turns "service not ready" into "the installer hangs forever".
+PROBE_TIMEOUT="${HAGISTACK_PROBE_TIMEOUT:-20}"
+_probe() {
+    # -k: escalate to SIGKILL. `rabbitmqctl` does not die on SIGTERM, so a
+    # plain `timeout` waits forever on it — measured in a container where the
+    # node never became ready.
+    if have timeout; then $SUDO timeout -k 5 "$PROBE_TIMEOUT" "$@"
+    else                  $SUDO "$@"
+    fi
+}
+mariadb_reachable()  { _probe mariadb -uroot -e "SELECT 1" >/dev/null 2>&1; }
+rabbitmq_reachable() { _probe rabbitmqctl status >/dev/null 2>&1; }
 
 phase_database() {
     log_step "database (MariaDB)"
@@ -541,9 +706,8 @@ phase_database() {
 
     service_start_enable mariadb
     if ! mariadb_reachable; then
-        log_warn "MariaDB is not reachable; skipping database setup"
-        log_warn "  started via: ${SERVICE_START_METHOD[mariadb]}"
-        log_warn "  -> NOT VERIFIED here; covered by the GCE acceptance (B0b)"
+        note_skip database "MariaDB is not reachable (start method: ${SERVICE_START_METHOD[mariadb]}).
+     Database and grant setup was NOT performed. Covered by the GCE acceptance (B0b)."
         return 0
     fi
     log_ok "MariaDB reachable (started via ${SERVICE_START_METHOD[mariadb]})"
@@ -557,7 +721,7 @@ phase_database() {
             glance)   passvar="GLANCE_DB_PASS" ;;
             placement)passvar="PLACEMENT_DB_PASS" ;;
             nova)     passvar="NOVA_DB_PASS" ;;
-            nova_api) passvar="NOVA_API_DB_PASS"; user="nova" ;;
+            nova_api) passvar="NOVA_DB_PASS"; user="nova" ;;
             neutron)  passvar="NEUTRON_DB_PASS" ;;
         esac
         local pass="${!passvar}"
@@ -586,9 +750,8 @@ phase_rabbitmq() {
     log_step "message queue (RabbitMQ)"
     service_start_enable rabbitmq-server
     if ! rabbitmq_reachable; then
-        log_warn "RabbitMQ is not reachable; skipping user setup"
-        log_warn "  started via: ${SERVICE_START_METHOD[rabbitmq-server]}"
-        log_warn "  -> NOT VERIFIED here; covered by the GCE acceptance (B0b)"
+        note_skip rabbitmq "RabbitMQ is not reachable (start method: ${SERVICE_START_METHOD[rabbitmq-server]}).
+     Queue user and permissions were NOT configured. Covered by the GCE acceptance (B0b)."
         return 0
     fi
     log_ok "RabbitMQ reachable (started via ${SERVICE_START_METHOD[rabbitmq-server]})"
@@ -619,29 +782,70 @@ phase_memcached() {
         fi
     fi
     service_start_enable memcached
-    phase_mark_done memcached
+    if service_active memcached; then
+        log_ok "memcached active"
+        phase_mark_done memcached
+    else
+        note_skip memcached "service is not running (start method: ${SERVICE_START_METHOD[memcached]})."
+    fi
 }
 
 # ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
+# Two outcomes, never conflated: the base layer either came up or it did not.
+# A run that skipped MariaDB or RabbitMQ is reported as INCOMPLETE and exits 4.
 print_stage_banner() {
+    local rule="────────────────────────────────────────────────────────────────"
+    if [ -n "$SKIPPED_PHASES" ]; then
+        cat <<EOF
+
+${C_RED}${rule}${C_RESET}
+${C_RED} STEP 1 INCOMPLETE — BASE LAYER NOT VERIFIED${C_RESET}
+${C_RED}${rule}${C_RESET}
+ Skipped    : $SKIPPED_PHASES
+ Completed  : $(printf '%s' "$(_completed_phases)")
+ Not yet    : $PENDING_PHASES
+
+ One or more base services could not be reached, so their setup did not
+ run. This is expected in a container with no systemd, and it is NOT a
+ failure of the shell — but it is also NOT a completed step 1.
+
+ Nothing was left half-written: the skipped phases made no changes and
+ carry no state marker, so re-running once the services are up will
+ complete them.
+
+ Exit status 4 = ran to the end, base layer incomplete.
+${C_RED}${rule}${C_RESET}
+EOF
+        return 0
+    fi
     cat <<EOF
 
-${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
-${C_YEL} STEP 1 COMPLETE — THIS IS NOT A WORKING OPENSTACK${C_RESET}
-${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
+${C_YEL}${rule}${C_RESET}
+${C_YEL} STEP 1 COMPLETE (BASE LAYER) — THIS IS NOT A WORKING OPENSTACK${C_RESET}
+${C_YEL}${rule}${C_RESET}
  What ran   : $IMPLEMENTED_PHASES
  Not yet    : $PENDING_PHASES
 
- No OpenStack service has been installed or started. There is no
- Keystone, no Glance, no Placement, no Nova, no Neutron/OVN and no
- Horizon. You cannot create a network or boot an instance yet.
+ The base layer is up: database, message queue and cache. No OpenStack
+ service has been installed or started. There is no Keystone, no Glance,
+ no Placement, no Nova, no Neutron/OVN and no Horizon. You cannot create
+ a network or boot an instance yet.
 
  Re-running this command is safe: it does not drop databases, does not
  rotate existing secrets, and does not append duplicate configuration.
-${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
+${C_YEL}${rule}${C_RESET}
 EOF
+}
+
+_completed_phases() {
+    local p out=""
+    for p in $IMPLEMENTED_PHASES; do
+        case " $SKIPPED_PHASES " in *" $p "*) continue ;; esac
+        out="${out}${out:+ }$p"
+    done
+    printf '%s' "${out:-none}"
 }
 
 # ---------------------------------------------------------------------------
@@ -653,6 +857,8 @@ cmd_all_in_one() {
     _need_privilege
     phase_preflight
     if [ "$DRY_RUN" -eq 1 ]; then
+        print_resolved_config
+        echo
         log_ok "--check: preflight only, no changes made"
         return 0
     fi
@@ -662,6 +868,9 @@ cmd_all_in_one() {
     phase_rabbitmq
     phase_memcached
     print_stage_banner
+    # `exit` rather than `return`: a non-zero return would trip the ERR trap and
+    # print an "aborted" line, which this is not.
+    [ -z "$SKIPPED_PHASES" ] || exit 4
 }
 
 cmd_compute_add() {
@@ -683,10 +892,22 @@ cmd_status() {
     echo "phases implemented: $IMPLEMENTED_PHASES"
     echo "phases pending    : $PENDING_PHASES"
     echo
-    local p
+    local p incomplete=""
     for p in $IMPLEMENTED_PHASES; do
-        printf '  %-16s %s\n' "$p" "$(phase_done "$p" && echo 'done' || echo 'not done')"
+        if phase_done "$p"; then
+            printf '  %-16s %s\n' "$p" "done"
+        else
+            printf '  %-16s %s\n' "$p" "not done"
+            incomplete="${incomplete}${incomplete:+ }$p"
+        fi
     done
+    echo
+    if [ -z "$incomplete" ]; then
+        echo "base layer: COMPLETE (all implemented phases carry a state marker)"
+    else
+        echo "base layer: INCOMPLETE — missing: $incomplete"
+        echo "            'all-in-one' exits 4 while any of these is missing."
+    fi
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
@@ -731,6 +952,23 @@ options:
 
 configuration precedence:
   command line  >  environment  >  ./hagistack.env  >  defaults/autodetect
+  Applies to every option above. Giving a key an empty value on any tier is an
+  error, so "set to blank" is never mistaken for "not given".
+  '--check' prints the resolved value and its source for each key.
+
+config file:
+  Parsed, never executed. Only blank lines, '#' comments and KEY=VALUE are
+  accepted; KEY must be a known setting and VALUE may contain only
+  letters, digits and . _ - : / @ + = — shell metacharacters are refused.
+  Use --env-file /dev/null to ignore all config files.
+
+exit status:
+  0  success
+  1  configuration or preflight error
+  2  usage error
+  3  subcommand not implemented yet
+  4  ran to the end, but the base layer is incomplete (a service was
+     unreachable, so its phase was skipped)
 
 secrets:
   Generated on first run into $SECRETS_FILE (mode 0600) and reused unchanged
@@ -743,19 +981,36 @@ re-running:
 EOF
 }
 
+# Record that a flag was GIVEN, separately from its value, so that an explicit
+# empty value is distinguishable from an absent flag.
+_cli_set() {
+    [ $# -eq 2 ] || die "option $1 requires a value"
+    CLI_VAL[$1]="$2"; CLI_SET[$1]=1
+}
+
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --ext-nic)          EXT_NIC="${2:?--ext-nic requires a value}"; shift 2 ;;
-            --provider-cidr)    PROVIDER_CIDR="${2:?--provider-cidr requires a value}"; shift 2 ;;
-            --provider-gateway) PROVIDER_GATEWAY="${2:?--provider-gateway requires a value}"; shift 2 ;;
-            --floating-start)   FLOATING_START="${2:?--floating-start requires a value}"; shift 2 ;;
-            --floating-end)     FLOATING_END="${2:?--floating-end requires a value}"; shift 2 ;;
-            --mgmt-ip)          MGMT_IP="${2:?--mgmt-ip requires a value}"; shift 2 ;;
-            --tenant-cidr)      TENANT_CIDR="${2:?--tenant-cidr requires a value}"; shift 2 ;;
-            --dns-server)       DNS_SERVER="${2:?--dns-server requires a value}"; shift 2 ;;
-            --virt-type)        VIRT_TYPE="${2:?--virt-type requires a value}"; shift 2 ;;
-            --env-file)         ENV_FILE="${2:?--env-file requires a value}"; shift 2 ;;
+            --ext-nic)          [ $# -ge 2 ] || die "--ext-nic requires a value"
+                                _cli_set EXT_NIC "$2"; shift 2 ;;
+            --provider-cidr)    [ $# -ge 2 ] || die "--provider-cidr requires a value"
+                                _cli_set PROVIDER_CIDR "$2"; shift 2 ;;
+            --provider-gateway) [ $# -ge 2 ] || die "--provider-gateway requires a value"
+                                _cli_set PROVIDER_GATEWAY "$2"; shift 2 ;;
+            --floating-start)   [ $# -ge 2 ] || die "--floating-start requires a value"
+                                _cli_set FLOATING_START "$2"; shift 2 ;;
+            --floating-end)     [ $# -ge 2 ] || die "--floating-end requires a value"
+                                _cli_set FLOATING_END "$2"; shift 2 ;;
+            --mgmt-ip)          [ $# -ge 2 ] || die "--mgmt-ip requires a value"
+                                _cli_set MGMT_IP "$2"; shift 2 ;;
+            --tenant-cidr)      [ $# -ge 2 ] || die "--tenant-cidr requires a value"
+                                _cli_set TENANT_CIDR "$2"; shift 2 ;;
+            --dns-server)       [ $# -ge 2 ] || die "--dns-server requires a value"
+                                _cli_set DNS_SERVER "$2"; shift 2 ;;
+            --virt-type)        [ $# -ge 2 ] || die "--virt-type requires a value"
+                                _cli_set VIRT_TYPE "$2"; shift 2 ;;
+            --env-file)         [ $# -ge 2 ] || die "--env-file requires a value"
+                                ENV_FILE="$2"; shift 2 ;;
             --check)            DRY_RUN=1; shift ;;
             -h|--help)          usage; exit 0 ;;
             --version)          echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
@@ -778,18 +1033,12 @@ main() {
            echo; usage >&2; exit 2 ;;
     esac
 
-    # Flags first, then the env file, so the command line still wins.
+    # Collect the three tiers, then resolve once. No tier overwrites another
+    # by side effect; precedence lives entirely in resolve_config().
     local saved=("$@")
     parse_args "${saved[@]+"${saved[@]}"}"
-    local cli_ext_nic="$EXT_NIC" cli_cidr="$PROVIDER_CIDR" cli_gw="$PROVIDER_GATEWAY"
-    local cli_fs="$FLOATING_START" cli_fe="$FLOATING_END" cli_mgmt="$MGMT_IP"
     load_env_file
-    [ -n "$cli_ext_nic" ] && EXT_NIC="$cli_ext_nic"
-    [ -n "$cli_cidr" ]    && PROVIDER_CIDR="$cli_cidr"
-    [ -n "$cli_gw" ]      && PROVIDER_GATEWAY="$cli_gw"
-    [ -n "$cli_fs" ]      && FLOATING_START="$cli_fs"
-    [ -n "$cli_fe" ]      && FLOATING_END="$cli_fe"
-    [ -n "$cli_mgmt" ]    && MGMT_IP="$cli_mgmt"
+    resolve_config
 
     case "$cmd" in
         all-in-one)  cmd_all_in_one ;;

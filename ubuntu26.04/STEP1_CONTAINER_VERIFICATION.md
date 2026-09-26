@@ -1,5 +1,12 @@
 # Step 1 — local container verification record
 
+> **Superseded in part.** An audit after this record found five further issues
+> (config-file code execution, incomplete option precedence, a nova credential
+> mismatch, a false "COMPLETE" when services were unreachable, and a
+> `gen_secret` pipefail hazard). They are fixed and re-verified in
+> **`STEP1_AUDIT_FIXES.md`**, which also carries the current suite totals.
+> The findings and method below still stand.
+
 - Date: 2026-09-27
 - Subject: `ubuntu26.04/hagistack` version `0.1.0-step1`
 - Result: **main suite 62 PASS / 0 FAIL / 6 UNVERIFIED**, **database suite 14 PASS / 0 FAIL / 3 UNVERIFIED**
