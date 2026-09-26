@@ -139,8 +139,23 @@ n2-standard-16  16    64.00      asia-northeast1-a
 | 入力検査 | 想定外 OS / 必須項目の未指定 / 不正な NIC 名 / 不正な CIDR を**明確なエラーで拒否**する |
 | 秘密情報 | 固定パスワードがソースに無い。生成物が 0600。`hagistack.env` / `secrets.env` が `.gitignore` 済み |
 | **再実行時の安全性** | 2 回実行して DB 削除も設定重複も起きない。ソースに `DROP DATABASE` が無い |
-| 制御構造 | サブコマンド解決、`usage()`、`set -euo pipefail` + `trap` による失敗時の明確な停止 |
+| 制御構造 | `--help`、サブコマンド解決、**未実装コマンドの明確な扱い**、`set -euo pipefail` + `trap` による失敗時の明確な停止 |
 | 危険な処理の不在 | AppArmor 無効化・libvirt の無認証 TCP 公開・MariaDB の 0.0.0.0 公開を行うコードが無い |
+| 影響範囲 | パッケージ・DB 操作を実際に試した場合、その操作が**コンテナ内に限られている**こと |
+
+**systemd を前提にしない**
+
+コンテナに systemd が存在・稼働するとは仮定しない。上表は systemd 無しでも確認できる項目に限る。
+**MariaDB / RabbitMQ の起動・連携を検証する場合は、そのコンテナでどう起動したか
+（systemd か、デーモン直起動か、`mysqld_safe` か等）を必ず記録する。**
+起動できなければ **PASS にせず「未検証」とし、GCE の受入条件（§5 区分 B）へ送る。**
+
+**固定パスワードの検査範囲**
+
+検査対象は**今回新たに作るシェルと関連ファイルのみ**。
+旧世代シェルには既知の固定パスワードが残っているため、**リポジトリ全体への `git grep` は
+Step 1 の合否条件にしない**。旧コードを `legacy/` へ移動または削除した後に、
+別条件として全体検索を課す（研究文書 §11.7）。
 
 ### 3.2 確認したことにしないこと
 
@@ -150,7 +165,7 @@ n2-standard-16  16    64.00      asia-northeast1-a
 - `/dev/kvm`・カーネルモジュール・libvirt の実挙動
 - OVS / OVN のデータプレーン動作
 - **物理 LAN の疎通**、provider network、Floating IP
-- systemd ユニットの実起動順序と依存解決
+- **systemd ユニットの実起動順序と依存解決**（GCE の受入条件に残す。§5 区分 B の B0a）
 
 > コンテナはホストのカーネルを共有し、特権なしでは `/dev/kvm`・ネットワーク名前空間・カーネルモジュールを
 > 本番同等に扱えない。**コンテナでの合格をもって「OpenStack が動いた」とは書かない。**
@@ -218,6 +233,8 @@ node1 ホストから FIP への到達、node2 のゲストが node1 の br-ex �
 
 ### 区分 A: GCE の 2 ノード間で確認したこと
 
+> **node1 を稼働させたまま**確認する。A1〜A8 がすべて埋まるまで node1 も node2 も停止しない。
+
 | # | 確認項目 | 手段 | 結果 | 証跡 |
 |---|---|---|---|---|
 | A1 | node2 の `nova-compute` が controller から `up` に見える | `openstack compute service list` | | |
@@ -236,6 +253,8 @@ node1 ホストから FIP への到達、node2 のゲストが node1 の br-ex �
 | # | 確認項目 | 手段 | 結果 | 証跡 |
 |---|---|---|---|---|
 | B0 | all-in-one が 1 コマンドで完走する | シェルのログ | | |
+| B0a | **systemd ユニットの実起動順序と依存解決が期待どおり**（コンテナでは確認できない項目） | `systemctl list-dependencies` / `systemd-analyze critical-chain` / journal | | |
+| B0b | **MariaDB / RabbitMQ が systemd 配下で起動し、各サービスから接続できる** | `systemctl is-active` + 各サービスのログ | | |
 | B1 | external provider network を flat/physnet1 で作成できる | `openstack network create --external --provider-network-type flat` | | |
 | B2 | `ovn-bridge-mappings=physnet1:br-ex` が効いている | `ovs-vsctl` / agent ログ | | |
 | B3 | router の external gateway を設定できる | `openstack router set r1 --external-gateway public` | | |
@@ -249,6 +268,8 @@ node1 ホストから FIP への到達、node2 のゲストが node1 の br-ex �
 | B11 | **Horizon** にログインでき、インスタンス一覧が見える | ブラウザ | | |
 | B12 | node2 上のゲストが node1 の br-ex 経由で外に出られる（gateway chassis） | ゲスト内 | | |
 | B13 | all-in-one の再実行が安全 | 2 回実行 | | |
+
+> **B 区分を埋めた後も node1 は起動したままにする。** 区分 A の検証に必要。
 
 **B 区分の但し書き（報告書に必ず併記する）**
 > ここで確認した provider network / Floating IP は、**GCE VM のホスト内部に自前で作った仮想 L2 セグメント上での動作**である。
@@ -465,6 +486,7 @@ aws ec2 describe-instance-types --region ap-northeast-1 \
 | 3 | **`SCENARIO_TIMEOUT=1500`（25 分）** | 冒頭の定数 | **必須**。OpenStack AIO 構築は超える。5400 秒程度へ |
 | 4 | **`run` は 1 ターゲットのみ** | `cmd_run` は *"run accepts exactly one target key"* | compute-add は 2 ノード協調が要る。**gce.sh のプリミティブを呼ぶ 2 ノード オーケストレータを上に被せる**。本体の単一ターゲット契約は壊さない |
 | 5 | `PROJECT="sinter-508914"` がハードコード | 冒頭の定数 | 同じプロジェクトを使うなら変更不要 |
+| 5a | **`run` の既定が「実行後に自動 STOP」** | `run_cleanup` / `RUN_KEEP_RUNNING` | **node1 では `--keep-running` を必ず付ける。** 自動 STOP のままだと AIO 受入直後に node1 が止まり、**compute-add が成立しない**。2 ノード オーケストレータ側で node1 に `--keep-running` を強制し、**区分 A・B が揃ってから明示的に stop → destroy** する |
 | 6 | ネットワーク/ファイアウォールの払い出しが無い | 設計上スコープ外 | §2.2 のとおり既存規則で足りる**見込み**。受入時に実測して判断する |
 
 ### 8.4 再利用計画（実装時。今回は作成しない）
@@ -504,11 +526,15 @@ hs2 | hagistack-node2 | asia-northeast1-a | debian | disposable | yes        | u
 | 1 | **ローカルコンテナ** | `hagistack` の骨格 + preflight + 基盤 3 点。§3.1 の検査 | 0 |
 | 2〜8 | **ローカルコンテナ** | Keystone → Glance+Placement → OVS/OVN/Neutron → Nova+cells v2 → 初期リソース → Horizon → `compute-add` の**設定生成と入力検査まで** | 0 |
 | 9 | — | `Hagistack/acceptance/` を用意（§8.4） | 0 |
-| 10 | **GCE node1** | create（nested-virt ON、100GB）→ **all-in-one の実受入** → **区分 B を埋める** → stop | 従量 |
-| 11 | **GCE node2** | create → **compute-add の実受入** → **区分 A を埋める** → stop | 従量 |
-| 12 | **GCE** | 両ノードを `destroy` し、**インスタンスとディスクが残っていないことを確認**（費用を残さない） | — |
-| 13 | Mac／UTM（**任意**） | arm64 / 物理 LAN の追加検証。取れれば区分 C から昇格、取れなければ未確認のまま | 0 |
-| 14 | — | 区分 A / B / C の 3 表を揃えて受入報告 | 0 |
+| 10 | **GCE node1** | create（nested-virt ON、100GB）→ **all-in-one の実受入** → **区分 B を埋める**。**node1 は起動したままにする**（`--keep-running`） | 従量 |
+| 11 | **GCE node2** | create → **node1 を稼働させたまま compute-add の実受入** → **区分 A を埋める**。node2 も起動したままにする | 従量 |
+| 12 | **GCE（両ノード稼働中）** | **ノードをまたぐ確認をここで完了させる**: 2 台のサービス状態、**ゲスト間通信（A6）**、ノード間疎通の実測（A7）、node2 ゲストの外部到達（B12）、証跡の回収 | 従量 |
+| 13 | **GCE** | 証跡がすべて揃ったことを確認してから、**両ノードを stop → `destroy`**。インスタンスとディスクが残っていないことを確認（費用を残さない） | — |
+| 14 | Mac／UTM（**任意**） | arm64 / 物理 LAN の追加検証。取れれば区分 C から昇格、取れなければ未確認のまま | 0 |
+| 15 | — | 区分 A / B / C の 3 表を揃えて受入報告 | 0 |
+
+> **検証の途中で node1 を止めない。** compute-add はコントローラが生きていなければ成立しない。
+> node1 / node2 のサービス・ゲスト間通信・証跡取得が**すべて終わってから**、両ノードを停止・削除する。
 
 **コンテナで通せるところは全部コンテナで通してから GCE に上がる。** GCE の稼働時間を最小にするため。
 **AWS はこの順序に含まれない（調査のみ）。**

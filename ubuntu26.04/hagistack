@@ -1,0 +1,801 @@
+#!/usr/bin/env bash
+#
+# hagistack — OpenStack deployment shell for Ubuntu Server 26.04 LTS
+#
+# Target : OpenStack 2026.1 Gazpacho, from the Ubuntu 26.04 distro archive.
+# Engine : plain Bash. Not OpenStack-Ansible, Kolla-Ansible, Packstack or DevStack.
+#
+# STATUS: STEP 1 of the rebuild. Skeleton + preflight + base services only
+#         (MariaDB, RabbitMQ, memcached). Keystone, Glance, Placement, Nova,
+#         Neutron/OVN and Horizon are NOT implemented yet, so `all-in-one`
+#         deliberately stops after the base layer and says so. Finishing this
+#         command does NOT mean you have a working OpenStack.
+#
+set -Eeuo pipefail   # -E: the ERR trap must fire inside functions too
+
+HAGISTACK_VERSION="0.1.0-step1"
+HAGISTACK_STAGE="step1: skeleton + preflight + base services (no OpenStack services yet)"
+
+# Phases implemented in this step. `all-in-one` runs exactly these.
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached"
+# Phases still to come. Listed so the CLI can be honest about where it stops.
+PENDING_PHASES="keystone glance placement ovn neutron nova horizon bootstrap_resources verify"
+
+# ---------------------------------------------------------------------------
+# paths
+# ---------------------------------------------------------------------------
+HAGISTACK_ETC="${HAGISTACK_ETC:-/etc/hagistack}"
+HAGISTACK_STATE="${HAGISTACK_STATE:-/var/lib/hagistack}"
+SECRETS_FILE="$HAGISTACK_ETC/secrets.env"
+STATE_DIR="$HAGISTACK_STATE/state"
+
+SELF="${BASH_SOURCE[0]}"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# logging
+# ---------------------------------------------------------------------------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
+    C_GRN=$'\033[32m'; C_BLU=$'\033[34m'; C_DIM=$'\033[2m'
+else
+    C_RESET=''; C_RED=''; C_YEL=''; C_GRN=''; C_BLU=''; C_DIM=''
+fi
+
+log_step()  { printf '%s==>%s %s\n'      "$C_BLU" "$C_RESET" "$*"; }
+log_info()  { printf '    %s\n'                                "$*"; }
+log_ok()    { printf '    %sok%s   %s\n' "$C_GRN" "$C_RESET" "$*"; }
+log_warn()  { printf '%swarn:%s %s\n'    "$C_YEL" "$C_RESET" "$*" >&2; }
+log_error() { printf '%serror:%s %s\n'   "$C_RED" "$C_RESET" "$*" >&2; }
+log_skip()  { printf '    %sskip%s %s\n' "$C_DIM" "$C_RESET" "$*"; }
+
+die() { log_error "$*"; exit 1; }
+
+# Report the failing line rather than dying silently under `set -e`.
+_on_err() {
+    local rc=$? line=$1
+    log_error "aborted at ${SELF##*/}:${line} (exit $rc)"
+    log_error "nothing was rolled back; re-run after fixing the cause (this shell is re-run safe)"
+    exit "$rc"
+}
+trap '_on_err $LINENO' ERR
+
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
+have()   { command -v "$1" >/dev/null 2>&1; }
+is_root(){ [ "$(id -u)" -eq 0 ]; }
+
+# sudo only when we are not already root; fail clearly when neither works.
+SUDO=""
+_need_privilege() {
+    if is_root; then SUDO=""; return 0; fi
+    if have sudo; then SUDO="sudo"; return 0; fi
+    die "need root privileges and sudo is not available; re-run as root"
+}
+
+# Deterministic, URL-safe secret. No fixed passwords anywhere in this file.
+gen_secret() {
+    local n="${1:-32}"
+    if have openssl; then
+        openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "$n"
+    else
+        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$n"
+    fi
+    echo
+}
+
+# ---------------------------------------------------------------------------
+# idempotent INI editing
+#
+# Replaces the old shells' `tee -a` / blanket `sed -i`, which appended a new
+# copy on every run. Setting the same key twice must leave the file unchanged.
+# ---------------------------------------------------------------------------
+ini_set() {
+    local file="$1" section="$2" key="$3" value="$4"
+    [ -n "$file" ] && [ -n "$section" ] && [ -n "$key" ] \
+        || die "ini_set: file, section and key are required"
+
+    local dir; dir="$(dirname "$file")"
+    [ -d "$dir" ] || $SUDO mkdir -p "$dir"
+    [ -f "$file" ] || $SUDO touch "$file"
+
+    local tmp; tmp="$(mktemp)"
+    SECTION="$section" KEY="$key" VALUE="$value" \
+        awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; value=ENVIRON["VALUE"]
+                in_section=0; done=0; last_content=0 }
+        {
+            line=$0
+            if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+                name=line; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+                if (in_section && !done) { buf[++n]=key" = "value; done=1 }
+                in_section = (name == section)
+                buf[++n]=line
+                if (in_section) last_content=n
+                next
+            }
+            if (in_section && !done) {
+                k=line
+                sub(/^[[:space:]]*/,"",k)
+                if (k ~ /^[#;]/) { buf[++n]=line; next }
+                split(k, parts, "=")
+                kk=parts[1]; gsub(/[[:space:]]+$/,"",kk)
+                if (kk == key) { buf[++n]=key" = "value; done=1; last_content=n; next }
+            }
+            buf[++n]=line
+            if (line !~ /^[[:space:]]*$/) last_content=n
+        }
+        END {
+            if (!done) {
+                if (!in_section) {
+                    if (n > 0 && buf[n] != "") buf[++n]=""
+                    buf[++n]="["section"]"
+                }
+                buf[++n]=key" = "value
+            }
+            for (i=1; i<=n; i++) print buf[i]
+        }' "$file" > "$tmp"
+
+    # Only touch the file when the content actually changes: re-running must
+    # produce a byte-identical file and must not bump the mtime.
+    if $SUDO cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1   # unchanged
+    fi
+    $SUDO cp "$tmp" "$file"
+    rm -f "$tmp"
+    return 0       # changed
+}
+
+ini_get() {
+    local file="$1" section="$2" key="$3"
+    [ -f "$file" ] || return 1
+    SECTION="$section" KEY="$key" awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; in_section=0 }
+        /^[[:space:]]*\[.*\][[:space:]]*$/ {
+            name=$0; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+            in_section=(name==section); next
+        }
+        in_section {
+            k=$0; sub(/^[[:space:]]*/,"",k)
+            if (k ~ /^[#;]/) next
+            eq=index(k,"="); if (eq==0) next
+            kk=substr(k,1,eq-1); vv=substr(k,eq+1)
+            gsub(/[[:space:]]+$/,"",kk); gsub(/^[[:space:]]+/,"",vv); gsub(/[[:space:]]+$/,"",vv)
+            if (kk==key) { print vv; exit }
+        }' "$file"
+}
+
+# ---------------------------------------------------------------------------
+# phase state markers
+# ---------------------------------------------------------------------------
+phase_done()      { [ -f "$STATE_DIR/$1.done" ]; }
+phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done"; }
+
+# ---------------------------------------------------------------------------
+# configuration
+#
+# Precedence: CLI flags > environment > ./hagistack.env > defaults/autodetect.
+# ---------------------------------------------------------------------------
+MGMT_IP="" EXT_NIC="" PROVIDER_CIDR="" PROVIDER_GATEWAY=""
+FLOATING_START="" FLOATING_END="" DNS_SERVER="" TENANT_CIDR="" VIRT_TYPE=""
+DRY_RUN=0 ENV_FILE=""
+
+load_env_file() {
+    local f="${ENV_FILE:-}"
+    if [ -z "$f" ]; then
+        if   [ -f "./hagistack.env" ];            then f="./hagistack.env"
+        elif [ -f "$SELF_DIR/hagistack.env" ];    then f="$SELF_DIR/hagistack.env"
+        elif [ -f "$HAGISTACK_ETC/hagistack.env" ];then f="$HAGISTACK_ETC/hagistack.env"
+        fi
+    fi
+    [ -n "$f" ] || return 0
+    # Accept any readable path, not just regular files, so that an operator can
+    # pass --env-file /dev/null to mean "ignore every config file".
+    [ -r "$f" ] || die "env file not readable: $f"
+    # Reject anything that is not KEY=VALUE rather than sourcing arbitrary code.
+    local bad
+    bad="$(grep -vnE '^[[:space:]]*(#|$|[A-Z_][A-Z0-9_]*=)' "$f" || true)"
+    [ -z "$bad" ] || die "env file $f has lines that are not KEY=VALUE:
+$bad"
+    log_info "config file: $f"
+    # shellcheck disable=SC1090
+    . "$f"
+}
+
+# ---------------------------------------------------------------------------
+# input validation
+# ---------------------------------------------------------------------------
+valid_ipv4() {
+    local ip="$1" o
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[@]:1:4}"; do
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+        # reject 01, 007 and friends
+        [ "${#o}" -eq 1 ] || [ "${o#0}" = "$o" ] || return 1
+    done
+    return 0
+}
+
+valid_cidr() {
+    local cidr="$1" ip prefix
+    case "$cidr" in */*) ;; *) return 1 ;; esac
+    ip="${cidr%%/*}"; prefix="${cidr#*/}"
+    valid_ipv4 "$ip" || return 1
+    [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
+    [ "$prefix" -ge 8 ] && [ "$prefix" -le 30 ] || return 1
+    return 0
+}
+
+ip_to_int() {
+    local IFS=. ; read -r a b c d <<< "$1"
+    echo $(( (a<<24) + (b<<16) + (c<<8) + d ))
+}
+
+ip_in_cidr() {
+    local ip="$1" cidr="$2" net prefix mask ipi neti
+    net="${cidr%%/*}"; prefix="${cidr#*/}"
+    mask=$(( 0xFFFFFFFF ^ ((1 << (32-prefix)) - 1) ))
+    ipi=$(ip_to_int "$ip"); neti=$(ip_to_int "$net")
+    [ $(( ipi & mask )) -eq $(( neti & mask )) ]
+}
+
+valid_nic_name() {
+    local n="$1"
+    [ -n "$n" ] || return 1
+    [ "${#n}" -le 15 ] || return 1
+    [[ "$n" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    case "$n" in .|..) return 1 ;; esac
+    return 0
+}
+
+nic_exists() { [ -e "/sys/class/net/$1" ]; }
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+detect_os() {
+    [ -r /etc/os-release ] || die "cannot read /etc/os-release; unsupported system"
+    # shellcheck disable=SC1091
+    OS_ID="$(. /etc/os-release; echo "${ID:-}")"
+    OS_VERSION_ID="$(. /etc/os-release; echo "${VERSION_ID:-}")"
+    OS_PRETTY="$(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
+}
+
+detect_container() {
+    IN_CONTAINER=0; CONTAINER_KIND=""
+    if [ -f /.dockerenv ]; then IN_CONTAINER=1; CONTAINER_KIND="docker"; fi
+    if [ -f /run/.containerenv ]; then IN_CONTAINER=1; CONTAINER_KIND="podman"; fi
+    if have systemd-detect-virt; then
+        local v; v="$(systemd-detect-virt --container 2>/dev/null || true)"
+        if [ -n "$v" ] && [ "$v" != "none" ]; then IN_CONTAINER=1; CONTAINER_KIND="$v"; fi
+    fi
+    if [ "$IN_CONTAINER" -eq 0 ] && grep -qaE '(docker|containerd|libpod|lxc)' /proc/1/cgroup 2>/dev/null; then
+        IN_CONTAINER=1; CONTAINER_KIND="cgroup-hint"
+    fi
+}
+
+# systemd may be absent (container) or present but not PID 1.
+detect_init() {
+    HAS_SYSTEMD=0
+    if [ -d /run/systemd/system ] && have systemctl; then HAS_SYSTEMD=1; fi
+}
+
+service_start_enable() {
+    local unit="$1"
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        $SUDO systemctl enable --now "$unit" >/dev/null 2>&1 \
+            || die "failed to start $unit under systemd"
+        log_ok "$unit active (systemd)"
+        SERVICE_START_METHOD[$unit]="systemd"
+        return 0
+    fi
+    log_warn "systemd is not running here; cannot start '$unit' as a managed service"
+    log_warn "  -> unit ordering/startup stays a GCE acceptance item (B0a/B0b)"
+    SERVICE_START_METHOD[$unit]="not-started-no-systemd"
+    return 0
+}
+
+phase_preflight() {
+    log_step "preflight"
+    detect_os; detect_container; detect_init
+
+    log_info "os        : $OS_PRETTY"
+    log_info "arch      : $(dpkg --print-architecture 2>/dev/null || uname -m)"
+    log_info "init      : $([ "$HAS_SYSTEMD" -eq 1 ] && echo systemd || echo 'no systemd (container-style)')"
+    [ "$IN_CONTAINER" -eq 1 ] && log_info "container : yes ($CONTAINER_KIND)"
+
+    # --- OS gate ---
+    if [ "$OS_ID" != "ubuntu" ]; then
+        die "unsupported OS '$OS_ID'. hagistack targets Ubuntu Server 26.04 LTS.
+     Rocky Linux 10.2 is not supported: OpenStack 2026.1 is not available as
+     RPMs for EL10, and neither are Open vSwitch/OVN."
+    fi
+    if [ "$OS_VERSION_ID" != "26.04" ]; then
+        die "unsupported Ubuntu version '$OS_VERSION_ID'. hagistack targets 26.04 LTS.
+     The package names and OpenStack release differ on other versions."
+    fi
+    log_ok "Ubuntu 26.04 confirmed"
+
+    # --- architecture / qemu package selection ---
+    local arch; arch="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+    case "$arch" in
+        amd64) QEMU_PKG="qemu-system-x86" ;;
+        arm64) QEMU_PKG="qemu-system-arm"
+               log_warn "arm64: guest images must be arm64 too. Not an acceptance target in this step." ;;
+        *)     die "unsupported architecture '$arch' (expected amd64 or arm64)" ;;
+    esac
+    log_ok "architecture $arch -> $QEMU_PKG"
+
+    # --- KVM vs QEMU emulation ---
+    if [ -z "$VIRT_TYPE" ]; then
+        if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            VIRT_TYPE="kvm"
+        else
+            VIRT_TYPE="qemu"
+        fi
+    fi
+    case "$VIRT_TYPE" in
+        kvm)  log_ok "/dev/kvm usable -> virt_type=kvm" ;;
+        qemu) log_warn "no usable /dev/kvm -> virt_type=qemu (software emulation)."
+              log_warn "  guests will be 10-50x slower; suitable only for a boot smoke test." ;;
+        *)    die "VIRT_TYPE must be 'kvm' or 'qemu', got '$VIRT_TYPE'" ;;
+    esac
+
+    # --- resources ---
+    local mem_kb mem_gb free_gb
+    mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+    if [ "$mem_gb" -lt 8 ]; then
+        log_warn "memory ${mem_gb}GiB is below the 8GiB recommended for all-in-one"
+    else
+        log_ok "memory ${mem_gb}GiB"
+    fi
+    free_gb="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)"
+    if [ -n "$free_gb" ] && [ "$free_gb" -lt 20 ]; then
+        log_warn "only ${free_gb}GiB free on /; 40GiB+ recommended once Glance images land"
+    else
+        log_ok "disk ${free_gb}GiB free on /"
+    fi
+
+    # --- required settings ---
+    local missing=()
+    [ -n "$EXT_NIC" ]          || missing+=("EXT_NIC")
+    [ -n "$PROVIDER_CIDR" ]    || missing+=("PROVIDER_CIDR")
+    [ -n "$PROVIDER_GATEWAY" ] || missing+=("PROVIDER_GATEWAY")
+    [ -n "$FLOATING_START" ]   || missing+=("FLOATING_START")
+    [ -n "$FLOATING_END" ]     || missing+=("FLOATING_END")
+    if [ "${#missing[@]}" -gt 0 ]; then
+        die "missing required settings: ${missing[*]}
+     Set them on the command line, in the environment, or in ./hagistack.env
+     (see hagistack.env.example). Run '${SELF##*/} --help' for the flags."
+    fi
+
+    valid_nic_name "$EXT_NIC" \
+        || die "EXT_NIC '$EXT_NIC' is not a valid interface name
+     (allowed: letters, digits, '_', '.', '-'; at most 15 characters)"
+    if ! nic_exists "$EXT_NIC"; then
+        local available
+        available="$(ls /sys/class/net 2>/dev/null | tr '\n' ' ')"
+        die "EXT_NIC '$EXT_NIC' does not exist on this host.
+     interfaces present: ${available:-none}"
+    fi
+    log_ok "EXT_NIC $EXT_NIC exists"
+
+    valid_cidr "$PROVIDER_CIDR" \
+        || die "PROVIDER_CIDR '$PROVIDER_CIDR' is not a valid IPv4 CIDR (e.g. 172.24.4.0/24; prefix 8-30)"
+    valid_ipv4 "$PROVIDER_GATEWAY" \
+        || die "PROVIDER_GATEWAY '$PROVIDER_GATEWAY' is not a valid IPv4 address"
+    valid_ipv4 "$FLOATING_START" \
+        || die "FLOATING_START '$FLOATING_START' is not a valid IPv4 address"
+    valid_ipv4 "$FLOATING_END" \
+        || die "FLOATING_END '$FLOATING_END' is not a valid IPv4 address"
+
+    ip_in_cidr "$PROVIDER_GATEWAY" "$PROVIDER_CIDR" \
+        || die "PROVIDER_GATEWAY $PROVIDER_GATEWAY is outside PROVIDER_CIDR $PROVIDER_CIDR"
+    ip_in_cidr "$FLOATING_START" "$PROVIDER_CIDR" \
+        || die "FLOATING_START $FLOATING_START is outside PROVIDER_CIDR $PROVIDER_CIDR"
+    ip_in_cidr "$FLOATING_END" "$PROVIDER_CIDR" \
+        || die "FLOATING_END $FLOATING_END is outside PROVIDER_CIDR $PROVIDER_CIDR"
+    [ "$(ip_to_int "$FLOATING_START")" -le "$(ip_to_int "$FLOATING_END")" ] \
+        || die "FLOATING_START $FLOATING_START is above FLOATING_END $FLOATING_END"
+    if ip_in_cidr "$PROVIDER_GATEWAY" "$PROVIDER_CIDR" \
+       && [ "$(ip_to_int "$PROVIDER_GATEWAY")" -ge "$(ip_to_int "$FLOATING_START")" ] \
+       && [ "$(ip_to_int "$PROVIDER_GATEWAY")" -le "$(ip_to_int "$FLOATING_END")" ]; then
+        die "PROVIDER_GATEWAY $PROVIDER_GATEWAY falls inside the floating IP pool
+     $FLOATING_START-$FLOATING_END; the gateway must be outside the pool"
+    fi
+    log_ok "provider network $PROVIDER_CIDR gw=$PROVIDER_GATEWAY pool=$FLOATING_START-$FLOATING_END"
+
+    TENANT_CIDR="${TENANT_CIDR:-10.10.10.0/24}"
+    valid_cidr "$TENANT_CIDR" || die "TENANT_CIDR '$TENANT_CIDR' is not a valid IPv4 CIDR"
+    DNS_SERVER="${DNS_SERVER:-$PROVIDER_GATEWAY}"
+    valid_ipv4 "$DNS_SERVER" || die "DNS_SERVER '$DNS_SERVER' is not a valid IPv4 address"
+
+    # --- management IP ---
+    if [ -z "$MGMT_IP" ]; then
+        have ip || die "cannot autodetect MGMT_IP: iproute2 is not installed.
+     Install iproute2 or pass --mgmt-ip explicitly."
+        MGMT_IP="$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1 || true)"
+    fi
+    [ -n "$MGMT_IP" ] || die "could not determine MGMT_IP automatically; pass --mgmt-ip explicitly"
+    valid_ipv4 "$MGMT_IP" || die "MGMT_IP '$MGMT_IP' is not a valid IPv4 address"
+    log_ok "MGMT_IP $MGMT_IP"
+
+    # --- single-NIC warning ---
+    local mgmt_nic=""
+    if have ip; then
+        mgmt_nic="$(ip -4 -o addr show 2>/dev/null | awk -v ip="$MGMT_IP" '$4 ~ "^"ip"/" {print $2}' | head -1 || true)"
+    else
+        log_warn "iproute2 not available; skipping the single-NIC layout check"
+    fi
+    if [ -n "$mgmt_nic" ] && [ "$mgmt_nic" = "$EXT_NIC" ]; then
+        log_warn "single-NIC layout: EXT_NIC ($EXT_NIC) also carries the management IP."
+        log_warn "  A later step must move $MGMT_IP onto the br-ex bridge, which can drop your SSH session."
+        log_warn "  Not performed in step 1. Use a console or a second NIC when that step lands."
+    fi
+
+    log_ok "preflight passed"
+}
+
+# ---------------------------------------------------------------------------
+# secrets
+#
+# Generated once, stored 0600 outside the repo, and reused verbatim on every
+# later run so that re-running never rotates a live credential.
+# ---------------------------------------------------------------------------
+SECRET_KEYS="MYSQL_ROOT_PASS RABBIT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS
+             PLACEMENT_DB_PASS NOVA_DB_PASS NOVA_API_DB_PASS NEUTRON_DB_PASS
+             ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET"
+
+phase_secrets() {
+    log_step "secrets"
+    $SUDO mkdir -p "$HAGISTACK_ETC"
+    $SUDO chmod 0750 "$HAGISTACK_ETC"
+
+    local created=0
+    if [ ! -f "$SECRETS_FILE" ]; then
+        log_info "generating $SECRETS_FILE"
+        local tmp; tmp="$(mktemp)"
+        chmod 0600 "$tmp"
+        {
+            echo "# hagistack secrets — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "# Never commit this file. Never copy it into the repository."
+            local k
+            for k in $SECRET_KEYS; do
+                printf '%s=%s\n' "$k" "$(gen_secret 32)"
+            done
+        } > "$tmp"
+        $SUDO cp "$tmp" "$SECRETS_FILE"
+        rm -f "$tmp"
+        created=1
+    fi
+    $SUDO chmod 0600 "$SECRETS_FILE"
+    $SUDO chown "$(id -u)":"$(id -g)" "$SECRETS_FILE" 2>/dev/null || true
+
+    # Fill in any key added by a later version, without touching existing ones.
+    local k added=0
+    for k in $SECRET_KEYS; do
+        if ! $SUDO grep -q "^${k}=" "$SECRETS_FILE"; then
+            printf '%s=%s\n' "$k" "$(gen_secret 32)" | $SUDO tee -a "$SECRETS_FILE" >/dev/null
+            added=$((added+1))
+        fi
+    done
+
+    # shellcheck disable=SC1090
+    . <($SUDO cat "$SECRETS_FILE")
+
+    local perm; perm="$($SUDO stat -c '%a' "$SECRETS_FILE")"
+    [ "$perm" = "600" ] || die "$SECRETS_FILE has mode $perm; expected 600"
+
+    if [ "$created" -eq 1 ]; then
+        log_ok "secrets created (mode $perm)"
+    elif [ "$added" -gt 0 ]; then
+        log_ok "secrets reused, $added new key(s) added (mode $perm)"
+    else
+        log_ok "secrets reused unchanged (mode $perm)"
+    fi
+    log_info "values are never printed and never written into the repository"
+}
+
+# ---------------------------------------------------------------------------
+# base packages
+# ---------------------------------------------------------------------------
+phase_base_packages() {
+    log_step "base packages"
+    if phase_done base_packages && [ "${HAGISTACK_REDO:-0}" != "1" ]; then
+        log_skip "already done (state marker); re-run with HAGISTACK_REDO=1 to force"
+        return 0
+    fi
+    local pkgs="ca-certificates curl gnupg openssl chrony mariadb-server rabbitmq-server memcached python3-pymysql"
+    log_info "apt-get update"
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    log_info "installing: $pkgs"
+    # shellcheck disable=SC2086
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+    log_ok "base packages installed"
+    phase_mark_done base_packages
+}
+
+# ---------------------------------------------------------------------------
+# MariaDB
+#
+# The old shells issued an unconditional database drop on every run, which
+# wiped a live cloud. Nothing here drops anything; a pre-existing database is
+# detected and reused, and there is no flag to bypass that.
+# ---------------------------------------------------------------------------
+declare -A SERVICE_START_METHOD
+
+mysql_root() { $SUDO mariadb -uroot "$@"; }
+
+mariadb_reachable() { mysql_root -e "SELECT 1" >/dev/null 2>&1; }
+rabbitmq_reachable() { $SUDO rabbitmqctl status >/dev/null 2>&1; }
+
+phase_database() {
+    log_step "database (MariaDB)"
+
+    ini_set /etc/mysql/mariadb.conf.d/99-hagistack.cnf mysqld bind-address "127.0.0.1" >/dev/null \
+        && log_ok "bind-address pinned to 127.0.0.1" \
+        || log_ok "bind-address already 127.0.0.1 (unchanged)"
+
+    service_start_enable mariadb
+    if ! mariadb_reachable; then
+        log_warn "MariaDB is not reachable; skipping database setup"
+        log_warn "  started via: ${SERVICE_START_METHOD[mariadb]}"
+        log_warn "  -> NOT VERIFIED here; covered by the GCE acceptance (B0b)"
+        return 0
+    fi
+    log_ok "MariaDB reachable (started via ${SERVICE_START_METHOD[mariadb]})"
+
+    local db user
+    for db in keystone glance placement nova nova_api neutron; do
+        user="${db%%_*}"
+        local passvar
+        case "$db" in
+            keystone) passvar="KEYSTONE_DB_PASS" ;;
+            glance)   passvar="GLANCE_DB_PASS" ;;
+            placement)passvar="PLACEMENT_DB_PASS" ;;
+            nova)     passvar="NOVA_DB_PASS" ;;
+            nova_api) passvar="NOVA_API_DB_PASS"; user="nova" ;;
+            neutron)  passvar="NEUTRON_DB_PASS" ;;
+        esac
+        local pass="${!passvar}"
+
+        if mysql_root -e "USE \`$db\`" >/dev/null 2>&1; then
+            log_ok "database '$db' already exists — left untouched"
+        else
+            mysql_root -e "CREATE DATABASE \`$db\` CHARACTER SET utf8mb4;"
+            log_ok "database '$db' created"
+        fi
+        # CREATE USER IF NOT EXISTS keeps an existing password intact.
+        mysql_root -e "CREATE USER IF NOT EXISTS '$user'@'localhost' IDENTIFIED BY '$pass';"
+        mysql_root -e "CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED BY '$pass';"
+        mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$user'@'localhost';"
+        mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$user'@'%';"
+    done
+    mysql_root -e "FLUSH PRIVILEGES;"
+    log_ok "databases and grants in place (no DROP was issued)"
+    phase_mark_done database
+}
+
+# ---------------------------------------------------------------------------
+# RabbitMQ
+# ---------------------------------------------------------------------------
+phase_rabbitmq() {
+    log_step "message queue (RabbitMQ)"
+    service_start_enable rabbitmq-server
+    if ! rabbitmq_reachable; then
+        log_warn "RabbitMQ is not reachable; skipping user setup"
+        log_warn "  started via: ${SERVICE_START_METHOD[rabbitmq-server]}"
+        log_warn "  -> NOT VERIFIED here; covered by the GCE acceptance (B0b)"
+        return 0
+    fi
+    log_ok "RabbitMQ reachable (started via ${SERVICE_START_METHOD[rabbitmq-server]})"
+
+    if $SUDO rabbitmqctl list_users 2>/dev/null | awk '{print $1}' | grep -qx openstack; then
+        log_ok "rabbitmq user 'openstack' already exists — password left unchanged"
+    else
+        $SUDO rabbitmqctl add_user openstack "$RABBIT_PASS" >/dev/null
+        log_ok "rabbitmq user 'openstack' created"
+    fi
+    $SUDO rabbitmqctl set_permissions openstack ".*" ".*" ".*" >/dev/null
+    log_ok "rabbitmq permissions set"
+    phase_mark_done rabbitmq
+}
+
+# ---------------------------------------------------------------------------
+# memcached
+# ---------------------------------------------------------------------------
+phase_memcached() {
+    log_step "cache (memcached)"
+    # Listen on the management IP for Keystone/Horizon, never on 0.0.0.0.
+    if [ -f /etc/memcached.conf ]; then
+        if $SUDO grep -qE "^-l $MGMT_IP\$" /etc/memcached.conf; then
+            log_ok "memcached already bound to $MGMT_IP (unchanged)"
+        else
+            $SUDO sed -i -E "s/^-l .*/-l $MGMT_IP/" /etc/memcached.conf
+            log_ok "memcached bound to $MGMT_IP"
+        fi
+    fi
+    service_start_enable memcached
+    phase_mark_done memcached
+}
+
+# ---------------------------------------------------------------------------
+# where we stop
+# ---------------------------------------------------------------------------
+print_stage_banner() {
+    cat <<EOF
+
+${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
+${C_YEL} STEP 1 COMPLETE — THIS IS NOT A WORKING OPENSTACK${C_RESET}
+${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
+ What ran   : $IMPLEMENTED_PHASES
+ Not yet    : $PENDING_PHASES
+
+ No OpenStack service has been installed or started. There is no
+ Keystone, no Glance, no Placement, no Nova, no Neutron/OVN and no
+ Horizon. You cannot create a network or boot an instance yet.
+
+ Re-running this command is safe: it does not drop databases, does not
+ rotate existing secrets, and does not append duplicate configuration.
+${C_YEL}────────────────────────────────────────────────────────────────${C_RESET}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+cmd_all_in_one() {
+    log_step "hagistack $HAGISTACK_VERSION — all-in-one"
+    log_info "stage: $HAGISTACK_STAGE"
+    _need_privilege
+    phase_preflight
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log_ok "--check: preflight only, no changes made"
+        return 0
+    fi
+    phase_secrets
+    phase_base_packages
+    phase_database
+    phase_rabbitmq
+    phase_memcached
+    print_stage_banner
+}
+
+cmd_compute_add() {
+    log_error "'compute-add' is not implemented yet (planned for a later step)."
+    log_error "Step 1 covers the all-in-one skeleton, preflight and base services only."
+    log_error "Implemented now : $IMPLEMENTED_PHASES"
+    log_error "Still to come   : $PENDING_PHASES, then compute-add"
+    exit 3
+}
+
+cmd_status() {
+    detect_os; detect_container; detect_init
+    echo "hagistack $HAGISTACK_VERSION"
+    echo "stage    : $HAGISTACK_STAGE"
+    echo "os       : ${OS_PRETTY:-unknown}"
+    echo "init     : $([ "$HAS_SYSTEMD" -eq 1 ] && echo systemd || echo 'no systemd')"
+    echo "secrets  : $([ -f "$SECRETS_FILE" ] && echo "$SECRETS_FILE (mode $($SUDO stat -c '%a' "$SECRETS_FILE" 2>/dev/null || echo '?'))" || echo 'not created yet')"
+    echo
+    echo "phases implemented: $IMPLEMENTED_PHASES"
+    echo "phases pending    : $PENDING_PHASES"
+    echo
+    local p
+    for p in $IMPLEMENTED_PHASES; do
+        printf '  %-16s %s\n' "$p" "$(phase_done "$p" && echo 'done' || echo 'not done')"
+    done
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        echo
+        local u
+        for u in mariadb rabbitmq-server memcached; do
+            printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
+        done
+    else
+        echo
+        echo "  (service state unavailable: no systemd in this environment)"
+    fi
+}
+
+usage() {
+    cat <<EOF
+hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
+
+  STAGE: $HAGISTACK_STAGE
+  This build installs the base layer only. It does NOT give you a working
+  OpenStack. See README.md in this directory.
+
+usage:
+  hagistack all-in-one  [options]   build controller+compute on one host
+                                    (currently: preflight + base services)
+  hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
+  hagistack status                  show stage, phase and service state
+  hagistack --help                  this text
+  hagistack --version               version string
+
+options:
+  --ext-nic NAME            provider/external interface            (required)
+  --provider-cidr CIDR      external network, e.g. 172.24.4.0/24   (required)
+  --provider-gateway IP     gateway on that network                (required)
+  --floating-start IP       first floating IP                      (required)
+  --floating-end IP         last floating IP                       (required)
+  --mgmt-ip IP              management IP           (default: autodetected)
+  --tenant-cidr CIDR        demo tenant subnet      (default: 10.10.10.0/24)
+  --dns-server IP           tenant DNS              (default: provider gateway)
+  --virt-type kvm|qemu      hypervisor mode         (default: autodetected)
+  --env-file PATH           read settings from PATH (default: ./hagistack.env)
+  --check                   run preflight only, change nothing
+  -h, --help                this text
+
+configuration precedence:
+  command line  >  environment  >  ./hagistack.env  >  defaults/autodetect
+
+secrets:
+  Generated on first run into $SECRETS_FILE (mode 0600) and reused unchanged
+  afterwards. No password is hard-coded in this shell and no secret is ever
+  written into the repository.
+
+re-running:
+  Safe. Databases are never dropped, existing secrets are never rotated and
+  configuration is edited key-by-key rather than appended.
+EOF
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ext-nic)          EXT_NIC="${2:?--ext-nic requires a value}"; shift 2 ;;
+            --provider-cidr)    PROVIDER_CIDR="${2:?--provider-cidr requires a value}"; shift 2 ;;
+            --provider-gateway) PROVIDER_GATEWAY="${2:?--provider-gateway requires a value}"; shift 2 ;;
+            --floating-start)   FLOATING_START="${2:?--floating-start requires a value}"; shift 2 ;;
+            --floating-end)     FLOATING_END="${2:?--floating-end requires a value}"; shift 2 ;;
+            --mgmt-ip)          MGMT_IP="${2:?--mgmt-ip requires a value}"; shift 2 ;;
+            --tenant-cidr)      TENANT_CIDR="${2:?--tenant-cidr requires a value}"; shift 2 ;;
+            --dns-server)       DNS_SERVER="${2:?--dns-server requires a value}"; shift 2 ;;
+            --virt-type)        VIRT_TYPE="${2:?--virt-type requires a value}"; shift 2 ;;
+            --env-file)         ENV_FILE="${2:?--env-file requires a value}"; shift 2 ;;
+            --check)            DRY_RUN=1; shift ;;
+            -h|--help)          usage; exit 0 ;;
+            --version)          echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
+            --) shift; break ;;
+            -*) log_error "unknown option: $1"; echo; usage >&2; exit 2 ;;
+            *)  log_error "unexpected argument: $1"; echo; usage >&2; exit 2 ;;
+        esac
+    done
+}
+
+main() {
+    local cmd="${1:-}"
+    [ $# -gt 0 ] && shift || true
+    case "$cmd" in
+        all-in-one|compute-add|status) ;;
+        ""|-h|--help)  usage; exit 0 ;;
+        --version)     echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
+        *) log_error "unknown command: $cmd"
+           log_error "valid commands: all-in-one, compute-add (not yet implemented), status"
+           echo; usage >&2; exit 2 ;;
+    esac
+
+    # Flags first, then the env file, so the command line still wins.
+    local saved=("$@")
+    parse_args "${saved[@]+"${saved[@]}"}"
+    local cli_ext_nic="$EXT_NIC" cli_cidr="$PROVIDER_CIDR" cli_gw="$PROVIDER_GATEWAY"
+    local cli_fs="$FLOATING_START" cli_fe="$FLOATING_END" cli_mgmt="$MGMT_IP"
+    load_env_file
+    [ -n "$cli_ext_nic" ] && EXT_NIC="$cli_ext_nic"
+    [ -n "$cli_cidr" ]    && PROVIDER_CIDR="$cli_cidr"
+    [ -n "$cli_gw" ]      && PROVIDER_GATEWAY="$cli_gw"
+    [ -n "$cli_fs" ]      && FLOATING_START="$cli_fs"
+    [ -n "$cli_fe" ]      && FLOATING_END="$cli_fe"
+    [ -n "$cli_mgmt" ]    && MGMT_IP="$cli_mgmt"
+
+    case "$cmd" in
+        all-in-one)  cmd_all_in_one ;;
+        compute-add) cmd_compute_add ;;
+        status)      cmd_status ;;
+    esac
+}
+
+main "$@"

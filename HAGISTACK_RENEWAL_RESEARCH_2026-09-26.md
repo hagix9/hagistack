@@ -907,24 +907,43 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
 
 ### 11.1 必須 — ローカルコンテナ（ホストを変更しない検査）
 
+> **状況: 2026-09-27 に Step 1 の範囲で実施済み。**
+> Ubuntu 26.04.1 LTS(amd64) コンテナで **本体 62 PASS / 0 FAIL / 6 未検証**、
+> **DB 14 PASS / 0 FAIL / 3 未検証**。証跡は `ubuntu26.04/STEP1_CONTAINER_VERIFICATION.md`、
+> 再実行用スイートは `ubuntu26.04/tests/`。未検証項目はすべて §11.2 / §11.3 へ送った。
+
+**コンテナに systemd が存在・稼働することを前提にしない。** 以下は systemd 無しでも確認できる項目に限る。
+
 - [ ] `bash -n` が通る
 - [ ] `shellcheck` が警告なしで通る
-- [ ] サブコマンド解決と `usage()` が期待どおり
+- [ ] `--help` / サブコマンド解決 / **未実装コマンドの明確な扱い**が期待どおり
 - [ ] `set -euo pipefail` + `trap` により、途中失敗時は**明確なエラーメッセージを出して停止**する（半端に完了しない）
-- [ ] 設定生成が冪等（`ini_set` を 2 回適用しても結果が同じ。`tee -a` による重複追記が無い）
+- [ ] 設定生成が冪等（`ini_set` を 2 回適用しても差分ゼロ。`tee -a` による重複追記が無い）
 - [ ] 入力検査: 想定外 OS / 未指定の必須項目 / 不正な NIC 名 / 不正な CIDR を**分かりやすいエラーで拒否**する
-- [ ] **固定パスワードがソースに 1 つも無い**（`git grep -iE 'pass(word)?\s*=\s*[a-z0-9]'` で該当なし）
-- [ ] 生成した秘密情報が 0600 で置かれ、`hagistack.env` / `secrets.env` が `.gitignore` 済み
-- [ ] **再実行時の安全性**: 2 回実行しても破壊しない。ソースに `DROP DATABASE` が無い
+- [ ] **今回新たに作るシェルと関連ファイルに固定パスワードが 1 つも無い**
+      （検査対象は新規ファイルのみ。**旧世代シェルには既知の固定パスワードが残っているため、
+      リポジトリ全体への `git grep` は Step 1 の合否条件にしない** — §11.7 を参照）
+- [ ] 生成した秘密情報が **0600** で置かれ、**2 回目の実行で値が変わらない**
+- [ ] `hagistack.env` / `secrets.env` が `.gitignore` 済み
+- [ ] **再実行時の安全性**: 2 回実行しても既存データを消さない。**新規ファイルに `DROP DATABASE` が無い**
 - [ ] AppArmor 無効化・libvirt の無認証 TCP 公開・MariaDB の 0.0.0.0 公開を**行うコードが無い**
+- [ ] パッケージ・DB 操作を実際に試した場合、その操作が**コンテナ内に限られている**こと
+
+**MariaDB / RabbitMQ の起動・連携を検証する場合**
+
+- [ ] **そのコンテナでどう起動したか（systemd か、デーモン直起動か、`mysqld_safe` か等）を記録する**
+- [ ] 起動できなかった場合は **PASS にせず「未検証」として §11.2 の GCE 受入へ送る**
 
 > **コンテナでの合格は「ホストを変更せず確認できる範囲」に限る。**
-> `nova-compute` の KVM ゲスト起動・OVS/OVN のデータプレーン・物理 LAN 疎通は、
-> ここで通ってもコンテナでは実証扱いにしない（§5.2）。
+> `nova-compute` の KVM ゲスト起動・OVS/OVN のデータプレーン・物理 LAN 疎通・
+> **systemd ユニットの実起動順序と依存解決**は、コンテナでは実証扱いにしない（§5.2）。
+> これらは §11.2 / §11.3 の GCE 受入条件に残す。
 
 ### 11.2 必須 — GCE node1（all-in-one / Ubuntu 26.04 x86_64）
 
 - [ ] クリーンな Ubuntu 26.04 に対し **1 コマンド**で完走する
+- [ ] **systemd ユニットの実起動順序と依存解決が期待どおり**（コンテナでは確認できないためここで確認する）
+- [ ] **MariaDB / RabbitMQ が systemd 配下で起動し、各サービスから接続できる**
 - [ ] `openstack endpoint list` に keystone / glance / placement / nova / neutron が並ぶ
 - [ ] `openstack compute service list` が全て `up`
 - [ ] `openstack network agent list` の OVN Controller / Metadata Agent が `Alive`
@@ -938,6 +957,10 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
 - [ ] **2 回目の実行が破壊せずに完走する**
 
 ### 11.3 必須 — GCE node2（compute-add）
+
+> **node1 は AIO 受入後も稼働させたまま node2 を検証する。**
+> compute-add はコントローラが生きていなければ成立しない（RabbitMQ / Keystone / Glance /
+> Placement / OVN Southbound への接続が要る）。**検証の途中で node1 を止めない。**
 
 - [ ] `CONTROLLER_IP` + `JOIN_SECRET` の 2 項目だけで完走する
 - [ ] コントローラ側で `openstack compute service list` に 2 台目が `up` で出る
@@ -969,6 +992,16 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
       「配布 RPM による OpenStack 2026.1 の直接構築は §0 の理由により未対応。他の手段は未調査」と明記する
 - [ ] 再評価のトリガ（§0 の 3 条件）を README に書いておき、定期的に確認する
 
+### 11.7 別条件 — 旧コード削除後のリポジトリ全体検索
+
+**これは Step 1 の合否条件ではない。** 旧世代シェル（`ubuntu12.04` 〜 `ubuntu13.10`、`centos6.*`）には
+`MYSQL_PASS=nova` `RABBIT_PASS=password` `ADMIN_PASSWORD=secrete` 等の**既知の固定パスワードが残っている**（§1.4）。
+これらを `legacy/` へ移動または削除した**後に**、初めて次を条件として課す。
+
+- [ ] リポジトリ全体で固定パスワードが無い
+      （`git grep -nIE '(pass(word)?|secret|token)[[:space:]]*=[[:space:]]*[A-Za-z0-9]' -- . ':!legacy'` で該当なし）
+- [ ] リポジトリ全体で無条件の `DROP DATABASE` / `rm -rf /var/log` が無い
+
 ---
 
 ## 12. 最初の小さな実装単位
@@ -977,8 +1010,11 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
 
 ### Step 1（最初の 1 単位）: `hagistack` の骨格 + preflight + 基盤 3 点
 
-**成果物**: `ubuntu26.04/hagistack`（実行可能な 1 ファイル）
+**成果物**: `ubuntu26.04/hagistack`（実行可能な 1 ファイル）+ `hagistack.env.example` + `README.md` + `tests/`
 **検証場所**: **ローカルコンテナ**（ホストを変更しない範囲。§5.2）
+**状況**: **実装・検証とも完了（2026-09-27）**。証跡 `ubuntu26.04/STEP1_CONTAINER_VERIFICATION.md`。
+コンテナ検証で 5 件の実装欠陥を発見し修正した（うち 1 件は **`set -E` 欠落により ERR トラップが
+関数内で発火していなかった**もので、全フェーズが無防備だった）。
 
 **含めるもの**
 
@@ -1021,6 +1057,7 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
 
 | Step | 場所 | 内容 | 完了条件 |
 |---|---|---|---|
+| 1 | コンテナ | **（完了）** 骨格 + preflight + 基盤 3 点 | **62 PASS / 0 FAIL / 6 未検証** |
 | 2 | コンテナ | Keystone | 設定生成と冪等性。`token issue` は GCE で確認 |
 | 3 | コンテナ | Glance + Placement | 同上 |
 | 4 | コンテナ | OVS + OVN + Neutron server の**設定生成** | 生成内容の検査（データプレーンは GCE で確認） |
@@ -1028,10 +1065,11 @@ git log --diff-filter=D --name-only --oneline   # 削除されたファイルを
 | 6 | コンテナ | 初期リソース投入ロジック（flavor / image / network / router / secgroup / keypair） | `show \|\| create` の冪等性 |
 | 7 | コンテナ | Horizon 設定 | 生成内容の検査 |
 | 8 | コンテナ | `compute-add` サブコマンド + `join-token` | 生成内容と入力検査 |
-| 9 | **GCE node1** | **all-in-one の実受入** | **§11.2 を全て満たす** |
-| 10 | **GCE node2** | **compute-add の実受入** | **§11.3 を全て満たす** |
-| 11 | GCE | 検証後に VM とディスクの状態を確認し、費用が残らないようにする | `destroy` 後にインスタンスとディスクが消えていること |
-| 12 | Mac（任意） | arm64 / 物理 LAN の追加証跡 | 取れれば記録。取れなければ「未確認」に残す |
+| 9 | **GCE node1** | **all-in-one の実受入**。**受入後も node1 を止めない** | **§11.2 を全て満たす** |
+| 10 | **GCE node2** | **node1 を稼働させたまま compute-add の実受入** | **§11.3 を全て満たす** |
+| 11 | **GCE（両ノード稼働中）** | ノードをまたぐ確認（ゲスト間通信・ノード間疎通の実測）と証跡の回収 | 区分 A・B が全て埋まる |
+| 12 | GCE | **証跡が揃ってから**両ノードを stop → `destroy`。費用が残らないようにする | `destroy` 後にインスタンスとディスクが消えていること |
+| 13 | Mac（任意） | arm64 / 物理 LAN の追加証跡 | 取れれば記録。取れなければ「未確認」に残す |
 
 **コンテナで通せるところは全部コンテナで通してから GCE に上がる。** GCE の稼働時間を最小にするため。
 
