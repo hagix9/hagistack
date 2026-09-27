@@ -3,11 +3,11 @@
 A plain-Bash OpenStack deployment shell. Not OpenStack-Ansible, not
 Kolla-Ansible, not Packstack, not DevStack.
 
-## Current status: Step 4 — **this is not a working OpenStack yet**
+## Current status: Step 5 — **this is not a finished OpenStack yet**
 
 | | |
 |---|---|
-| Version | `0.4.0-step4` |
+| Version | `0.5.0-step5` |
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 
@@ -27,19 +27,23 @@ Kolla-Ansible, not Packstack, not DevStack.
   control plane: northbound and southbound databases, `ovn-northd`,
   `ovn-controller`, Geneve as the tenant network type, and a provider bridge
   with its physnet mapping
+- **Nova**: the compute API on port 8774 and the metadata API on 8775 (both
+  Apache vhosts), `nova-conductor`, `nova-scheduler`, cells v2 (`cell0` +
+  `cell1`), and `nova-compute` with libvirt/KVM — wired to Keystone, Glance,
+  Placement, Neutron and RabbitMQ
 
 **Not implemented yet**
 
-Nova, Horizon, initial resources
-(flavor / image / network / router / security group / keypair), and the whole
-of `compute-add`. `compute-add` exits with a clear "not implemented" message
-and status 3.
+Horizon, the initial resources (flavor / image / network / router / security
+group / keypair), and the whole of `compute-add`. `compute-add` exits with a
+clear "not implemented" message and status 3.
 
 So: after `all-in-one` finishes you have a database, a message queue, a cache,
-identity, an image store, placement and a networking API. **There is no compute:
-no instance can be booted, the provider bridge has no NIC and no address so
-provider networks reach no physical LAN, and Geneve between nodes is untested
-until a second node joins. This is not a usable OpenStack.**
+identity, an image store, placement, a networking API and a compute service
+with a registered hypervisor. **No guest VM has been booted or verified, the
+provider bridge has no NIC and no address so provider networks reach no
+physical LAN, and Geneve between nodes is untested until a second node joins.
+Do not call this a finished OpenStack.**
 The command prints a banner saying exactly that, and `hagistack status` lists
 which phases are implemented versus pending.
 
@@ -129,6 +133,44 @@ address, and that the management interface kept exactly the addresses it had.
 
 See `STEP4_NEUTRON_OVN_EVIDENCE.md` for the measured packaging facts behind
 every unit name and config path above.
+
+### Nova
+
+A fourth combination of startup models, again the packaging's choice:
+
+| | how it starts |
+|---|---|
+| compute **API** (:8774) | **`apache2.service`** — a fourth vhost. `nova-api` ships *no* systemd unit |
+| **metadata** API (:8775) | a *separate* package, `nova-api-metadata`, with its own vhost |
+| conductor / scheduler / compute | real units (`Type=simple`, `User=nova`, `ExecStart=/etc/init.d/<name> systemd-start`) |
+
+Things that are easy to get wrong and were checked in the packages:
+
+- **No Nova package touches the database.** `api_db sync`, `db sync`,
+  `cell_v2 map_cell0` and `cell_v2 create_cell` are all hagistack's job.
+- `/etc/nova/nova.conf` is stored `0644 root:root` inside the `.deb`, but
+  `nova-common`'s postinst chowns `/etc/nova` to `root:nova` and chmods it
+  `0640`, so that is what is actually installed. hagistack re-applies the same
+  mode after writing credentials — enforcement, not a fix (the first draft of
+  the evidence document claimed otherwise; the suite caught it).
+- The cell0 database **must** be called `nova_cell0`: Nova derives that name
+  from `[database] connection` by appending `_cell0`. Because of that,
+  `map_cell0` is called with **no arguments** and no password ever appears in
+  `ps`. `cell_v2 list_cells` prints passwords, so its output is matched but
+  never logged.
+- `[api] auth_strategy` does not exist in Nova 33, and `[glance] api_servers`
+  has been deprecated since 21.0.0 — neither is written.
+- `/etc/init.d/nova-compute` adds `--config-file=/etc/nova/nova-compute.conf`,
+  so the virtualisation type goes there, not into `nova.conf`.
+
+`--virt-type` (or `/dev/kvm` detection in preflight) selects `kvm` or `qemu`;
+under `qemu` the run says plainly that guests are 10–50× slower and sets
+`[libvirt] cpu_mode = none`.
+
+`phase_nova_compute` checks that the Nova control plane completed **before**
+installing anything, because `nova-compute` pulls libvirt and qemu.
+
+See `STEP5_NOVA_EVIDENCE.md`.
 
 ### Completion is not assumed
 
@@ -234,12 +276,23 @@ pointing at the management address, the provider bridge is created with **no
 port and no address**, the management interface keeps exactly the addresses it
 had, and the networking schema is created (135 tables).
 
-Regression on the same build, narrowed to what this change touches: the step 1
+Regression on the step 4 build, narrowed to what that change touched: the step 1
 audit suite **39/0/1** and the step 1 verify suite **63/0/8**, both guest exit 0,
 **no FAIL** (the UNVERIFIED entries are tooling the leaner container lacked, not
 behaviour that changed — see `STEP4_NEUTRON_OVN_EVIDENCE.md` §10).
 
-**Not verified anywhere yet**: service startup *under systemd* and unit ordering;
+Step 5 was verified with a deliberately light suite — **PASS 68 / FAIL 0 /
+UNVERIFIED 7, guest exit 0** — covering syntax, ShellCheck, the new input
+validation, honest skipping, the Nova packaging facts, configuration generation
+against the real packaged `nova.conf` (including byte-identical re-application),
+the three compute databases with one credential, and secret handling. It does
+**not** bring the control plane up: see `STEP5_NOVA_EVIDENCE.md` §3 for why, and
+§4 for what that leaves unverified.
+
+**Not verified anywhere yet**: the **compute API** (:8774), the cells commands
+actually executing, **nova-compute/libvirt**, hypervisor registration and
+**booting a guest VM** — none of which a container can settle; service startup
+*under systemd* and unit ordering;
 the **authenticated Neutron API**, networking service/endpoint registration and
 network creation — the container hit its own limit here, a Keystone
 `QueuePool limit of size 5 overflow 50 reached` at 98% disk with the database

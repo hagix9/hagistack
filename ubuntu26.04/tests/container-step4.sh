@@ -330,7 +330,7 @@ checkpoint after-ovn-start || true
 
 echo
 echo "== N4. the product configures OVN (run 1) =="
-run_product run1; o1="$RUN_OUT"; rc1="$RUN_RC"
+run_product run1; rc1="$RUN_RC"
 if [ "$rc1" = "4" ] || [ "$rc1" = "0" ]; then
   rec N4a0-run-terminal PASS "run 1 reached a terminal state (exit $rc1) after $RUN_ATTEMPTS attempt(s)"
 else

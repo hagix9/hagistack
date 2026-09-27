@@ -22,13 +22,13 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.4.0-step4"
-HAGISTACK_STAGE="step4: base + Keystone + Glance + Placement + Neutron/OVN (no Nova, no Horizon; no instance can boot)"
+HAGISTACK_VERSION="0.5.0-step5"
+HAGISTACK_STAGE="step5: base + Keystone + Glance + Placement + Neutron/OVN + Nova (no Horizon; guest boot unverified)"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
-IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron"
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron nova nova_compute"
 # Phases still to come. Listed so the CLI can be honest about where it stops.
-PENDING_PHASES="nova horizon bootstrap_resources verify"
+PENDING_PHASES="horizon bootstrap_resources verify"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -593,7 +593,8 @@ phase_preflight() {
 SECRET_KEYS="MYSQL_ROOT_PASS RABBIT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS
              PLACEMENT_DB_PASS NOVA_DB_PASS NEUTRON_DB_PASS
              ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET
-             GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS"
+             GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS
+             NOVA_SERVICE_PASS"
 
 # Keys written by an earlier version that are no longer used. They are reported
 # and then left alone: rewriting a live secrets file to drop a key is a bigger
@@ -760,7 +761,10 @@ phase_database() {
     log_ok "MariaDB reachable (started via ${SERVICE_START_METHOD[mariadb]})"
 
     local db user
-    for db in keystone glance placement nova nova_api neutron; do
+    # nova_cell0 holds instances that never reached a cell; nova derives its
+    # name by appending _cell0 to the [database] connection, so it must be
+    # exactly this and owned by the same nova credential.
+    for db in keystone glance placement nova nova_api nova_cell0 neutron; do
         user="${db%%_*}"
         local passvar
         case "$db" in
@@ -769,6 +773,7 @@ phase_database() {
             placement)passvar="PLACEMENT_DB_PASS" ;;
             nova)     passvar="NOVA_DB_PASS" ;;
             nova_api) passvar="NOVA_DB_PASS"; user="nova" ;;
+            nova_cell0) passvar="NOVA_DB_PASS"; user="nova" ;;
             neutron)  passvar="NEUTRON_DB_PASS" ;;
         esac
         local pass="${!passvar}"
@@ -1847,6 +1852,344 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
 }
 
 # ---------------------------------------------------------------------------
+# Nova (compute)
+#
+# Packaging verified on Ubuntu 26.04 (nova 3:33.0.0-0ubuntu3.1), by unpacking
+# the .deb files rather than by analogy with the other services:
+#   * nova-api ships /etc/apache2/sites-available/nova-api.conf with its own
+#     `Listen 8774` and WSGIScriptAlias to /usr/bin/nova-api-wsgi, and its
+#     postinst runs `apache2_invoke ensite`. There is NO nova-api systemd unit.
+#     nova-api-metadata is a separate package with its own vhost on `Listen
+#     8775` and /usr/bin/nova-metadata-wsgi.
+#   * nova-conductor, nova-scheduler and nova-compute DO ship units, all
+#     Type=simple, User=nova, ExecStart=/etc/init.d/<name> systemd-start
+#     (the Debian init wrapper). nova-compute's unit also orders itself After=
+#     libvirtd.service.
+#   * No postinst touches the database: no db sync, no cell_v2. All of that is
+#     hagistack's job.
+#   * nova-common ships /etc/nova/nova.conf as **0644 root:root** — unlike
+#     neutron-common (0640 root:neutron). Since hagistack writes credentials
+#     into it, the mode is tightened to 0640 root:nova here.
+#   * nova-compute-kvm ships /etc/nova/nova-compute.conf with
+#     compute_driver=libvirt.LibvirtDriver and [libvirt] virt_type=kvm, and
+#     /etc/init.d/nova-compute passes `--config-file=/etc/nova/nova-compute.conf`
+#     in addition to the default nova.conf. That is the file to edit for the
+#     virtualisation type.
+#   * `nova-manage` categories in the shipped code: api_db, cell_v2, db,
+#     placement, libvirt, volume_attachment, image_property, limits.
+#     cell_v2 offers map_cell0, create_cell, discover_hosts, list_cells, ...
+#     `_map_cell0` with no --database_connection derives the cell0 URL from
+#     [database] connection by appending `_cell0` to the database name, so the
+#     flag is omitted and no password is ever passed on a command line.
+#   * `[api] auth_strategy` does NOT exist in nova 33 (checked in
+#     nova/conf/api.py); it is not invented here. `[glance] api_servers` is
+#     deprecated since 21.0.0, so the image service is reached through the
+#     catalogue with `valid_interfaces` instead.
+#   * `[neutron] metadata_proxy_shared_secret` is absent from the shipped
+#     sample (oslo hides secret options) but IS defined in
+#     nova/conf/neutron.py, which is what this uses.
+# ---------------------------------------------------------------------------
+NOVA_CONF="/etc/nova/nova.conf"
+NOVA_COMPUTE_CONF="/etc/nova/nova-compute.conf"
+NOVA_API_PORT=8774
+NOVA_METADATA_PORT=8775
+NOVA_UNITS="nova-conductor nova-scheduler"
+NOVA_COMPUTE_UNITS="nova-compute"
+
+nova_api_serving() {
+    _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:${NOVA_API_PORT}/" 2>/dev/null
+}
+
+# nova-manage as the nova user. Credentials come from nova.conf, never argv.
+nova_manage() { $SUDO runuser -u nova -- nova-manage "$@"; }
+
+# A keystoneauth adapter block (placement, neutron, service_user all use the
+# same shape). Values are written key-by-key so a re-run rewrites nothing.
+write_service_auth() {  # write_service_auth <conf> <section> <user> <pass> [interfaces]
+    local conf="$1" sec="$2" user="$3" pass="$4" ifaces="${5:-}"
+    ini_set "$conf" "$sec" auth_url            "http://${MGMT_IP}:5000/v3" >/dev/null || true
+    ini_set "$conf" "$sec" auth_type           password                    >/dev/null || true
+    ini_set "$conf" "$sec" project_domain_name Default                     >/dev/null || true
+    ini_set "$conf" "$sec" user_domain_name    Default                     >/dev/null || true
+    ini_set "$conf" "$sec" project_name        service                     >/dev/null || true
+    ini_set "$conf" "$sec" region_name         "$REGION_NAME"              >/dev/null || true
+    ini_set "$conf" "$sec" username            "$user"                     >/dev/null || true
+    ini_set "$conf" "$sec" password            "$pass"                     >/dev/null || true
+    [ -n "$ifaces" ] && ini_set "$conf" "$sec" valid_interfaces "$ifaces"  >/dev/null || true
+    return 0
+}
+
+# Is a cell with this name already mapped? `list_cells` prints the database and
+# transport URLs, passwords included, so its output is matched but never shown.
+nova_cell_exists() {  # nova_cell_exists <name>
+    local out
+    out="$(nova_manage cell_v2 list_cells 2>/dev/null)" || return 1
+    grep -qE "[| ]$1[ |]" <<<"$out"
+}
+
+phase_nova() {
+    log_step "compute API and control services (Nova)"
+
+    local pkgs="nova-api nova-api-metadata nova-conductor nova-scheduler"
+    if dpkg-query -W -f='${Status}' nova-conductor 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "nova control services already installed"
+    else
+        log_info "installing:$pkgs (nova-api provides the :$NOVA_API_PORT vhost)"
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        log_ok "nova control services installed"
+    fi
+    log_info "nova $(dpkg-query -W -f='${Version}' nova-common 2>/dev/null || echo '?'): \
+API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nova-api unit), plus $NOVA_UNITS"
+
+    # --- dependencies -------------------------------------------------------
+    if ! mariadb_reachable; then
+        note_skip nova "MariaDB is not reachable; the compute databases cannot be created."
+        return 0
+    fi
+    local d
+    for d in nova nova_api nova_cell0; do
+        if ! mysql_root -e "USE \`$d\`" >/dev/null 2>&1; then
+            note_skip nova "the '$d' database does not exist; the database phase did not complete."
+            return 0
+        fi
+    done
+    if ! keystone_ready_for_registration; then
+        note_skip nova "Keystone is not answering, so compute cannot be registered."
+        return 0
+    fi
+    if ! memcached_reachable; then
+        note_skip nova "memcached is not listening on ${MGMT_IP}:11211; see the glance phase."
+        return 0
+    fi
+    # Placement and Neutron are runtime dependencies rather than configuration
+    # ones: nova can be configured without them, but it cannot schedule or
+    # network an instance. Say so rather than silently producing a cloud that
+    # cannot boot anything.
+    phase_done placement || log_warn "the placement phase has not completed; nova cannot schedule until it does"
+    phase_done neutron   || log_warn "the neutron phase has not completed; instances will have no network"
+    rabbitmq_reachable   || log_warn "RabbitMQ is not reachable; conductor, scheduler and compute cannot talk"
+
+    # --- nova.conf -----------------------------------------------------------
+    local changed=0
+    ini_set "$NOVA_CONF" DEFAULT my_ip "$MGMT_IP"                            && changed=1
+    ini_set "$NOVA_CONF" DEFAULT transport_url \
+        "rabbit://openstack:${RABBIT_PASS}@${MGMT_IP}:5672/"                 && changed=1
+    ini_set "$NOVA_CONF" api_database connection \
+        "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova_api?charset=utf8mb4" && changed=1
+    ini_set "$NOVA_CONF" database connection \
+        "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova?charset=utf8mb4"     && changed=1
+    write_authtoken "$NOVA_CONF" nova "$NOVA_SERVICE_PASS"
+    # nova's own service token, used when it calls glance/neutron/placement
+    write_service_auth "$NOVA_CONF" service_user nova "$NOVA_SERVICE_PASS"
+    ini_set "$NOVA_CONF" service_user send_service_user_token true           && changed=1
+    write_service_auth "$NOVA_CONF" placement placement "$PLACEMENT_SERVICE_PASS" internal
+    write_service_auth "$NOVA_CONF" neutron   neutron   "$NEUTRON_SERVICE_PASS"   internal
+    # api_servers is deprecated since 21.0.0; reach glance through the catalogue
+    ini_set "$NOVA_CONF" glance valid_interfaces internal                    && changed=1
+    # the OVN metadata agent proxies instance metadata to nova with this secret
+    ini_set "$NOVA_CONF" neutron service_metadata_proxy true                 && changed=1
+    ini_set "$NOVA_CONF" neutron metadata_proxy_shared_secret \
+        "$METADATA_PROXY_SECRET"                                             && changed=1
+    ini_set "$NOVA_CONF" vnc enabled true                                    && changed=1
+    ini_set "$NOVA_CONF" vnc server_listen "$MGMT_IP"                        && changed=1
+    ini_set "$NOVA_CONF" vnc server_proxyclient_address "$MGMT_IP"           && changed=1
+    ini_set "$NOVA_CONF" oslo_concurrency lock_path /var/lib/nova/tmp        && changed=1
+    if [ "$changed" -eq 1 ]; then
+        log_ok "nova.conf configured (credentials not shown)"
+    else
+        log_ok "nova.conf already correct (unchanged)"
+    fi
+    # The package ships this 0644 root:root and it now holds credentials.
+    $SUDO chown root:nova "$NOVA_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$NOVA_CONF"
+    $SUDO install -d -o nova -g nova -m 0750 /var/lib/nova/tmp 2>/dev/null || true
+
+    # --- schema, then cells v2 ------------------------------------------------
+    local before after
+    before="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='nova'" 2>/dev/null || echo 0)"
+    local nerr; nerr="$(mktemp)"; chmod 0600 "$nerr"
+    _nova_manage_or_skip() {   # _nova_manage_or_skip <what> <args...>
+        local what="$1"; shift
+        if nova_manage "$@" >"$nerr" 2>&1; then return 0; fi
+        log_error "nova-manage $what failed. Diagnostics (credentials redacted):"
+        $SUDO sed "s/${NOVA_DB_PASS}/<redacted>/g; s/${NOVA_SERVICE_PASS}/<redacted>/g; s/${RABBIT_PASS}/<redacted>/g" "$nerr" \
+          | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        return 1
+    }
+    log_info "running nova-manage api_db sync (idempotent migration)"
+    if ! _nova_manage_or_skip "api_db sync" api_db sync; then
+        rm -f "$nerr"; note_skip nova "the nova_api schema could not be created."; return 0
+    fi
+    # cell0 first: nova derives its URL from [database] connection + _cell0, so
+    # no password is passed on the command line. Re-running prints
+    # "Cell0 is already setup" and exits 0.
+    log_info "mapping cell0 (URL derived from [database] connection, not passed on the command line)"
+    if ! _nova_manage_or_skip "cell_v2 map_cell0" cell_v2 map_cell0; then
+        rm -f "$nerr"; note_skip nova "cell0 could not be mapped."; return 0
+    fi
+    log_info "running nova-manage db sync (idempotent migration)"
+    if ! _nova_manage_or_skip "db sync" db sync; then
+        rm -f "$nerr"; note_skip nova "the nova schema could not be created."; return 0
+    fi
+    after="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='nova'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "compute schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "compute schema already current ($after tables, unchanged)"
+    else log_ok "compute schema migrated ($before -> $after tables)"; fi
+
+    # cell1 is created only when it is absent: create_cell would otherwise add a
+    # second mapping, and an existing cell is never deleted or rewritten.
+    if nova_cell_exists cell1; then
+        log_ok "cell 'cell1' already mapped — left untouched"
+    else
+        if ! _nova_manage_or_skip "cell_v2 create_cell" cell_v2 create_cell --name cell1; then
+            rm -f "$nerr"; note_skip nova "cell1 could not be created."; return 0
+        fi
+        log_ok "cell 'cell1' created (database and transport taken from nova.conf)"
+    fi
+    rm -f "$nerr"
+
+    # --- identity registration -------------------------------------------------
+    ks_ensure_project service
+    ks_ensure_user nova "$NOVA_SERVICE_PASS"
+    ks_ensure_role_assignment nova service admin
+    ks_ensure_service nova compute "OpenStack Compute"
+    local url="http://${MGMT_IP}:${NOVA_API_PORT}/v2.1"
+    ks_ensure_endpoint nova public   "$url"
+    ks_ensure_endpoint nova internal "$url"
+    ks_ensure_endpoint nova admin    "$url"
+
+    # --- run it ------------------------------------------------------------------
+    $SUDO a2ensite nova-api >/dev/null 2>&1 || true
+    $SUDO a2ensite nova-api-metadata >/dev/null 2>&1 || true
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        if service_active apache2; then
+            $SUDO systemctl reload-or-restart apache2 \
+                || die "apache2 failed to reload after the nova configuration change"
+            log_ok "apache2 reloaded (identity :5000, placement :8778, networking :9696, compute :${NOVA_API_PORT}, metadata :${NOVA_METADATA_PORT})"
+        else
+            service_start_enable apache2
+        fi
+        local u
+        for u in $NOVA_UNITS; do service_start_enable "$u"; done
+    else
+        log_warn "systemd is not running here; the nova units cannot be started"
+        for u in $NOVA_UNITS; do SERVICE_START_METHOD[$u]="not-started-no-systemd"; done
+    fi
+
+    if ! service_active apache2; then
+        note_skip nova "apache2 is not running, so the compute API is not being served.
+     The schema, cells, configuration and identity registration ARE in place.
+     Startup under systemd is a GCE acceptance item (B0a/B0b)."
+        return 0
+    fi
+    if ! nova_api_serving; then
+        note_skip nova "apache2 is active but http://${MGMT_IP}:${NOVA_API_PORT}/ did not answer."
+        return 0
+    fi
+    if ! openstack_admin compute service list >/dev/null 2>&1; then
+        note_skip nova "the compute endpoint answers but 'openstack compute service list' failed.
+     conductor and scheduler need RabbitMQ and the cell databases to be reachable."
+        return 0
+    fi
+    log_ok "compute API verified (openstack compute service list succeeded)"
+    log_warn "no hypervisor is registered yet and no instance has been booted."
+    phase_mark_done nova
+}
+
+phase_nova_compute() {
+    log_step "hypervisor (nova-compute)"
+
+    # The dependency is checked BEFORE installing: nova-compute pulls
+    # libvirt-daemon-system and qemu-system, several hundred megabytes that are
+    # useless on a host where the nova control plane is not up yet.
+    if ! phase_done nova; then
+        note_skip nova_compute "the nova phase did not complete, so there is nothing for a
+     hypervisor to register with. Neither libvirt/qemu nor nova-compute was installed."
+        return 0
+    fi
+
+    local pkgs="nova-compute nova-compute-kvm"
+    if dpkg-query -W -f='${Status}' nova-compute 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "nova-compute already installed"
+    else
+        log_info "installing:$pkgs (pulls libvirt-daemon-system and qemu-system)"
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        log_ok "nova-compute installed"
+    fi
+
+    # --- virtualisation type ---------------------------------------------------
+    # VIRT_TYPE was resolved in preflight from /dev/kvm (or given explicitly).
+    # It goes into nova-compute.conf, which is the file the packaged init script
+    # passes with --config-file in addition to nova.conf.
+    local changed=0
+    ini_set "$NOVA_COMPUTE_CONF" DEFAULT compute_driver libvirt.LibvirtDriver && changed=1
+    ini_set "$NOVA_COMPUTE_CONF" libvirt virt_type "$VIRT_TYPE"               && changed=1
+    if [ "$VIRT_TYPE" = "qemu" ]; then
+        # Without hardware virtualisation the generic CPU model is the only one
+        # that reliably works; say plainly what this costs.
+        ini_set "$NOVA_COMPUTE_CONF" libvirt cpu_mode none                    && changed=1
+        log_warn "virt_type=qemu: /dev/kvm is not usable here, so guests run under"
+        log_warn "  software emulation (10-50x slower). Usable for a boot smoke test only."
+    else
+        log_ok "virt_type=kvm (/dev/kvm usable)"
+    fi
+    [ "$changed" -eq 1 ] && log_ok "nova-compute.conf configured" \
+                         || log_ok "nova-compute.conf already correct (unchanged)"
+    $SUDO chown root:nova "$NOVA_COMPUTE_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$NOVA_COMPUTE_CONF"
+
+    # --- run it -----------------------------------------------------------------
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        service_start_enable libvirtd
+        local u
+        for u in $NOVA_COMPUTE_UNITS; do service_start_enable "$u"; done
+    else
+        log_warn "systemd is not running here; libvirtd and nova-compute cannot be started"
+        log_warn "  -> a hypervisor cannot be registered, and no guest can be booted"
+        for u in $NOVA_COMPUTE_UNITS; do SERVICE_START_METHOD[$u]="not-started-no-systemd"; done
+        note_skip nova_compute "nova-compute was configured but not started (no systemd).
+     Hypervisor registration, cell host discovery and guest boot are GCE items."
+        return 0
+    fi
+
+    # --- has the hypervisor actually registered? ---------------------------------
+    local i=0 reg_hosts=""
+    while [ "$i" -lt 12 ]; do
+        reg_hosts="$(openstack_admin compute service list --service nova-compute -f value -c Host 2>/dev/null || true)"
+        [ -n "$(tr -d '[:space:]' <<<"$reg_hosts")" ] && break
+        i=$((i+1)); sleep 5
+    done
+    if [ -z "$(tr -d '[:space:]' <<<"$reg_hosts")" ]; then
+        note_skip nova_compute "nova-compute is running but did not register a compute service.
+     Check RabbitMQ and the conductor; nothing was discovered, so no host was mapped."
+        return 0
+    fi
+    log_ok "compute service registered: $(tr '\n' ' ' <<<"$reg_hosts")"
+
+    # Map the new host into cell1. discover_hosts is idempotent: hosts already
+    # mapped are reported as such and nothing is recreated.
+    if nova_manage cell_v2 discover_hosts --by-service >/dev/null 2>&1; then
+        log_ok "cell host discovery ran (already-mapped hosts are left alone)"
+    else
+        note_skip nova_compute "'nova-manage cell_v2 discover_hosts' failed; the hypervisor is
+     running but is not mapped into a cell, so the scheduler will not use it."
+        return 0
+    fi
+    if ! openstack_admin hypervisor list >/dev/null 2>&1; then
+        note_skip nova_compute "the hypervisor list could not be read back after discovery."
+        return 0
+    fi
+    log_ok "hypervisor visible to the compute API"
+    log_warn "a registered hypervisor is not a booted guest: no instance has been started,"
+    log_warn "  and guest boot stays unverified until the GCE acceptance."
+    phase_mark_done nova_compute
+}
+
+# ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
 # Two outcomes, never conflated: the base layer either came up or it did not.
@@ -1857,7 +2200,7 @@ print_stage_banner() {
         cat <<EOF
 
 ${C_RED}${rule}${C_RESET}
-${C_RED} STEP 4 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
+${C_RED} STEP 5 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
 ${C_RED}${rule}${C_RESET}
  Skipped    : $SKIPPED_PHASES
  Completed  : $(printf '%s' "$(_completed_phases)")
@@ -1865,7 +2208,7 @@ ${C_RED}${rule}${C_RESET}
 
  One or more services could not be reached, so their setup did not run.
  This is expected in a container with no systemd, and it is NOT a failure
- of the shell — but it is also NOT a completed step 4.
+ of the shell — but it is also NOT a completed step 5.
 
  Nothing was left half-written: the skipped phases made no changes and
  carry no state marker, so re-running once the services are up will
@@ -1879,25 +2222,29 @@ EOF
     cat <<EOF
 
 ${C_YEL}${rule}${C_RESET}
-${C_YEL} STEP 4 COMPLETE (IDENTITY+IMAGE+PLACEMENT+NETWORKING API) — NOT USABLE${C_RESET}
+${C_YEL} STEP 5 COMPLETE (CONTROL PLANE + HYPERVISOR) — GUEST BOOT UNVERIFIED${C_RESET}
 ${C_YEL}${rule}${C_RESET}
  What ran   : $IMPLEMENTED_PHASES
  Not yet    : $PENDING_PHASES
 
  Up: database, message queue, cache, Keystone identity, Glance, Placement,
- and the Neutron networking API on ML2/OVN with OVS/OVN running.
+ the Neutron networking API on ML2/OVN, and Nova — API, conductor, scheduler
+ and a registered hypervisor (virt_type=$VIRT_TYPE).
 
- Still missing: Nova and Horizon — there is no compute and no dashboard, so
- ${C_RED}no instance can be booted.${C_RESET} The provider bridge $PROVIDER_BRIDGE exists but has
- ${C_RED}no NIC attached and no address${C_RESET}, so provider networks have no path to a
- physical LAN yet. Geneve tunnelling between nodes is configured but
- ${C_RED}untested until a second node joins.${C_RESET}
+ Still missing: Horizon, and the initial resources (flavor, image, network,
+ router, security group, keypair) an instance needs.
 
- ${C_RED}This is NOT a usable OpenStack.${C_RESET}
+ ${C_RED}No guest VM has been booted by this run, and nothing here proves one can be.${C_RESET}
+ The provider bridge $PROVIDER_BRIDGE has ${C_RED}no NIC attached and no address${C_RESET}, so
+ provider networks reach no physical LAN; Geneve between nodes is configured
+ but ${C_RED}untested until a second node joins${C_RESET}.
+
+ ${C_RED}Do not call this a finished OpenStack until guest boot and the two-node
+ path have been verified on real machines.${C_RESET}
 
  Admin credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
-   . $ADMIN_OPENRC && openstack network list
-   . $ADMIN_OPENRC && openstack endpoint list
+   . $ADMIN_OPENRC && openstack compute service list
+   . $ADMIN_OPENRC && openstack hypervisor list
 
  Re-running this command is safe: it does not drop databases, does not
  rotate existing secrets or fernet keys, and does not append duplicate
@@ -1939,6 +2286,8 @@ cmd_all_in_one() {
     phase_placement
     phase_ovn
     phase_neutron
+    phase_nova
+    phase_nova_compute
     print_stage_banner
     # `exit` rather than `return`: a non-zero return would trip the ERR trap and
     # print an "aborted" line, which this is not.
@@ -1980,10 +2329,11 @@ cmd_status() {
         echo "implemented layer: INCOMPLETE — missing: $incomplete"
         echo "            'all-in-one' exits 4 while any of these is missing."
     fi
-    echo "NOTE: even when COMPLETE, Nova and Horizon are NOT installed, so no"
-    echo "      instance can be booted. The provider bridge has no NIC attached"
-    echo "      and no address, so provider networks reach no physical LAN, and"
-    echo "      Geneve node-to-node tunnelling is untested until compute-add."
+    echo "NOTE: even when COMPLETE, Horizon is NOT installed, no initial resources"
+    echo "      exist, and no guest VM has been booted or verified. The provider"
+    echo "      bridge has no NIC attached and no address, so provider networks"
+    echo "      reach no physical LAN, and Geneve node-to-node tunnelling is"
+    echo "      untested until compute-add."
     echo
     echo "identity:"
     printf '  %-16s %s\n' "keystone pkg" \
@@ -2014,12 +2364,21 @@ cmd_status() {
     printf '  %-16s %s\n' "  real units" "$OVN_CENTRAL_UNITS $OVN_HOST_UNITS"
     printf '  %-16s %s\n' "mgmt / geneve" "$MGMT_IP"
     printf '  %-16s %s\n' "provider" "${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE} (no NIC, no address)"
+    echo
+    echo "compute:"
+    printf '  %-16s %s\n' "nova pkg" \
+        "$(dpkg-query -W -f='${Version}' nova-common 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  API" "apache2 + mod_wsgi on :8774 (nova-api ships no unit)"
+    printf '  %-16s %s\n' "  metadata" "apache2 + mod_wsgi on :8775 (nova-api-metadata)"
+    printf '  %-16s %s\n' "  units" "$NOVA_UNITS $NOVA_COMPUTE_UNITS"
+    printf '  %-16s %s\n' "  virt type" "${VIRT_TYPE:-unresolved} (guest boot NOT verified)"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
         for u in mariadb rabbitmq-server memcached apache2 glance-api \
                  ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd ovn-controller \
-                 neutron-rpc-server neutron-ovn-metadata-agent; do
+                 neutron-rpc-server neutron-ovn-metadata-agent \
+                 nova-conductor nova-scheduler nova-compute libvirtd; do
             printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
         done
     else
@@ -2033,15 +2392,15 @@ usage() {
 hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
 
   STAGE: $HAGISTACK_STAGE
-  This build installs the base layer, Keystone, Glance, Placement and the
-  Neutron networking API on OVN. It does NOT give you a working OpenStack:
-  there is no Nova and no Horizon, so no instance can boot, and the provider
-  bridge has no NIC attached yet.
+  This build installs the base layer, Keystone, Glance, Placement, the Neutron
+  networking API on OVN, and Nova. It does NOT give you a working OpenStack:
+  there is no Horizon and no initial resources, no guest VM has been booted or
+  verified, and the provider bridge has no NIC attached yet.
   See README.md in this directory.
 
 usage:
   hagistack all-in-one  [options]   build controller+compute on one host
-                                    (currently: + Neutron/OVN networking API)
+                                    (currently: + Nova API/scheduler/conductor/compute)
   hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
   hagistack status                  show stage, phase and service state
   hagistack --help                  this text
