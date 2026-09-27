@@ -171,7 +171,12 @@ else printf '[DEFAULT]\n[database]\n[api_database]\n[neutron]\n[placement]\n[gla
   sed -n '/^ini_set()/,/^}/p'            "$H"
   sed -n '/^ini_get()/,/^}/p'            "$H"
   sed -n '/^write_authtoken()/,/^}/p'    "$H"
-  sed -n '/^write_service_auth()/,/^}/p' "$H"
+  # write_service_auth became a thin wrapper around write_service_auth_at in
+  # step 6 (a compute node's identity host is the controller, not itself), so
+  # both have to be lifted or the extracted wrapper calls a function that is
+  # not there and every adapter block silently comes out empty.
+  sed -n '/^write_service_auth_at()/,/^}/p' "$H"
+  sed -n '/^write_service_auth()/,/^}/p'    "$H"
 } > $WORK/lib.sh
 # shellcheck disable=SC1090
 if ! ( . $WORK/lib.sh ) 2>/dev/null; then

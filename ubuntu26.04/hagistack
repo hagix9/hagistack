@@ -5,11 +5,23 @@
 # Target : OpenStack 2026.1 Gazpacho, from the Ubuntu 26.04 distro archive.
 # Engine : plain Bash. Not OpenStack-Ansible, Kolla-Ansible, Packstack or DevStack.
 #
-# STATUS: STEP 1 of the rebuild. Skeleton + preflight + base services only
-#         (MariaDB, RabbitMQ, memcached). Keystone, Glance, Placement, Nova,
-#         Neutron/OVN and Horizon are NOT implemented yet, so `all-in-one`
-#         deliberately stops after the base layer and says so. Finishing this
-#         command does NOT mean you have a working OpenStack.
+# STATUS — read the two words carefully, they are not the same claim:
+#
+#   IMPLEMENTED : the code to do it exists here and runs.
+#                 all-in-one now covers the whole controller+compute path —
+#                 MariaDB, RabbitMQ, memcached, Keystone, Glance, Placement,
+#                 OVS/OVN, Neutron, Nova (API/conductor/scheduler/compute),
+#                 Horizon, and the initial resources a guest needs.
+#                 `compute-add` is implemented for a second compute node.
+#
+#   VERIFIED    : observed working on a real machine. That is still NOTHING.
+#                 Nothing in this file has ever run on Ubuntu 26.04 hardware or
+#                 on a GCE VM. The container work proves syntax, configuration
+#                 generation and re-run safety — not that a guest boots.
+#
+# So: "implemented" does not mean "it works". Horizon login, guest boot,
+# compute-add / Placement registration, the OVN chassis and node-to-node Geneve
+# are all still unverified and are the GCE acceptance items.
 #
 set -Eeuo pipefail   # -E: the ERR trap must fire inside functions too
 
@@ -22,13 +34,23 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.5.0-step5"
-HAGISTACK_STAGE="step5: base + Keystone + Glance + Placement + Neutron/OVN + Nova (no Horizon; guest boot unverified)"
+HAGISTACK_VERSION="0.6.0-step6"
+HAGISTACK_STAGE="step6: full all-in-one + compute-add implemented; NOTHING verified on real hardware"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
-IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron nova nova_compute"
-# Phases still to come. Listed so the CLI can be honest about where it stops.
-PENDING_PHASES="horizon bootstrap_resources verify"
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron nova nova_compute horizon bootstrap_resources"
+# Phases `compute-add` runs on a second compute node.
+COMPUTE_ADD_PHASES="compute_preflight compute_secrets compute_packages compute_ovn compute_nova compute_metadata"
+# Nothing is left unimplemented for either command.
+PENDING_PHASES=""
+
+# What has actually been observed working on a real machine. Kept as a separate
+# string from IMPLEMENTED_PHASES on purpose: `status`, `--help` and the closing
+# banner all print both, and they must never be collapsed into one claim.
+VERIFIED_ON_HARDWARE="none — no Ubuntu 26.04 host and no GCE VM has ever run this"
+# The specific behaviours a container cannot settle. Printed verbatim wherever
+# the shell reports what it did, so that no reader has to infer it.
+UNVERIFIED_ITEMS="Horizon login; guest boot; compute-add Placement registration; OVN chassis; node-to-node Geneve; any physical-LAN path"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -206,7 +228,13 @@ phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done
 # the config-file parser (as its key allowlist) and the precedence resolver.
 CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
              FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME
-             PROVIDER_PHYSNET PROVIDER_BRIDGE"
+             PROVIDER_PHYSNET PROVIDER_BRIDGE CONTROLLER_IP
+             IMAGE_NAME IMAGE_URL IMAGE_SHA256 IMAGE_FILE"
+
+# The same list with every run of whitespace collapsed to one space, and a
+# space at each end, so that `case "$CONFIG_KEYS_FLAT" in *" $key "*)` works for
+# every key regardless of where the line breaks fall.
+CONFIG_KEYS_FLAT=" $(printf '%s' "$CONFIG_KEYS" | tr -s '[:space:]' ' ') "
 
 declare -A CLI_VAL=()  CLI_SET=()
 declare -A ENV_VAL=()  ENV_SET=()
@@ -230,7 +258,8 @@ _capture_env
 
 MGMT_IP="" EXT_NIC="" PROVIDER_CIDR="" PROVIDER_GATEWAY=""
 FLOATING_START="" FLOATING_END="" DNS_SERVER="" TENANT_CIDR="" VIRT_TYPE=""
-REGION_NAME="" PROVIDER_PHYSNET="" PROVIDER_BRIDGE=""
+REGION_NAME="" PROVIDER_PHYSNET="" PROVIDER_BRIDGE="" CONTROLLER_IP=""
+IMAGE_NAME="" IMAGE_URL="" IMAGE_SHA256="" IMAGE_FILE=""
 DRY_RUN=0 ENV_FILE=""
 
 # ---------------------------------------------------------------------------
@@ -278,10 +307,16 @@ load_env_file() {
         elif [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"
         fi
 
-        case " $CONFIG_KEYS " in
+        # CONFIG_KEYS is written over several lines, so a key that happens to sit
+        # at the end of one is followed by a NEWLINE, not a space. Matching
+        # against " $CONFIG_KEYS " therefore missed those keys and reported them
+        # as unknown — which is how FLOATING_START and REGION_NAME were refused
+        # from a config file while working perfectly on the command line. The
+        # list is normalised to single spaces before it is searched.
+        case "$CONFIG_KEYS_FLAT" in
             *" $key "*) ;;
             *) die "$f line $lineno: unknown key '$key'.
-     Allowed keys: $(echo $CONFIG_KEYS | tr '\n' ' ')" ;;
+     Allowed keys:${CONFIG_KEYS_FLAT%?}" ;;
         esac
         [ -z "${seen[$key]:-}" ] || die "$f line $lineno: duplicate key '$key'"
         seen[$key]=1
@@ -382,6 +417,50 @@ valid_region_name() {
     [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
+# A name hagistack gives to something it creates in OpenStack (image, network,
+# router, flavor, keypair). Deliberately narrow: these values end up in
+# `openstack ... create` arguments, so no whitespace and no shell metacharacter
+# is allowed through, even though the client is exec'd without a shell.
+valid_resource_name() {
+    [ -n "$1" ] || return 1
+    [ "${#1}" -le 64 ] || return 1
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+valid_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
+
+# An absolute path with no traversal and no shell metacharacter. Used for
+# IMAGE_FILE, which is read by root.
+valid_abs_path() {
+    local p="$1"
+    case "$p" in /*) ;; *) return 1 ;; esac
+    case "$p" in *..*) return 1 ;; esac
+    [[ "$p" =~ ^[A-Za-z0-9._/-]+$ ]]
+}
+
+# http(s) URL restricted to the characters the config-file parser already
+# allows, so a URL that survives the file cannot smuggle anything new in.
+valid_http_url() {
+    local u="$1"
+    [[ "$u" =~ ^https?://[A-Za-z0-9._~:/@+=-]+$ ]] || return 1
+    [ "${#u}" -le 512 ]
+}
+
+# An address that is supposed to belong to ANOTHER machine. Rejects the values
+# that are never a peer: this catches "--controller-ip 127.0.0.1" and
+# "--controller-ip 0.0.0.0", which otherwise fail much later with an opaque
+# connection error. Caller must still compare it against MGMT_IP.
+valid_peer_ipv4() {
+    local ip="$1" a
+    valid_ipv4 "$ip" || return 1
+    a="${ip%%.*}"
+    case "$ip" in
+        0.*|127.*|255.255.255.255|169.254.*) return 1 ;;
+    esac
+    [ "$a" -lt 224 ] || return 1      # multicast / reserved
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # preflight
 # ---------------------------------------------------------------------------
@@ -427,8 +506,10 @@ service_start_enable() {
     return 0
 }
 
-phase_preflight() {
-    log_step "preflight"
+# Host facts and gates shared by `all-in-one` and `compute-add`. Everything in
+# here is true of any hagistack node; the per-role checks live in the two
+# preflight phases that call it.
+_preflight_host() {
     detect_os; detect_container; detect_init
 
     log_info "os        : $OS_PRETTY"
@@ -438,9 +519,10 @@ phase_preflight() {
 
     # --- OS gate ---
     if [ "$OS_ID" != "ubuntu" ]; then
-        die "unsupported OS '$OS_ID'. hagistack targets Ubuntu Server 26.04 LTS.
-     Rocky Linux 10.2 is not supported: OpenStack 2026.1 is not available as
-     RPMs for EL10, and neither are Open vSwitch/OVN."
+        die "unsupported OS '$OS_ID'. This shell targets Ubuntu Server 26.04 LTS.
+     Rocky Linux 10.2 is NOT implemented here. That is a statement about this
+     file, not a claim that Rocky cannot work: see ../rocky10.2/README.md for
+     what was measured, what is missing, and what would change the answer."
     fi
     if [ "$OS_VERSION_ID" != "26.04" ]; then
         die "unsupported Ubuntu version '$OS_VERSION_ID'. hagistack targets 26.04 LTS.
@@ -449,7 +531,8 @@ phase_preflight() {
     log_ok "Ubuntu 26.04 confirmed"
 
     # --- architecture / qemu package selection ---
-    local arch; arch="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+    ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+    local arch="$ARCH"
     case "$arch" in
         amd64) QEMU_PKG="qemu-system-x86" ;;
         arm64) QEMU_PKG="qemu-system-arm"
@@ -488,6 +571,12 @@ phase_preflight() {
     else
         log_ok "disk ${free_gb}GiB free on /"
     fi
+
+}
+
+phase_preflight() {
+    log_step "preflight"
+    _preflight_host
 
     # --- required settings ---
     local missing=()
@@ -573,8 +662,49 @@ phase_preflight() {
     fi
     if [ -n "$mgmt_nic" ] && [ "$mgmt_nic" = "$EXT_NIC" ]; then
         log_warn "single-NIC layout: EXT_NIC ($EXT_NIC) also carries the management IP."
-        log_warn "  A later step must move $MGMT_IP onto the br-ex bridge, which can drop your SSH session."
-        log_warn "  Not performed in step 1. Use a console or a second NIC when that step lands."
+        log_warn "  Putting $EXT_NIC onto $PROVIDER_BRIDGE would move $MGMT_IP with it and can drop your SSH session."
+        log_warn "  hagistack never does that. Provider networks therefore reach no physical LAN"
+        log_warn "  until an operator attaches a NIC by hand. Use a console or a second NIC."
+    fi
+
+    # --- initial guest image -------------------------------------------------
+    # There is no cirros package in the Ubuntu archive (checked: `cirros` and
+    # `cirros-testvm` have no candidate), so the initial image has to come from
+    # a URL or a local file. The default URL and digest below were measured on
+    # 2026-09-27 by downloading the file and comparing it against the publisher's
+    # own SHA256SUMS; both matched. A URL is never fetched without a digest.
+    case "$ARCH" in
+        amd64) IMAGE_NAME="${IMAGE_NAME:-cirros-0.6.3-x86_64}"
+               IMAGE_URL="${IMAGE_URL:-https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img}"
+               IMAGE_SHA256="${IMAGE_SHA256:-7d6355852aeb6dbcd191bcda7cd74f1536cfe5cbf8a10495a7283a8396e4b75b}" ;;
+        arm64) IMAGE_NAME="${IMAGE_NAME:-cirros-0.6.3-aarch64}"
+               IMAGE_URL="${IMAGE_URL:-https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-aarch64-disk.img}"
+               IMAGE_SHA256="${IMAGE_SHA256:-611879b8299363fe60ff0f84982e4da08e63f476e8481170223db982959783cb}" ;;
+    esac
+    valid_resource_name "$IMAGE_NAME" \
+        || die "IMAGE_NAME '$IMAGE_NAME' is not a valid name
+     (allowed: letters, digits, '.', '_', '-'; at most 64 characters)"
+    if [ -n "$IMAGE_FILE" ]; then
+        valid_abs_path "$IMAGE_FILE" \
+            || die "IMAGE_FILE must be an absolute path without '..' and without
+     shell metacharacters; got '$IMAGE_FILE'"
+        [ -f "$IMAGE_FILE" ] || die "IMAGE_FILE '$IMAGE_FILE' does not exist or is not a regular file"
+        log_ok "initial image from a local file: $IMAGE_FILE"
+    else
+        valid_http_url "$IMAGE_URL" \
+            || die "IMAGE_URL is not an acceptable http/https URL.
+     Permitted characters: letters, digits and . _ ~ - : / @ + =
+     (a query string is deliberately refused; mirror the file instead)"
+        case "$IMAGE_URL" in
+            http://*) log_warn "IMAGE_URL uses plain http. The digest below is what makes this safe,"
+                      log_warn "  not the transport: a modified download is refused, not installed." ;;
+        esac
+        valid_sha256 "$IMAGE_SHA256" \
+            || die "IMAGE_SHA256 must be 64 lowercase hex characters.
+     hagistack will not download an image it cannot verify. Get the publisher's
+     digest (for cirros: the SHA256SUMS file next to the image) and pass it with
+     --image-sha256, or supply the image yourself with --image-file."
+        log_ok "initial image $IMAGE_NAME from $IMAGE_URL (digest pinned)"
     fi
 
     log_ok "preflight passed"
@@ -689,12 +819,12 @@ phase_base_packages() {
 declare -A SERVICE_START_METHOD
 
 # Phases that could not be carried out. A run with any of these is NOT a
-# completed step 1, however far the rest of it got.
+# completed run, however far the rest of it got.
 SKIPPED_PHASES=""
 note_skip() {
     SKIPPED_PHASES="${SKIPPED_PHASES}${SKIPPED_PHASES:+ }$1"
     log_warn "phase '$1' SKIPPED: $2"
-    log_warn "  -> this run will NOT be reported as a completed step 1"
+    log_warn "  -> this run will NOT be reported as complete"
 }
 
 # True only when we can positively observe the unit running.
@@ -1847,7 +1977,8 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
         return 0
     fi
     log_ok "networking API verified (openstack network list succeeded)"
-    log_warn "no network has been created and no instance can boot: Nova is not installed."
+    log_warn "the API answers, but no network exists yet and nothing has been routed:"
+    log_warn "  the initial resources are created later, by the bootstrap_resources phase."
     phase_mark_done neutron
 }
 
@@ -1905,9 +2036,14 @@ nova_manage() { $SUDO runuser -u nova -- nova-manage "$@"; }
 
 # A keystoneauth adapter block (placement, neutron, service_user all use the
 # same shape). Values are written key-by-key so a re-run rewrites nothing.
-write_service_auth() {  # write_service_auth <conf> <section> <user> <pass> [interfaces]
-    local conf="$1" sec="$2" user="$3" pass="$4" ifaces="${5:-}"
-    ini_set "$conf" "$sec" auth_url            "http://${MGMT_IP}:5000/v3" >/dev/null || true
+#
+# The identity host is a parameter rather than MGMT_IP, because the same block
+# is written on a compute node, where identity lives on the CONTROLLER. Getting
+# that wrong points a compute node at itself and fails at first boot, not at
+# configuration time.
+write_service_auth_at() {  # <conf> <section> <user> <pass> <interfaces> <identity-host>
+    local conf="$1" sec="$2" user="$3" pass="$4" ifaces="${5:-}" host="$6"
+    ini_set "$conf" "$sec" auth_url            "http://${host}:5000/v3" >/dev/null || true
     ini_set "$conf" "$sec" auth_type           password                    >/dev/null || true
     ini_set "$conf" "$sec" project_domain_name Default                     >/dev/null || true
     ini_set "$conf" "$sec" user_domain_name    Default                     >/dev/null || true
@@ -1917,6 +2053,11 @@ write_service_auth() {  # write_service_auth <conf> <section> <user> <pass> [int
     ini_set "$conf" "$sec" password            "$pass"                     >/dev/null || true
     [ -n "$ifaces" ] && ini_set "$conf" "$sec" valid_interfaces "$ifaces"  >/dev/null || true
     return 0
+}
+
+# Controller-side shorthand: identity is this machine.
+write_service_auth() {  # <conf> <section> <user> <pass> [interfaces]
+    write_service_auth_at "$1" "$2" "$3" "$4" "${5:-}" "$MGMT_IP"
 }
 
 # Is a cell with this name already mapped? `list_cells` prints the database and
@@ -2190,6 +2331,825 @@ phase_nova_compute() {
 }
 
 # ---------------------------------------------------------------------------
+# Horizon (dashboard)
+#
+# Packaging verified on Ubuntu 26.04 (openstack-dashboard 4:25.7.1-0ubuntu1) by
+# unpacking the .deb files — see STEP6_HORIZON_RESOURCES_EVIDENCE.md:
+#
+#   * `openstack-dashboard` ships exactly ONE file:
+#     /etc/apache2/conf-available/openstack-dashboard.conf. Note "conf-", not
+#     "sites-": it is a SERVER-WIDE fragment, not a vhost, and its postinst runs
+#     `apache2_invoke enconf`. It carries no `Listen`, so the dashboard is served
+#     by whatever vhost already exists — in practice the packaged default site on
+#     port 80 — at the path /horizon, via WSGIDaemonProcess user=horizon.
+#     Being server-wide, that alias is inherited by the API vhosts too; hagistack
+#     does not fight the packaging over it, it just says so.
+#   * The settings file is /etc/openstack-dashboard/local_settings.py, a dpkg
+#     CONFFILE from `openstack-dashboard-common`, symlinked into the package as
+#     .../openstack_dashboard/local/local_settings.py.
+#   * openstack_dashboard/settings.py `exec`s every *.py in
+#     .../openstack_dashboard/local/local_settings.d/ AFTER importing
+#     local_settings.py, so a snippet there overrides the conffile and dpkg never
+#     prompts. hagistack writes exactly one snippet, _99_hagistack.py.
+#   * That loader swallows exceptions (`except Exception: _LOG.exception(...)`).
+#     A broken snippet is therefore SILENT — the dashboard just keeps the wrong
+#     settings. So the snippet is not trusted after being written: the effective
+#     settings are read back out of Django and compared.
+#   * The shipped defaults point at 127.0.0.1: OPENSTACK_KEYSTONE_URL is
+#     "http://127.0.0.1/identity/v3" (a DevStack path) and the cache LOCATION is
+#     127.0.0.1:11211. Both are wrong here — hagistack binds memcached to the
+#     management address — so both are overridden.
+#   * python3-pymemcache is NOT a dependency of python3-django-horizon; it comes
+#     in through python3-django-openstack-auth. `apt-get install -s
+#     openstack-dashboard` was checked and does pull it, so it is not installed
+#     separately.
+#   * The postinst runs `collectstatic` + `compress --force` and also
+#     `invoke-rc.d memcached restart`, i.e. installing the dashboard bounces the
+#     token cache the other services use.
+# ---------------------------------------------------------------------------
+HORIZON_LOCAL_SETTINGS="/etc/openstack-dashboard/local_settings.py"
+HORIZON_SNIPPET_DIR="/usr/lib/python3/dist-packages/openstack_dashboard/local/local_settings.d"
+HORIZON_SNIPPET="$HORIZON_SNIPPET_DIR/_99_hagistack.py"
+HORIZON_MANAGE="/usr/share/openstack-dashboard/manage.py"
+HORIZON_STATIC="/var/lib/openstack-dashboard/static"
+HORIZON_SECRET_KEY_FILE="/var/lib/openstack-dashboard/secret_key"
+HORIZON_PATH="/horizon"
+
+# The login page, by HTTP status. 200 means Apache, mod_wsgi, Django, the
+# settings and the static assets all loaded — it does NOT mean a login works.
+horizon_login_page_code() {
+    _probe curl -s -o /dev/null -m 20 -w '%{http_code}' \
+        "http://${MGMT_IP}${HORIZON_PATH}/auth/login/" 2>/dev/null
+}
+
+# Read the settings Django actually ended up with. This is the check that the
+# silently-swallowed snippet loader makes necessary.
+horizon_effective_settings() {
+    $SUDO python3 - <<'PYEOF' 2>/dev/null
+import os, sys
+sys.path.insert(0, "/usr/share/openstack-dashboard")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "openstack_dashboard.settings")
+try:
+    from django.conf import settings
+    print("KEYSTONE_URL=%s" % settings.OPENSTACK_KEYSTONE_URL)
+    print("CACHE_LOCATION=%s" % settings.CACHES["default"]["LOCATION"])
+    print("SESSION_ENGINE=%s" % settings.SESSION_ENGINE)
+except Exception as exc:                      # noqa: BLE001 - reported, not raised
+    print("ERROR=%s: %s" % (type(exc).__name__, exc))
+    raise SystemExit(1)
+PYEOF
+}
+
+phase_horizon() {
+    log_step "dashboard (Horizon)"
+
+    # --- dependencies first: installing pulls in a collectstatic run that
+    #     imports the settings, so the things those settings point at should
+    #     already be up.
+    if ! keystone_ready_for_registration; then
+        note_skip horizon "Keystone is not answering, so a dashboard would have nothing
+     to authenticate against. Nothing was installed or changed."
+        return 0
+    fi
+    if ! memcached_reachable; then
+        note_skip horizon "memcached is not listening on ${MGMT_IP}:11211. Horizon keeps its
+     SESSIONS in that cache (SESSION_ENGINE = ...backends.cache), so a dashboard
+     configured against a dead cache cannot log anyone in. Nothing was changed."
+        return 0
+    fi
+
+    if dpkg-query -W -f='${Status}' openstack-dashboard 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "openstack-dashboard already installed"
+    else
+        log_info "installing openstack-dashboard (pulls python3-django-horizon, apache2, mod_wsgi, python3-pymemcache)"
+        log_warn "the dashboard's postinst runs 'invoke-rc.d memcached restart' — the token"
+        log_warn "  cache the other services use is bounced during this install."
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openstack-dashboard
+        log_ok "openstack-dashboard installed"
+    fi
+    log_info "horizon $(dpkg-query -W -f='${Version}' openstack-dashboard 2>/dev/null || echo '?') \
+served by apache2 + mod_wsgi at ${HORIZON_PATH} (a conf-available fragment, not a vhost)"
+
+    # The cache restart above can leave memcached down for a moment.
+    if ! memcached_reachable; then
+        note_skip horizon "memcached did not come back after the dashboard's postinst restarted it.
+     Start it and re-run; nothing further was changed."
+        return 0
+    fi
+
+    # --- settings snippet ---------------------------------------------------
+    if ! $SUDO test -d "$HORIZON_SNIPPET_DIR"; then
+        note_skip horizon "$HORIZON_SNIPPET_DIR does not exist, so there is nowhere to put the
+     settings without editing the dpkg conffile. The dashboard packaging has
+     changed; do not guess a new location — re-measure it before editing this
+     shell. Nothing was changed."
+        return 0
+    fi
+    local tmp; tmp="$(mktemp)"; chmod 0644 "$tmp"
+    cat > "$tmp" <<SNIPEOF
+# hagistack — generated, do not edit. Re-run 'hagistack all-in-one' instead.
+#
+# openstack_dashboard/settings.py execs this AFTER importing
+# /etc/openstack-dashboard/local_settings.py, so these win without touching a
+# dpkg conffile. Errors here are swallowed by that loader, which is why
+# hagistack reads the effective settings back instead of trusting this file.
+OPENSTACK_HOST = "${MGMT_IP}"
+OPENSTACK_KEYSTONE_URL = "http://${MGMT_IP}:5000/v3"
+OPENSTACK_API_VERSIONS = {"identity": 3, "image": 2}
+OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = False
+OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+
+# The package ships 127.0.0.1:11211; hagistack binds memcached to the management
+# address only, so the packaged value would leave every session unstorable.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
+        "LOCATION": "${MGMT_IP}:11211",
+    },
+}
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+
+# ALLOWED_HOSTS is deliberately NOT set here. The package already ships ['*'],
+# and narrowing it would break reaching the dashboard through an address this
+# host does not know about (a cloud external IP, an SSH tunnel). Narrow it
+# yourself in /etc/openstack-dashboard/local_settings.py if that suits you.
+SNIPEOF
+    if $SUDO cmp -s "$tmp" "$HORIZON_SNIPPET" 2>/dev/null; then
+        log_ok "dashboard settings snippet already current (unchanged)"
+        rm -f "$tmp"
+    else
+        $SUDO cp "$tmp" "$HORIZON_SNIPPET"
+        rm -f "$tmp"
+        $SUDO chmod 0644 "$HORIZON_SNIPPET"
+        log_ok "dashboard settings written to $HORIZON_SNIPPET (the conffile is left alone)"
+    fi
+
+    # --- did the snippet actually take effect? -------------------------------
+    local eff
+    if ! eff="$(horizon_effective_settings)"; then
+        log_error "Django could not load the dashboard settings:"
+        printf '     %s\n' "$eff" >&2
+        note_skip horizon "the effective dashboard settings could not be read.
+     The snippet loader swallows exceptions, so a dashboard left in this state
+     would silently serve the packaged 127.0.0.1 defaults."
+        return 0
+    fi
+    local want_url="KEYSTONE_URL=http://${MGMT_IP}:5000/v3"
+    local want_cache="CACHE_LOCATION=${MGMT_IP}:11211"
+    if ! grep -qx "$want_url" <<<"$eff" || ! grep -qx "$want_cache" <<<"$eff"; then
+        log_error "effective dashboard settings do not match what was written:"
+        printf '     %s\n' "$eff" >&2
+        note_skip horizon "the settings snippet was written but did not take effect."
+        return 0
+    fi
+    log_ok "effective settings confirmed from Django: keystone ${MGMT_IP}:5000/v3, cache ${MGMT_IP}:11211"
+
+    # --- static assets --------------------------------------------------------
+    # The postinst already ran collectstatic + compress. Re-running them costs
+    # minutes, so it happens only when the output is actually missing.
+    local nstatic
+    nstatic="$($SUDO find "$HORIZON_STATIC" -type f 2>/dev/null | head -1 || true)"
+    if [ -n "$nstatic" ]; then
+        log_ok "static assets present in $HORIZON_STATIC (not regenerated)"
+    else
+        log_info "static assets missing; running collectstatic and compress (slow, once)"
+        $SUDO python3 "$HORIZON_MANAGE" collectstatic --noinput >/dev/null 2>&1 \
+            || note_skip horizon "collectstatic failed; the dashboard would render without CSS."
+        $SUDO python3 "$HORIZON_MANAGE" compress --force >/dev/null 2>&1 \
+            || log_warn "compress failed; COMPRESS_OFFLINE is on, so pages may 500"
+        log_ok "static assets generated"
+    fi
+
+    # The secret key protects every session cookie.
+    if $SUDO test -f "$HORIZON_SECRET_KEY_FILE"; then
+        local kperm; kperm="$($SUDO stat -c '%a' "$HORIZON_SECRET_KEY_FILE" 2>/dev/null || echo '?')"
+        [ "$kperm" = "600" ] || log_warn "$HORIZON_SECRET_KEY_FILE has mode $kperm, expected 600"
+    fi
+
+    # --- serve it --------------------------------------------------------------
+    $SUDO a2enconf openstack-dashboard >/dev/null 2>&1 || true
+    if [ "$HAS_SYSTEMD" -eq 1 ] && service_active apache2; then
+        $SUDO systemctl reload-or-restart apache2 \
+            || die "apache2 failed to reload after the dashboard configuration change"
+        log_ok "apache2 reloaded"
+    else
+        service_start_enable apache2
+    fi
+    if ! service_active apache2; then
+        note_skip horizon "apache2 is not running, so the dashboard is not being served.
+     Its configuration IS in place. Startup under systemd is a GCE item."
+        return 0
+    fi
+
+    local code; code="$(horizon_login_page_code || true)"
+    if [ "$code" != "200" ]; then
+        note_skip horizon "http://${MGMT_IP}${HORIZON_PATH}/auth/login/ answered '$code', not 200.
+     A 500 usually means COMPRESS_OFFLINE assets are missing; a 404 means the
+     packaged conf-available fragment is not enabled on the port-80 vhost."
+        return 0
+    fi
+    log_ok "dashboard login page served (HTTP 200) at http://${MGMT_IP}${HORIZON_PATH}/"
+    log_warn "a login PAGE is not a login. Signing in as admin has never been tested"
+    log_warn "  and stays a GCE acceptance item."
+    phase_mark_done horizon
+}
+
+# ---------------------------------------------------------------------------
+# initial resources
+#
+# The smallest set an instance needs: a flavor, a bootable image, a tenant
+# network to attach to, a provider network and router so it can get out, one
+# ICMP and one SSH rule, and a keypair.
+#
+# Every one of them is show-or-create by name. Nothing here deletes anything,
+# and nothing is recreated: a second run finds everything and changes nothing.
+#
+# Names carry a hagistack- prefix so that they cannot be confused with, or
+# collide with, resources an operator made. In particular the throwaway image
+# the step 3 suite uploaded is NOT an initial image and is never treated as one:
+# the image below is matched by name AND by a hagistack_sha256 property that
+# only an image this shell uploaded, from a digest-verified file, ever carries.
+# ---------------------------------------------------------------------------
+BS_FLAVOR="m1.tiny"
+BS_PROVIDER_NET="hagistack-provider"
+BS_PROVIDER_SUBNET="hagistack-provider-subnet"
+BS_TENANT_NET="hagistack-tenant"
+BS_TENANT_SUBNET="hagistack-tenant-subnet"
+BS_ROUTER="hagistack-router"
+BS_KEYPAIR="hagistack-key"
+IMAGE_CACHE_DIR="$HAGISTACK_STATE/images"
+KEYPAIR_PRIVATE="$HAGISTACK_ETC/${BS_KEYPAIR}"
+KEYPAIR_PUBLIC="$HAGISTACK_ETC/${BS_KEYPAIR}.pub"
+
+# One field out of `openstack ... -f json`, via python3 (always present on
+# Ubuntu) so that jq is not a dependency. Custom image properties live either at
+# the top level or under "properties", depending on the client version.
+os_json_field() {   # os_json_field <key> < json
+    python3 -c '
+import json, sys
+key = sys.argv[1]
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+val = doc.get(key)
+if val is None and isinstance(doc.get("properties"), dict):
+    val = doc["properties"].get(key)
+print("" if val is None else val)
+' "$1"
+}
+
+image_field() {     # image_field <image-name> <key>
+    openstack_admin image show "$1" -f json 2>/dev/null | os_json_field "$2"
+}
+
+# Create a security group rule, treating "it is already there" as success.
+# Neutron answers a duplicate with 409 Conflict rather than silently accepting
+# it, which is exactly the idempotence signal wanted here.
+bs_secgroup_rule() {   # bs_secgroup_rule <label> <args...>
+    local label="$1"; shift
+    local out rc
+    out="$(openstack_admin security group rule create "$@" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        log_ok "security group rule '$label' created"
+    elif grep -qiE 'already exist|conflict|409' <<<"$out"; then
+        log_ok "security group rule '$label' already present — left unchanged"
+    else
+        log_error "could not create the security group rule '$label':"
+        printf '     %s\n' "$(head -3 <<<"$out")" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Fetch the image once into $IMAGE_CACHE_DIR and verify it against the pinned
+# digest BEFORE it is ever handed to Glance. A cached file that already matches
+# is not downloaded again; a file that does not match is refused, not replaced.
+bs_fetch_image() {   # prints the path of a verified local file on stdout
+    local dest have
+    if [ -n "$IMAGE_FILE" ]; then
+        if [ -n "$IMAGE_SHA256" ]; then
+            have="$($SUDO sha256sum "$IMAGE_FILE" | cut -d' ' -f1)"
+            [ "$have" = "$IMAGE_SHA256" ] || {
+                log_error "IMAGE_FILE does not match IMAGE_SHA256; refusing to upload it."
+                return 1; }
+        else
+            # Adopt the file's own digest. Without this the uploaded image would
+            # carry an EMPTY hagistack_sha256 property, and the next run would
+            # read that back, decide the image was not hagistack's, and refuse
+            # its own work. The file is still not checked against anything —
+            # that is what supplying no digest means — and the run says so.
+            IMAGE_SHA256="$($SUDO sha256sum "$IMAGE_FILE" | cut -d' ' -f1)"
+            log_warn "IMAGE_FILE was given without IMAGE_SHA256, so nothing verifies its"
+            log_warn "  contents. Its own digest is recorded on the image so that re-runs"
+            log_warn "  recognise it: ${IMAGE_SHA256:0:16}..."
+        fi
+        printf '%s\n' "$IMAGE_FILE"
+        return 0
+    fi
+
+    $SUDO mkdir -p "$IMAGE_CACHE_DIR"
+    $SUDO chmod 0755 "$IMAGE_CACHE_DIR"
+    dest="$IMAGE_CACHE_DIR/${IMAGE_URL##*/}"
+    if $SUDO test -f "$dest"; then
+        have="$($SUDO sha256sum "$dest" | cut -d' ' -f1)"
+        if [ "$have" = "$IMAGE_SHA256" ]; then
+            log_ok "cached image $dest already matches the pinned digest — not re-downloaded" >&2
+            printf '%s\n' "$dest"
+            return 0
+        fi
+        log_warn "cached $dest does not match the pinned digest; downloading again" >&2
+    fi
+    log_info "downloading $IMAGE_URL" >&2
+    # -L is required: download.cirros-cloud.net answers 302 and without it the
+    # saved file is a 273-byte redirect page (measured).
+    if ! $SUDO curl -fsSL --retry 3 --retry-delay 2 -m 900 -o "$dest" "$IMAGE_URL"; then
+        log_error "could not download $IMAGE_URL"
+        return 1
+    fi
+    have="$($SUDO sha256sum "$dest" | cut -d' ' -f1)"
+    if [ "$have" != "$IMAGE_SHA256" ]; then
+        log_error "downloaded image digest mismatch — the file is NOT being uploaded."
+        log_error "  expected $IMAGE_SHA256"
+        log_error "  got      $have"
+        log_error "  the file is left at $dest for inspection; delete it to retry"
+        return 1
+    fi
+    log_ok "downloaded and verified against the pinned sha256" >&2
+    printf '%s\n' "$dest"
+}
+
+phase_bootstrap_resources() {
+    log_step "initial resources (flavor, image, networks, router, rules, keypair)"
+
+    local pre
+    for pre in keystone glance neutron nova; do
+        if ! phase_done "$pre"; then
+            note_skip bootstrap_resources "the '$pre' phase did not complete, so the resources it
+     owns cannot be created. Nothing was changed."
+            return 0
+        fi
+    done
+    if ! keystone_ready_for_registration; then
+        note_skip bootstrap_resources "Keystone is not answering. Nothing was changed."
+        return 0
+    fi
+
+    # --- flavor ---------------------------------------------------------------
+    # 1 vCPU / 512 MiB / 1 GiB. The cirros image's virtual size is 112 MiB, so it
+    # fits; this is the smallest flavor that boots it.
+    if openstack_admin flavor show "$BS_FLAVOR" >/dev/null 2>&1; then
+        log_ok "flavor '$BS_FLAVOR' already exists — left untouched"
+    else
+        openstack_admin flavor create --id auto --ram 512 --disk 1 --vcpus 1 "$BS_FLAVOR" >/dev/null
+        log_ok "flavor '$BS_FLAVOR' created (1 vCPU, 512MiB, 1GiB)"
+    fi
+
+    # --- image ----------------------------------------------------------------
+    # `local x; x="$(cmd)"` is a plain assignment and takes cmd's exit status, so
+    # under `set -e` a lookup that correctly finds nothing would abort the run —
+    # and on a first run the image never exists. Hence the explicit `|| true`.
+    local existing_sha existing_status
+    existing_status="$(image_field "$IMAGE_NAME" status || true)"
+    if [ -n "$existing_status" ]; then
+        existing_sha="$(image_field "$IMAGE_NAME" hagistack_sha256 || true)"
+        if [ "$existing_sha" = "$IMAGE_SHA256" ] && [ "$existing_status" = "active" ]; then
+            log_ok "image '$IMAGE_NAME' already uploaded by hagistack and matches the pinned digest"
+        elif [ -z "$existing_sha" ]; then
+            log_warn "an image named '$IMAGE_NAME' exists but carries no hagistack_sha256 property."
+            log_warn "  hagistack did not upload it, so it is NOT treated as the initial image"
+            log_warn "  and is NOT modified or deleted. Give --image-name another value, or"
+            log_warn "  remove that image yourself if it is the throwaway one from a test run."
+            note_skip bootstrap_resources "image '$IMAGE_NAME' is present but not hagistack's."
+            return 0
+        else
+            log_warn "image '$IMAGE_NAME' exists with digest '${existing_sha:-none}' and status"
+            log_warn "  '$existing_status', which is not what is configured now. It is left alone."
+            note_skip bootstrap_resources "image '$IMAGE_NAME' does not match the configured source."
+            return 0
+        fi
+    else
+        local src
+        if ! src="$(bs_fetch_image)"; then
+            note_skip bootstrap_resources "the initial image could not be obtained or verified.
+     No instance can boot without one. Nothing else was changed."
+            return 0
+        fi
+        log_info "uploading $src to Glance as '$IMAGE_NAME' (qcow2)"
+        if ! openstack_admin image create "$IMAGE_NAME" \
+                --disk-format qcow2 --container-format bare --public \
+                --property "hagistack_sha256=$IMAGE_SHA256" \
+                --file "$src" >/dev/null 2>&1; then
+            note_skip bootstrap_resources "'openstack image create' failed for '$IMAGE_NAME'."
+            return 0
+        fi
+        log_ok "image '$IMAGE_NAME' uploaded and tagged with its source digest"
+    fi
+
+    # --- provider (external) network -------------------------------------------
+    if openstack_admin network show "$BS_PROVIDER_NET" >/dev/null 2>&1; then
+        log_ok "network '$BS_PROVIDER_NET' already exists — left untouched"
+    else
+        openstack_admin network create --external --share \
+            --provider-network-type flat \
+            --provider-physical-network "$PROVIDER_PHYSNET" "$BS_PROVIDER_NET" >/dev/null
+        log_ok "external network '$BS_PROVIDER_NET' created (flat on $PROVIDER_PHYSNET)"
+    fi
+    if openstack_admin subnet show "$BS_PROVIDER_SUBNET" >/dev/null 2>&1; then
+        log_ok "subnet '$BS_PROVIDER_SUBNET' already exists — left untouched"
+    else
+        # No DHCP: these addresses are handed out as floating IPs, not leased.
+        openstack_admin subnet create --network "$BS_PROVIDER_NET" --no-dhcp \
+            --subnet-range "$PROVIDER_CIDR" --gateway "$PROVIDER_GATEWAY" \
+            --allocation-pool "start=${FLOATING_START},end=${FLOATING_END}" \
+            "$BS_PROVIDER_SUBNET" >/dev/null
+        log_ok "subnet '$BS_PROVIDER_SUBNET' created ($PROVIDER_CIDR, pool ${FLOATING_START}-${FLOATING_END})"
+    fi
+
+    # --- tenant network ---------------------------------------------------------
+    if openstack_admin network show "$BS_TENANT_NET" >/dev/null 2>&1; then
+        log_ok "network '$BS_TENANT_NET' already exists — left untouched"
+    else
+        openstack_admin network create "$BS_TENANT_NET" >/dev/null
+        log_ok "tenant network '$BS_TENANT_NET' created (geneve, per ml2 tenant_network_types)"
+    fi
+    if openstack_admin subnet show "$BS_TENANT_SUBNET" >/dev/null 2>&1; then
+        log_ok "subnet '$BS_TENANT_SUBNET' already exists — left untouched"
+    else
+        openstack_admin subnet create --network "$BS_TENANT_NET" \
+            --subnet-range "$TENANT_CIDR" --dns-nameserver "$DNS_SERVER" \
+            "$BS_TENANT_SUBNET" >/dev/null
+        log_ok "subnet '$BS_TENANT_SUBNET' created ($TENANT_CIDR, dns $DNS_SERVER)"
+    fi
+
+    # --- router -----------------------------------------------------------------
+    if openstack_admin router show "$BS_ROUTER" >/dev/null 2>&1; then
+        log_ok "router '$BS_ROUTER' already exists — left untouched"
+    else
+        openstack_admin router create "$BS_ROUTER" >/dev/null
+        log_ok "router '$BS_ROUTER' created"
+    fi
+    local gw
+    gw="$(openstack_admin router show "$BS_ROUTER" -f value -c external_gateway_info 2>/dev/null || true)"
+    case "$gw" in
+        ""|None|null)
+            openstack_admin router set --external-gateway "$BS_PROVIDER_NET" "$BS_ROUTER" >/dev/null
+            log_ok "router '$BS_ROUTER' gateway set to '$BS_PROVIDER_NET'" ;;
+        *)  log_ok "router '$BS_ROUTER' already has an external gateway — left unchanged" ;;
+    esac
+    local addout
+    if addout="$(openstack_admin router add subnet "$BS_ROUTER" "$BS_TENANT_SUBNET" 2>&1)"; then
+        log_ok "tenant subnet attached to '$BS_ROUTER'"
+    elif grep -qiE 'already has a port|already exist|conflict|409' <<<"$addout"; then
+        log_ok "tenant subnet already attached to '$BS_ROUTER'"
+    else
+        log_error "could not attach the tenant subnet to the router:"
+        printf '     %s\n' "$(head -3 <<<"$addout")" >&2
+        note_skip bootstrap_resources "the router has no interface on the tenant subnet."
+        return 0
+    fi
+
+    # --- security group rules ----------------------------------------------------
+    # Applied to the admin project's own 'default' group, because that is the
+    # group an instance gets when none is named. Existing rules are never removed.
+    local sg
+    sg="$(openstack_admin security group list --project admin -f value -c ID -c Name 2>/dev/null \
+          | awk '$2=="default"{print $1; exit}' || true)"
+    if [ -z "$sg" ]; then
+        log_warn "no 'default' security group found in the admin project; rules were not added"
+    else
+        bs_secgroup_rule "icmp"    --proto icmp --ingress --remote-ip 0.0.0.0/0 "$sg" || true
+        bs_secgroup_rule "ssh/22"  --proto tcp --dst-port 22 --ingress --remote-ip 0.0.0.0/0 "$sg" || true
+    fi
+
+    # --- keypair -------------------------------------------------------------------
+    # RSA on purpose: the private key has to work against whatever tiny SSH server
+    # the guest image runs, and RSA is the one algorithm every one of them accepts.
+    if $SUDO test -f "$KEYPAIR_PRIVATE" && $SUDO test -f "$KEYPAIR_PUBLIC"; then
+        log_ok "keypair files already present in $HAGISTACK_ETC — not regenerated"
+    elif $SUDO test -f "$KEYPAIR_PRIVATE" || $SUDO test -f "$KEYPAIR_PUBLIC"; then
+        log_warn "only one half of the keypair exists in $HAGISTACK_ETC; it is left alone."
+        log_warn "  Remove both files by hand if you want a fresh key."
+    else
+        $SUDO ssh-keygen -q -t rsa -b 3072 -N '' -C hagistack -f "$KEYPAIR_PRIVATE" \
+            || die "ssh-keygen failed while creating $KEYPAIR_PRIVATE"
+        log_ok "keypair generated at $KEYPAIR_PRIVATE (rsa 3072)"
+    fi
+    $SUDO chmod 0600 "$KEYPAIR_PRIVATE" 2>/dev/null || true
+    if openstack_admin keypair show "$BS_KEYPAIR" >/dev/null 2>&1; then
+        log_ok "keypair '$BS_KEYPAIR' already registered in Nova — left untouched"
+    elif $SUDO test -f "$KEYPAIR_PUBLIC"; then
+        openstack_admin keypair create --public-key "$KEYPAIR_PUBLIC" "$BS_KEYPAIR" >/dev/null
+        log_ok "keypair '$BS_KEYPAIR' registered in Nova"
+    else
+        log_warn "no public key to register; '$BS_KEYPAIR' was not created in Nova"
+    fi
+
+    phase_mark_done bootstrap_resources
+}
+
+# ---------------------------------------------------------------------------
+# compute-add — a second (third, ...) compute node
+#
+# What this node does NOT get, and why:
+#
+#   * no database credential of any kind. Since Pike a compute node must not
+#     reach the cell database; it goes through nova-conductor over RabbitMQ.
+#     So the controller's DB passwords are never copied here.
+#   * no admin password. Nothing on a compute node authenticates as admin.
+#   * no provider bridge and no ovn-bridge-mappings. A bridge mapping with no
+#     NIC behind it invites OVN to bind a provider port to this chassis and
+#     drop its traffic. Tenant (geneve) ports need no mapping at all; add a
+#     mapping by hand once a real NIC is attached here.
+#   * no enable-chassis-as-gw. The controller is the gateway chassis.
+#
+# Secrets are delivered by the operator, never generated here: a compute node
+# that invented its own RabbitMQ password would simply fail to talk to anything.
+# `hagistack compute-secrets` on the controller emits exactly the five values
+# below and nothing else.
+# ---------------------------------------------------------------------------
+COMPUTE_SECRET_KEYS="RABBIT_PASS NOVA_SERVICE_PASS PLACEMENT_SERVICE_PASS
+                     NEUTRON_SERVICE_PASS METADATA_PROXY_SECRET"
+
+# Bounded TCP reachability check against the controller. No data is exchanged.
+controller_port_open() {   # controller_port_open <port>
+    _probe timeout 5 bash -c "exec 3<>/dev/tcp/${CONTROLLER_IP}/$1" >/dev/null 2>&1
+}
+
+phase_compute_preflight() {
+    log_step "preflight (compute node)"
+    _preflight_host
+
+    [ -n "$CONTROLLER_IP" ] || die "compute-add needs --controller-ip: the MANAGEMENT address of
+     the node that runs the controller (the MGMT_IP that 'hagistack status' shows there).
+     None of the provider-network settings are required on a compute node."
+    valid_peer_ipv4 "$CONTROLLER_IP" \
+        || die "CONTROLLER_IP '$CONTROLLER_IP' is not usable as another machine's address.
+     It must be a plain IPv4 unicast address — not 0.x, not 127.x, not 169.254.x,
+     not multicast, and not 255.255.255.255."
+
+    if [ -z "$MGMT_IP" ]; then
+        have ip || die "cannot autodetect MGMT_IP: iproute2 is not installed. Pass --mgmt-ip."
+        MGMT_IP="$(ip -4 -o route get "$CONTROLLER_IP" 2>/dev/null \
+                   | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1 || true)"
+        [ -n "$MGMT_IP" ] || MGMT_IP="$(ip -4 -o route get 1.1.1.1 2>/dev/null \
+                   | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1 || true)"
+    fi
+    [ -n "$MGMT_IP" ] || die "could not determine this node's MGMT_IP; pass --mgmt-ip explicitly"
+    valid_ipv4 "$MGMT_IP" || die "MGMT_IP '$MGMT_IP' is not a valid IPv4 address"
+    [ "$MGMT_IP" != "$CONTROLLER_IP" ] \
+        || die "CONTROLLER_IP equals this node's own address ($MGMT_IP).
+     compute-add adds a SECOND machine; run 'all-in-one' on the controller itself."
+    log_ok "this node $MGMT_IP -> controller $CONTROLLER_IP"
+    log_info "geneve tunnel endpoint on this node will be $MGMT_IP"
+
+    REGION_NAME="${REGION_NAME:-RegionOne}"
+    valid_region_name "$REGION_NAME" || die "REGION_NAME '$REGION_NAME' is not valid"
+
+    # Refuse to install several hundred megabytes of libvirt and qemu against a
+    # controller this node cannot reach. Nothing has been changed at this point.
+    local port name port_name closed=""
+    for port_name in "5000:identity" "9292:image" "8778:placement" "5672:message queue" "6642:OVN southbound"; do
+        port="${port_name%%:*}"; name="${port_name#*:}"
+        if controller_port_open "$port"; then
+            log_ok "controller ${CONTROLLER_IP}:${port} reachable ($name)"
+        else
+            closed="${closed}${closed:+, }${port} ($name)"
+        fi
+    done
+    if [ -n "$closed" ]; then
+        die "the controller is not reachable on: $closed
+     Nothing was installed or changed. Check, on the controller:
+       ss -ltn | grep -E '5000|9292|8778|5672|6642'
+     and that its firewall lets this node in. The OVN southbound listener is set
+     to the controller's management address by its 'ovn' phase; if the controller
+     was built with a different MGMT_IP than the address given here, fix that first."
+    fi
+    log_ok "compute preflight passed"
+}
+
+phase_compute_secrets() {
+    log_step "secrets (delivered, never generated here)"
+    if ! $SUDO test -f "$SECRETS_FILE"; then
+        die "$SECRETS_FILE is missing.
+     A compute node cannot invent these values: they have to be the controller's.
+     On the controller:
+         sudo hagistack compute-secrets > compute-secrets.env
+     Copy it across (it is mode 0600 and contains live credentials):
+         scp compute-secrets.env this-node:/tmp/
+     On this node:
+         sudo install -o root -g root -m 0600 /tmp/compute-secrets.env $SECRETS_FILE
+         shred -u /tmp/compute-secrets.env
+     'compute-secrets' emits only $COMPUTE_SECRET_KEYS —
+     no database password and no admin password ever reach a compute node."
+    fi
+    local perm; perm="$($SUDO stat -c '%a' "$SECRETS_FILE")"
+    [ "$perm" = "600" ] || die "$SECRETS_FILE has mode $perm; expected 600.
+     Fix it with: sudo chmod 600 $SECRETS_FILE"
+
+    # shellcheck disable=SC1090
+    . <($SUDO cat "$SECRETS_FILE")
+    local k lacking=""
+    for k in $COMPUTE_SECRET_KEYS; do
+        [ -n "${!k:-}" ] || lacking="${lacking}${lacking:+ }$k"
+    done
+    [ -z "$lacking" ] || die "$SECRETS_FILE is missing: $lacking
+     Regenerate it on the controller with 'hagistack compute-secrets'."
+    log_ok "delivered secrets present and readable (values never printed)"
+    log_info "keys in use: $(echo "$COMPUTE_SECRET_KEYS" | tr -s '[:space:]' ' ')"
+    phase_mark_done compute_secrets
+}
+
+phase_compute_packages() {
+    log_step "packages (compute node)"
+    local pkgs="nova-compute nova-compute-kvm openvswitch-switch ovn-host neutron-ovn-metadata-agent"
+    local absent="" p
+    for p in $pkgs; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || absent="$absent $p"
+    done
+    if [ -z "$absent" ]; then
+        log_ok "compute packages already installed"
+    else
+        log_info "installing:$absent (nova-compute pulls libvirt-daemon-system and qemu-system)"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        log_ok "compute packages installed"
+    fi
+    log_info "nova $(dpkg-query -W -f='${Version}' nova-common 2>/dev/null || echo '?'), \
+ovn $(dpkg-query -W -f='${Version}' ovn-host 2>/dev/null || echo '?'), \
+neutron $(dpkg-query -W -f='${Version}' neutron-common 2>/dev/null || echo '?')"
+    phase_mark_done compute_packages
+}
+
+phase_compute_ovn() {
+    log_step "OVN on this compute node"
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        service_start_enable openvswitch-switch
+        local u
+        for u in $OVN_HOST_UNITS; do service_start_enable "$u"; done
+    else
+        log_warn "systemd is not running here; OVS and ovn-controller cannot be started"
+        note_skip compute_ovn "no systemd: the chassis cannot register. Nothing was configured."
+        return 0
+    fi
+    if ! ovs_ready; then
+        note_skip compute_ovn "the Open vSwitch database is not answering. Nothing was configured."
+        return 0
+    fi
+    log_ok "Open vSwitch database reachable"
+
+    # No ovn-bridge-mappings and no ovn-cms-options here — see the block comment.
+    _ovs_extid_c() {
+        local cur
+        cur="$(ovs_vsctl --if-exists get open_vswitch . "external_ids:$1" 2>/dev/null | tr -d '"')"
+        [ "$cur" = "$2" ] && return 1
+        ovs_vsctl set open_vswitch . "external_ids:$1=$2"
+        return 0
+    }
+    local changed=0
+    _ovs_extid_c ovn-remote     "tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" && changed=1
+    _ovs_extid_c ovn-encap-type geneve                                && changed=1
+    _ovs_extid_c ovn-encap-ip   "$MGMT_IP"                            && changed=1
+    if [ "$changed" -eq 1 ]; then
+        log_ok "chassis configured (southbound ${CONTROLLER_IP}:${OVN_SB_PORT}, geneve encap $MGMT_IP)"
+    else
+        log_ok "chassis already configured (unchanged)"
+    fi
+    log_info "no ovn-bridge-mappings is set on a compute node: with no NIC behind a"
+    log_info "  provider bridge, a mapping would only invite OVN to blackhole traffic here"
+
+    # Ask the controller's southbound database whether this chassis turned up.
+    local sysid seen
+    sysid="$(ovs_vsctl --if-exists get open_vswitch . external_ids:system-id 2>/dev/null | tr -d '"' || true)"
+    seen=""
+    if have ovn-sbctl && [ -n "$sysid" ]; then
+        local i=0
+        while [ "$i" -lt 6 ]; do
+            if _probe ovn-sbctl --db="tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" --timeout=10 \
+                  --bare --columns=name list chassis 2>/dev/null | grep -qx "$sysid"; then
+                seen=yes; break
+            fi
+            i=$((i+1)); sleep 5
+        done
+    fi
+    if [ -n "$seen" ]; then
+        log_ok "this chassis ($sysid) is registered in the controller's southbound DB"
+    else
+        note_skip compute_ovn "chassis '${sysid:-unknown}' has not appeared in the controller's
+     southbound database at ${CONTROLLER_IP}:${OVN_SB_PORT}. ovn-controller may still be
+     starting, or the controller is not accepting the connection."
+        return 0
+    fi
+    phase_mark_done compute_ovn
+}
+
+phase_compute_nova() {
+    log_step "nova-compute on this node"
+
+    local changed=0
+    ini_set "$NOVA_CONF" DEFAULT my_ip "$MGMT_IP"                                  && changed=1
+    ini_set "$NOVA_CONF" DEFAULT transport_url \
+        "rabbit://openstack:${RABBIT_PASS}@${CONTROLLER_IP}:5672/"                 && changed=1
+    # Deliberately NO [database] / [api_database] section is written: a compute
+    # node reaches the cell database only through nova-conductor.
+    write_service_auth_at "$NOVA_CONF" service_user nova "$NOVA_SERVICE_PASS" "" "$CONTROLLER_IP"
+    ini_set "$NOVA_CONF" service_user send_service_user_token true                 && changed=1
+    write_service_auth_at "$NOVA_CONF" placement placement "$PLACEMENT_SERVICE_PASS" internal "$CONTROLLER_IP"
+    write_service_auth_at "$NOVA_CONF" neutron neutron "$NEUTRON_SERVICE_PASS" internal "$CONTROLLER_IP"
+    ini_set "$NOVA_CONF" glance valid_interfaces internal                          && changed=1
+    ini_set "$NOVA_CONF" neutron service_metadata_proxy true                       && changed=1
+    ini_set "$NOVA_CONF" neutron metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
+    ini_set "$NOVA_CONF" vnc enabled true                                          && changed=1
+    ini_set "$NOVA_CONF" vnc server_listen "$MGMT_IP"                              && changed=1
+    ini_set "$NOVA_CONF" vnc server_proxyclient_address "$MGMT_IP"                 && changed=1
+    ini_set "$NOVA_CONF" oslo_concurrency lock_path /var/lib/nova/tmp              && changed=1
+    if [ "$changed" -eq 1 ]; then
+        log_ok "nova.conf configured for a compute-only node (credentials not shown)"
+    else
+        log_ok "nova.conf already correct (unchanged)"
+    fi
+    if [ -n "$(ini_get "$NOVA_CONF" database connection 2>/dev/null || true)" ]; then
+        log_warn "nova.conf still carries a [database] connection from an earlier role."
+        log_warn "  hagistack does not delete configuration; remove it by hand if this node"
+        log_warn "  is meant to be compute-only."
+    fi
+    $SUDO chown root:nova "$NOVA_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$NOVA_CONF"
+    $SUDO install -d -o nova -g nova -m 0750 /var/lib/nova/tmp 2>/dev/null || true
+
+    ini_set "$NOVA_COMPUTE_CONF" DEFAULT compute_driver libvirt.LibvirtDriver >/dev/null || true
+    ini_set "$NOVA_COMPUTE_CONF" libvirt virt_type "$VIRT_TYPE" >/dev/null || true
+    if [ "$VIRT_TYPE" = "qemu" ]; then
+        ini_set "$NOVA_COMPUTE_CONF" libvirt cpu_mode none >/dev/null || true
+        log_warn "virt_type=qemu on this node: software emulation, 10-50x slower"
+    else
+        log_ok "virt_type=kvm (/dev/kvm usable)"
+    fi
+    $SUDO chown root:nova "$NOVA_COMPUTE_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$NOVA_COMPUTE_CONF"
+
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        service_start_enable libvirtd
+        local u
+        for u in $NOVA_COMPUTE_UNITS; do
+            if service_active "$u"; then
+                $SUDO systemctl restart "$u" || die "$u failed to restart"
+                log_ok "$u restarted"
+            else
+                service_start_enable "$u"
+            fi
+        done
+    else
+        note_skip compute_nova "no systemd: nova-compute was configured but not started."
+        return 0
+    fi
+    service_active nova-compute || {
+        note_skip compute_nova "nova-compute is not running; check 'journalctl -u nova-compute'."
+        return 0; }
+    log_ok "nova-compute running"
+    log_warn "this node cannot confirm its own registration: it has no admin credential"
+    log_warn "  and no database access, by design. Run on the CONTROLLER:"
+    log_warn "      sudo hagistack discover-hosts"
+    phase_mark_done compute_nova
+}
+
+phase_compute_metadata() {
+    log_step "OVN metadata agent on this node"
+    local changed=0
+    ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$CONTROLLER_IP"              && changed=1
+    ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:/var/run/openvswitch/db.sock" && changed=1
+    ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" && changed=1
+    [ "$changed" -eq 1 ] && log_ok "metadata agent configured (shared secret not shown)" \
+                         || log_ok "metadata agent already correct (unchanged)"
+    $SUDO chown root:neutron "$OVN_META_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$OVN_META_CONF"
+    # /etc/neutron/neutron.conf is deliberately left as the package shipped it:
+    # the init script passes it as a second --config-file, but the OVN metadata
+    # agent is driven by the southbound database and needs no RPC credential.
+    log_info "neutron.conf is left untouched: this agent needs no message-queue credential"
+
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        if service_active neutron-ovn-metadata-agent; then
+            $SUDO systemctl restart neutron-ovn-metadata-agent \
+                || die "neutron-ovn-metadata-agent failed to restart"
+            log_ok "neutron-ovn-metadata-agent restarted"
+        else
+            service_start_enable neutron-ovn-metadata-agent
+        fi
+    else
+        note_skip compute_metadata "no systemd: the metadata agent was configured but not started."
+        return 0
+    fi
+    service_active neutron-ovn-metadata-agent || {
+        note_skip compute_metadata "neutron-ovn-metadata-agent is not running."
+        return 0; }
+    log_ok "neutron-ovn-metadata-agent running"
+    phase_mark_done compute_metadata
+}
+
+# ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
 # Two outcomes, never conflated: the base layer either came up or it did not.
@@ -2200,21 +3160,20 @@ print_stage_banner() {
         cat <<EOF
 
 ${C_RED}${rule}${C_RESET}
-${C_RED} STEP 5 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
+${C_RED} INCOMPLETE — NOT EVERY IMPLEMENTED PHASE COULD RUN${C_RESET}
 ${C_RED}${rule}${C_RESET}
  Skipped    : $SKIPPED_PHASES
  Completed  : $(printf '%s' "$(_completed_phases)")
- Not yet    : $PENDING_PHASES
 
  One or more services could not be reached, so their setup did not run.
  This is expected in a container with no systemd, and it is NOT a failure
- of the shell — but it is also NOT a completed step 5.
+ of the shell — but the host does NOT have a complete OpenStack on it.
 
  Nothing was left half-written: the skipped phases made no changes and
  carry no state marker, so re-running once the services are up will
  complete them.
 
- Exit status 4 = ran to the end, the layer is incomplete.
+ Exit status 4 = ran to the end, the deployment is incomplete.
 ${C_RED}${rule}${C_RESET}
 EOF
         return 0
@@ -2222,33 +3181,85 @@ EOF
     cat <<EOF
 
 ${C_YEL}${rule}${C_RESET}
-${C_YEL} STEP 5 COMPLETE (CONTROL PLANE + HYPERVISOR) — GUEST BOOT UNVERIFIED${C_RESET}
+${C_YEL} ALL IMPLEMENTED PHASES RAN — ${C_RED}NOTHING HERE IS VERIFIED ON REAL HARDWARE${C_RESET}
 ${C_YEL}${rule}${C_RESET}
- What ran   : $IMPLEMENTED_PHASES
- Not yet    : $PENDING_PHASES
+ Implemented and run here : $IMPLEMENTED_PHASES
+ Verified on real hardware: ${C_RED}$VERIFIED_ON_HARDWARE${C_RESET}
 
- Up: database, message queue, cache, Keystone identity, Glance, Placement,
- the Neutron networking API on ML2/OVN, and Nova — API, conductor, scheduler
- and a registered hypervisor (virt_type=$VIRT_TYPE).
+ Up on this host: database, message queue, cache, Keystone identity, Glance,
+ Placement, the Neutron networking API on ML2/OVN, Nova (API, conductor,
+ scheduler and a registered hypervisor, virt_type=$VIRT_TYPE), the Horizon
+ dashboard, and the initial resources an instance needs.
 
- Still missing: Horizon, and the initial resources (flavor, image, network,
- router, security group, keypair) an instance needs.
+ ${C_RED}Still unverified: $UNVERIFIED_ITEMS${C_RESET}
+ Every phase above checked its own work as far as one host can — a served
+ login page is not a login, and a registered hypervisor is not a booted guest.
 
- ${C_RED}No guest VM has been booted by this run, and nothing here proves one can be.${C_RESET}
  The provider bridge $PROVIDER_BRIDGE has ${C_RED}no NIC attached and no address${C_RESET}, so
- provider networks reach no physical LAN; Geneve between nodes is configured
- but ${C_RED}untested until a second node joins${C_RESET}.
+ '$BS_PROVIDER_NET' and its floating IPs reach no physical LAN yet.
 
- ${C_RED}Do not call this a finished OpenStack until guest boot and the two-node
- path have been verified on real machines.${C_RESET}
+ Dashboard  : http://${MGMT_IP}${HORIZON_PATH}/   (user: admin)
+ Credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
+              the admin password is in that file; it is never printed here.
 
- Admin credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
-   . $ADMIN_OPENRC && openstack compute service list
-   . $ADMIN_OPENRC && openstack hypervisor list
+ Boot a guest to find out whether any of this actually works:
+   . $ADMIN_OPENRC
+   openstack server create --flavor $BS_FLAVOR --image $IMAGE_NAME \
+       --network $BS_TENANT_NET --key-name $BS_KEYPAIR demo1
+   openstack server list
+   openstack console log show demo1
+
+ Add a second compute node:
+   on this controller : sudo ${SELF##*/} compute-secrets > compute-secrets.env
+   on the new node    : sudo ${SELF##*/} compute-add --controller-ip $MGMT_IP
+   back here          : sudo ${SELF##*/} discover-hosts
 
  Re-running this command is safe: it does not drop databases, does not
- rotate existing secrets or fernet keys, and does not append duplicate
- configuration.
+ rotate existing secrets or fernet keys, does not append duplicate
+ configuration, and does not recreate or delete any initial resource.
+${C_YEL}${rule}${C_RESET}
+EOF
+}
+
+print_compute_banner() {
+    local rule="────────────────────────────────────────────────────────────────"
+    if [ -n "$SKIPPED_PHASES" ]; then
+        cat <<EOF
+
+${C_RED}${rule}${C_RESET}
+${C_RED} COMPUTE-ADD INCOMPLETE${C_RESET}
+${C_RED}${rule}${C_RESET}
+ Skipped : $SKIPPED_PHASES
+
+ The skipped phases changed nothing and carry no state marker. Fix the cause
+ and re-run; this node is NOT ready to take instances.
+
+ Exit status 4.
+${C_RED}${rule}${C_RESET}
+EOF
+        return 0
+    fi
+    cat <<EOF
+
+${C_YEL}${rule}${C_RESET}
+${C_YEL} COMPUTE NODE CONFIGURED — ${C_RED}REGISTRATION NOT CONFIRMED FROM HERE${C_RESET}
+${C_YEL}${rule}${C_RESET}
+ This node  : $MGMT_IP   (geneve endpoint, virt_type=$VIRT_TYPE)
+ Controller : $CONTROLLER_IP
+
+ Running here: ovn-controller, nova-compute, neutron-ovn-metadata-agent.
+ This node holds ${C_RED}no database credential and no admin credential${C_RESET}, by design,
+ so it cannot check its own registration. ${C_RED}On the CONTROLLER${C_RESET}, run:
+
+   sudo ${SELF##*/} discover-hosts
+
+ and confirm the new host appears in both lists it prints. Until then the
+ scheduler will not place anything here.
+
+ No ovn-bridge-mappings is configured on this node: provider-network ports
+ cannot land here until a real NIC is attached to a bridge and mapped.
+
+ ${C_RED}Unverified: $UNVERIFIED_ITEMS${C_RESET}
 ${C_YEL}${rule}${C_RESET}
 EOF
 }
@@ -2288,6 +3299,8 @@ cmd_all_in_one() {
     phase_neutron
     phase_nova
     phase_nova_compute
+    phase_horizon
+    phase_bootstrap_resources
     print_stage_banner
     # `exit` rather than `return`: a non-zero return would trip the ERR trap and
     # print an "aborted" line, which this is not.
@@ -2295,11 +3308,85 @@ cmd_all_in_one() {
 }
 
 cmd_compute_add() {
-    log_error "'compute-add' is not implemented yet (planned for a later step)."
-    log_error "Step 1 covers the all-in-one skeleton, preflight and base services only."
-    log_error "Implemented now : $IMPLEMENTED_PHASES"
-    log_error "Still to come   : $PENDING_PHASES, then compute-add"
-    exit 3
+    log_step "hagistack $HAGISTACK_VERSION — compute-add"
+    log_info "stage: $HAGISTACK_STAGE"
+    log_info "this adds a COMPUTE node. Run it on the new machine, not on the controller."
+    _need_privilege
+    phase_compute_preflight
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_resolved_config
+        echo
+        log_ok "--check: preflight only, no changes made"
+        return 0
+    fi
+    phase_compute_secrets
+    phase_compute_packages
+    phase_compute_ovn
+    phase_compute_nova
+    phase_compute_metadata
+    print_compute_banner
+    [ -z "$SKIPPED_PHASES" ] || exit 4
+}
+
+# Emit exactly the credentials a compute node needs — and nothing else. Run on
+# the CONTROLLER. Refuses to write to a terminal: these are live secrets and a
+# terminal keeps scrollback.
+cmd_compute_secrets() {
+    _need_privilege
+    if [ -t 1 ]; then
+        die "refusing to print credentials to a terminal.
+     Redirect them to a file instead:
+         sudo ${SELF##*/} compute-secrets > compute-secrets.env
+         chmod 600 compute-secrets.env"
+    fi
+    $SUDO test -f "$SECRETS_FILE" \
+        || die "$SECRETS_FILE does not exist. Run 'all-in-one' on this machine first."
+    # shellcheck disable=SC1090
+    . <($SUDO cat "$SECRETS_FILE")
+    local k lacking=""
+    for k in $COMPUTE_SECRET_KEYS; do
+        [ -n "${!k:-}" ] || lacking="${lacking}${lacking:+ }$k"
+    done
+    [ -z "$lacking" ] || die "$SECRETS_FILE is missing: $lacking"
+    echo "# hagistack compute-node credentials — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# Install on the compute node as $SECRETS_FILE, mode 0600, and delete this copy."
+    echo "# Deliberately NOT included: every database password, MYSQL_ROOT_PASS and"
+    echo "# ADMIN_PASSWORD. A compute node reaches the cell database only through"
+    echo "# nova-conductor, and nothing on it authenticates as admin."
+    for k in $COMPUTE_SECRET_KEYS; do
+        printf '%s=%s\n' "$k" "${!k}"
+    done
+    log_ok "wrote $(echo "$COMPUTE_SECRET_KEYS" | wc -w | tr -d ' ') credentials (values not echoed here)" >&2
+}
+
+# Map any compute host that has registered itself into a cell. Run on the
+# CONTROLLER after compute-add: a compute node has no database access, so it
+# cannot do this for itself.
+cmd_discover_hosts() {
+    _need_privilege
+    $SUDO test -f "$SECRETS_FILE" \
+        || die "$SECRETS_FILE does not exist. This command belongs on the controller."
+    # shellcheck disable=SC1090
+    . <($SUDO cat "$SECRETS_FILE")
+    [ -n "$MGMT_IP" ] || MGMT_IP="$(ip -4 -o route get 1.1.1.1 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1 || true)"
+    valid_ipv4 "${MGMT_IP:-}" || die "could not determine MGMT_IP; pass --mgmt-ip"
+    REGION_NAME="${REGION_NAME:-RegionOne}"
+
+    log_step "cell host discovery"
+    log_info "compute services currently registered:"
+    openstack_admin compute service list --service nova-compute 2>/dev/null \
+        | sed 's/^/    /' || log_warn "could not read the compute service list"
+    if nova_manage cell_v2 discover_hosts --by-service >/dev/null 2>&1; then
+        log_ok "discovery ran (hosts already mapped are left alone)"
+    else
+        die "'nova-manage cell_v2 discover_hosts' failed. Check nova-conductor and the
+     cell databases on this controller."
+    fi
+    log_info "hypervisors visible to the compute API:"
+    openstack_admin hypervisor list 2>/dev/null | sed 's/^/    /' \
+        || log_warn "could not read the hypervisor list"
+    log_warn "a mapped hypervisor is not a booted guest. Guest boot stays unverified."
 }
 
 cmd_status() {
@@ -2310,30 +3397,45 @@ cmd_status() {
     echo "init     : $([ "$HAS_SYSTEMD" -eq 1 ] && echo systemd || echo 'no systemd')"
     echo "secrets  : $([ -f "$SECRETS_FILE" ] && echo "$SECRETS_FILE (mode $($SUDO stat -c '%a' "$SECRETS_FILE" 2>/dev/null || echo '?'))" || echo 'not created yet')"
     echo
-    echo "phases implemented: $IMPLEMENTED_PHASES"
-    echo "phases pending    : $PENDING_PHASES"
+    echo "IMPLEMENTED (the code exists and runs) and VERIFIED (observed working on"
+    echo "real hardware) are different claims. This command prints both, separately."
     echo
-    local p incomplete=""
+    echo "implemented, all-in-one : $IMPLEMENTED_PHASES"
+    echo "implemented, compute-add: $COMPUTE_ADD_PHASES"
+    echo "not implemented         : ${PENDING_PHASES:-nothing}"
+    echo "verified on hardware    : $VERIFIED_ON_HARDWARE"
+    echo "still unverified        : $UNVERIFIED_ITEMS"
+    echo
+    echo "phase markers on THIS host:"
+    local p incomplete="" role_aio=0 role_compute=0
     for p in $IMPLEMENTED_PHASES; do
         if phase_done "$p"; then
-            printf '  %-16s %s\n' "$p" "done"
+            printf '  %-20s %s\n' "$p" "done"; role_aio=1
         else
-            printf '  %-16s %s\n' "$p" "not done"
+            printf '  %-20s %s\n' "$p" "not done"
             incomplete="${incomplete}${incomplete:+ }$p"
         fi
     done
+    for p in $COMPUTE_ADD_PHASES; do
+        if phase_done "$p"; then printf '  %-20s %s\n' "$p" "done (compute-add)"; role_compute=1; fi
+    done
     echo
-    if [ -z "$incomplete" ]; then
-        echo "implemented layer: COMPLETE (every implemented phase carries a state marker)"
+    if [ "$role_compute" -eq 1 ] && [ "$role_aio" -eq 0 ]; then
+        echo "role: this host looks like a COMPUTE node added with 'compute-add'."
+        echo "      It holds no database or admin credential, so it cannot report"
+        echo "      whether the controller has mapped it. Run 'hagistack discover-hosts'"
+        echo "      on the controller to find out."
+    elif [ -z "$incomplete" ]; then
+        echo "all-in-one: every implemented phase carries a state marker."
+        echo "            That means the code ran, NOT that the cloud works."
     else
-        echo "implemented layer: INCOMPLETE — missing: $incomplete"
+        echo "all-in-one: INCOMPLETE — missing: $incomplete"
         echo "            'all-in-one' exits 4 while any of these is missing."
     fi
-    echo "NOTE: even when COMPLETE, Horizon is NOT installed, no initial resources"
-    echo "      exist, and no guest VM has been booted or verified. The provider"
-    echo "      bridge has no NIC attached and no address, so provider networks"
-    echo "      reach no physical LAN, and Geneve node-to-node tunnelling is"
-    echo "      untested until compute-add."
+    echo "NOTE: no guest VM has been booted or verified by anything in this repository,"
+    echo "      and nobody has logged in to the dashboard. The provider bridge has no"
+    echo "      NIC attached and no address, so provider networks reach no physical"
+    echo "      LAN, and node-to-node Geneve is untested until a second node joins."
     echo
     echo "identity:"
     printf '  %-16s %s\n' "keystone pkg" \
@@ -2372,6 +3474,22 @@ cmd_status() {
     printf '  %-16s %s\n' "  metadata" "apache2 + mod_wsgi on :8775 (nova-api-metadata)"
     printf '  %-16s %s\n' "  units" "$NOVA_UNITS $NOVA_COMPUTE_UNITS"
     printf '  %-16s %s\n' "  virt type" "${VIRT_TYPE:-unresolved} (guest boot NOT verified)"
+    echo
+    echo "dashboard:"
+    printf '  %-16s %s\n' "horizon pkg" \
+        "$(dpkg-query -W -f='${Version}' openstack-dashboard 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  served by" "apache2 + mod_wsgi at ${HORIZON_PATH} (conf-available, not a vhost)"
+    printf '  %-16s %s\n' "  settings" \
+        "$($SUDO test -f "$HORIZON_SNIPPET" && echo "$HORIZON_SNIPPET" || echo 'not written yet')"
+    printf '  %-16s %s\n' "  conffile" "$HORIZON_LOCAL_SETTINGS (never edited by hagistack)"
+    printf '  %-16s %s\n' "  login tested" "NO — never, by anyone"
+    echo
+    echo "initial resources (names hagistack owns):"
+    printf '  %-16s %s\n' "flavor"   "$BS_FLAVOR"
+    printf '  %-16s %s\n' "image"    "${IMAGE_NAME:-<unresolved>}"
+    printf '  %-16s %s\n' "networks" "$BS_PROVIDER_NET, $BS_TENANT_NET"
+    printf '  %-16s %s\n' "router"   "$BS_ROUTER"
+    printf '  %-16s %s\n' "keypair"  "$BS_KEYPAIR ($KEYPAIR_PRIVATE)"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
@@ -2392,33 +3510,60 @@ usage() {
 hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
 
   STAGE: $HAGISTACK_STAGE
-  This build installs the base layer, Keystone, Glance, Placement, the Neutron
-  networking API on OVN, and Nova. It does NOT give you a working OpenStack:
-  there is no Horizon and no initial resources, no guest VM has been booted or
-  verified, and the provider bridge has no NIC attached yet.
+
+  IMPLEMENTED and VERIFIED are different claims and this shell keeps them apart:
+
+    implemented : every phase of 'all-in-one' and of 'compute-add' exists here
+                  and runs — base layer, Keystone, Glance, Placement, OVS/OVN,
+                  Neutron, Nova, Horizon, and the initial resources a guest
+                  needs. Nothing is left as a stub.
+    verified    : $VERIFIED_ON_HARDWARE
+                  Container work proved syntax, configuration generation and
+                  re-run safety. It cannot prove any of:
+                    $UNVERIFIED_ITEMS
+                  Treat this as untested software until those are observed.
+
+  Every phase being implemented does NOT give you a working OpenStack. It gives
+  you one that has never been shown to work. The difference is the whole point
+  of the two labels above.
+
   See README.md in this directory.
 
 usage:
-  hagistack all-in-one  [options]   build controller+compute on one host
-                                    (currently: + Nova API/scheduler/conductor/compute)
-  hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
-  hagistack status                  show stage, phase and service state
-  hagistack --help                  this text
-  hagistack --version               version string
+  hagistack all-in-one      [options]  controller + compute on one host
+  hagistack compute-add     [options]  configure THIS host as an extra compute
+                                       node; needs --controller-ip
+  hagistack compute-secrets            (controller) emit only the credentials a
+                                       compute node needs; refuses a terminal
+  hagistack discover-hosts             (controller) map newly registered compute
+                                       hosts into a cell
+  hagistack status                     stage, phase markers and service state
+  hagistack --help                     this text
+  hagistack --version                  version string
 
-options:
+options for all-in-one:
   --ext-nic NAME            provider/external interface            (required)
   --provider-cidr CIDR      external network, e.g. 172.24.4.0/24   (required)
   --provider-gateway IP     gateway on that network                (required)
   --floating-start IP       first floating IP                      (required)
   --floating-end IP         last floating IP                       (required)
-  --mgmt-ip IP              management IP           (default: autodetected)
   --tenant-cidr CIDR        demo tenant subnet      (default: 10.10.10.0/24)
   --dns-server IP           tenant DNS              (default: provider gateway)
-  --virt-type kvm|qemu      hypervisor mode         (default: autodetected)
-  --region-name NAME        Keystone region         (default: RegionOne)
   --provider-physnet NAME   provider physical-network label   (default: physnet1)
   --provider-bridge NAME    OVS bridge for that physnet       (default: br-ex)
+  --image-name NAME         initial image name    (default: cirros-0.6.3-<arch>)
+  --image-url URL           where to fetch it     (default: the cirros project)
+  --image-sha256 HEX        its digest; a URL is never fetched without one
+  --image-file PATH         use a local file instead of downloading
+
+options for compute-add:
+  --controller-ip IP        the controller's MANAGEMENT address    (required)
+                            None of the provider-network options apply here.
+
+options for both:
+  --mgmt-ip IP              management IP           (default: autodetected)
+  --virt-type kvm|qemu      hypervisor mode         (default: autodetected)
+  --region-name NAME        Keystone region         (default: RegionOne)
   --env-file PATH           read settings from PATH (default: ./hagistack.env)
   --check                   run preflight only, change nothing
   -h, --help                this text
@@ -2439,18 +3584,36 @@ exit status:
   0  success
   1  configuration or preflight error
   2  usage error
-  3  subcommand not implemented yet
-  4  ran to the end, but the base layer is incomplete (a service was
-     unreachable, so its phase was skipped)
+  3  (unused: no subcommand is a stub any more)
+  4  ran to the end, but the deployment is incomplete (a service was
+     unreachable, so its phase was skipped and carries no state marker)
 
 secrets:
-  Generated on first run into $SECRETS_FILE (mode 0600) and reused unchanged
-  afterwards. No password is hard-coded in this shell and no secret is ever
-  written into the repository.
+  all-in-one generates them on first run into $SECRETS_FILE (mode 0600) and
+  reuses them unchanged afterwards. No password is hard-coded in this shell and
+  no secret is ever written into the repository.
+
+  compute-add NEVER generates secrets: a compute node that invented its own
+  RabbitMQ password could not talk to anything. Deliver them explicitly —
+      controller:  sudo hagistack compute-secrets > compute-secrets.env
+      copy over :  scp compute-secrets.env NODE:/tmp/
+      node      :  sudo install -o root -g root -m 0600 /tmp/compute-secrets.env \
+                       $SECRETS_FILE && shred -u /tmp/compute-secrets.env
+  That file carries $COMPUTE_SECRET_KEYS
+  and nothing else. No database password and no admin password ever reaches a
+  compute node.
+
+initial resources:
+  all-in-one creates a flavor, image, provider and tenant networks, a router,
+  two security group rules and a keypair — each show-or-create by name, none
+  ever deleted or recreated. The image is downloaded only against a pinned
+  sha256 and is tagged with that digest, so an image that hagistack did not
+  upload (a leftover test image, say) is never mistaken for the initial one.
 
 re-running:
-  Safe. Databases are never dropped, existing secrets are never rotated and
-  configuration is edited key-by-key rather than appended.
+  Safe. Databases are never dropped, existing secrets are never rotated,
+  configuration is edited key-by-key rather than appended, and no initial
+  resource is recreated.
 EOF
 }
 
@@ -2488,6 +3651,16 @@ parse_args() {
                                 _cli_set PROVIDER_PHYSNET "$2"; shift 2 ;;
             --provider-bridge)  [ $# -ge 2 ] || die "--provider-bridge requires a value"
                                 _cli_set PROVIDER_BRIDGE "$2"; shift 2 ;;
+            --controller-ip)    [ $# -ge 2 ] || die "--controller-ip requires a value"
+                                _cli_set CONTROLLER_IP "$2"; shift 2 ;;
+            --image-name)       [ $# -ge 2 ] || die "--image-name requires a value"
+                                _cli_set IMAGE_NAME "$2"; shift 2 ;;
+            --image-url)        [ $# -ge 2 ] || die "--image-url requires a value"
+                                _cli_set IMAGE_URL "$2"; shift 2 ;;
+            --image-sha256)     [ $# -ge 2 ] || die "--image-sha256 requires a value"
+                                _cli_set IMAGE_SHA256 "$2"; shift 2 ;;
+            --image-file)       [ $# -ge 2 ] || die "--image-file requires a value"
+                                _cli_set IMAGE_FILE "$2"; shift 2 ;;
             --env-file)         [ $# -ge 2 ] || die "--env-file requires a value"
                                 ENV_FILE="$2"; shift 2 ;;
             --check)            DRY_RUN=1; shift ;;
@@ -2504,11 +3677,11 @@ main() {
     local cmd="${1:-}"
     [ $# -gt 0 ] && shift || true
     case "$cmd" in
-        all-in-one|compute-add|status) ;;
+        all-in-one|compute-add|compute-secrets|discover-hosts|status) ;;
         ""|-h|--help)  usage; exit 0 ;;
         --version)     echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
         *) log_error "unknown command: $cmd"
-           log_error "valid commands: all-in-one, compute-add (not yet implemented), status"
+           log_error "valid commands: all-in-one, compute-add, compute-secrets, discover-hosts, status"
            echo; usage >&2; exit 2 ;;
     esac
 
@@ -2520,9 +3693,11 @@ main() {
     resolve_config
 
     case "$cmd" in
-        all-in-one)  cmd_all_in_one ;;
-        compute-add) cmd_compute_add ;;
-        status)      cmd_status ;;
+        all-in-one)      cmd_all_in_one ;;
+        compute-add)     cmd_compute_add ;;
+        compute-secrets) cmd_compute_secrets ;;
+        discover-hosts)  cmd_discover_hosts ;;
+        status)          cmd_status ;;
     esac
 }
 

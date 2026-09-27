@@ -173,9 +173,14 @@ rm -rf /etc/hagistack /var/lib/hagistack
 o="$("$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" "${MGMTDEF[@]}" 2>&1)"; rc=$?
 [ "$rc" = "4" ] && rec 4.1-exit-code PASS "exit 4 when base layer incomplete" \
                 || rec 4.1-exit-code FAIL "exit $rc, wanted 4"
-grep -qE 'STEP [0-9]+ INCOMPLETE' <<<"$o" && rec 4.2-banner PASS "INCOMPLETE banner shown" \
+# Step 6 dropped the "STEP n" numbering from the banners: the step number was
+# the thing that kept going stale. The assertion is about the word INCOMPLETE,
+# not about the numbering, so it accepts either form.
+grep -qE '(STEP [0-9]+ )?INCOMPLETE' <<<"$o" && rec 4.2-banner PASS "INCOMPLETE banner shown" \
                                     || rec 4.2-banner FAIL "no INCOMPLETE banner"
-grep -qE 'STEP [0-9]+ COMPLETE' <<<"$o" && rec 4.3-no-false-complete FAIL "still claims COMPLETE" \
+# \b matters: without it, 'COMPLETE' matches inside 'INCOMPLETE' and this
+# assertion fires on exactly the banner it is supposed to accept.
+grep -qE '\bCOMPLETE\b' <<<"$o" && rec 4.3-no-false-complete FAIL "still claims COMPLETE" \
                                   || rec 4.3-no-false-complete PASS "does not claim COMPLETE"
 grep -qE 'Skipped +: .*database' <<<"$o" && rec 4.4-lists-skipped PASS "names the skipped phases" \
                                          || rec 4.4-lists-skipped FAIL "skipped phases not named"
@@ -184,7 +189,7 @@ grep -qE 'Skipped +: .*database' <<<"$o" && rec 4.4-lists-skipped PASS "names th
 [ -e /var/lib/hagistack/state/memcached.done ] && rec 4.6-memcached-marker FAIL "memcached marked done though never started" \
                                                || rec 4.6-memcached-marker PASS "memcached not marked done"
 st="$("$H" status 2>&1)"
-grep -qE '(base|implemented) layer: INCOMPLETE' <<<"$st" && rec 4.7-status-agrees PASS "status reports INCOMPLETE" \
+grep -qE '(layer|all-in-one): INCOMPLETE' <<<"$st" && rec 4.7-status-agrees PASS "status reports INCOMPLETE" \
                                           || rec 4.7-status-agrees FAIL "status disagrees with the banner"
 grep -q 'exits 4' <<<"$st" && rec 4.8-status-mentions-exit PASS "status explains the exit code" \
                            || rec 4.8-status-mentions-exit FAIL "status does not mention exit 4"

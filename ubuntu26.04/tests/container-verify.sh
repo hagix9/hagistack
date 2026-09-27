@@ -51,8 +51,12 @@ expect_exit B2-no-args-help    0 'usage:'                       "$H"
 expect_exit B3-version         0 '^hagistack [0-9]+\.[0-9]+\.[0-9]+-step[0-9]+'     "$H" --version
 expect_exit B4-bad-command     2 'unknown command'              "$H" frobnicate
 expect_exit B5-bad-option      2 'unknown option'               "$H" all-in-one --nope
-expect_exit B6-compute-add-NI  3 'not implemented yet'          "$H" compute-add
-expect_exit B7-status          0 'phases pending'               "$H" status
+# Step 6 implemented compute-add, so "exits 3 saying not-implemented" is no
+# longer the wanted behaviour — and must not silently become a pass either.
+# What is asserted now: no subcommand is a stub (nothing exits 3), and
+# compute-add refuses for a REAL reason, naming the setting it needs.
+expect_exit B6-compute-add-ctl 1 'needs --controller-ip'        "$H" compute-add --env-file /dev/null
+expect_exit B7-status          0 'not implemented'              "$H" status
 # NOTE: never pipe straight into `grep -q` under `set -o pipefail` — grep exits
 # on first match, the producer gets SIGPIPE and the pipeline returns 141.
 help_out="$("$H" --help 2>&1)"
@@ -345,9 +349,11 @@ else rec G1-systemd-absent-detected FAIL "did not report missing systemd"; fi
 if grep -qE 'SKIPPED|NOT VERIFIED' <<<"$o"; then
     rec G2-marks-unverified PASS "reports SKIPPED/NOT VERIFIED instead of claiming success"
 else rec G2-marks-unverified FAIL "did not mark unverified"; fi
-if grep -qE 'STEP [0-9]+ (COMPLETE|INCOMPLETE)' <<<"$o"; then
-    rec G3-stage-banner PASS "prints a stage banner ($(grep -oE 'STEP [0-9]+ [A-Z]+' <<<"$o" | head -1))"
-else rec G3-stage-banner FAIL "no stage banner"; fi
+# The "STEP n" numbering was dropped in step 6 — it was the part that kept going
+# stale. A banner stating COMPLETE or INCOMPLETE is what matters.
+if grep -qE '(STEP [0-9]+ )?(ALL IMPLEMENTED PHASES RAN|INCOMPLETE|COMPLETE)' <<<"$o"; then
+    rec G3-stage-banner PASS "prints a closing banner ($(grep -oE '(INCOMPLETE|ALL IMPLEMENTED PHASES RAN)' <<<"$o" | head -1))"
+else rec G3-stage-banner FAIL "no closing banner"; fi
 # With no systemd the base layer cannot come up, so the run must say INCOMPLETE
 # and exit 4 rather than claiming success.
 o_rc=0; "$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" >/dev/null 2>&1 || o_rc=$?
