@@ -22,13 +22,13 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.3.0-step3"
-HAGISTACK_STAGE="step3: base services + Keystone + Glance + Placement (no Neutron/OVN, Nova or Horizon)"
+HAGISTACK_VERSION="0.4.0-step4"
+HAGISTACK_STAGE="step4: base + Keystone + Glance + Placement + Neutron/OVN (no Nova, no Horizon; no instance can boot)"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
-IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement"
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron"
 # Phases still to come. Listed so the CLI can be honest about where it stops.
-PENDING_PHASES="ovn neutron nova horizon bootstrap_resources verify"
+PENDING_PHASES="nova horizon bootstrap_resources verify"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -205,7 +205,8 @@ phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done
 # Every value the operator can set, in one place. Used by the argument parser,
 # the config-file parser (as its key allowlist) and the precedence resolver.
 CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
-             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME"
+             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME
+             PROVIDER_PHYSNET PROVIDER_BRIDGE"
 
 declare -A CLI_VAL=()  CLI_SET=()
 declare -A ENV_VAL=()  ENV_SET=()
@@ -229,7 +230,7 @@ _capture_env
 
 MGMT_IP="" EXT_NIC="" PROVIDER_CIDR="" PROVIDER_GATEWAY=""
 FLOATING_START="" FLOATING_END="" DNS_SERVER="" TENANT_CIDR="" VIRT_TYPE=""
-REGION_NAME=""
+REGION_NAME="" PROVIDER_PHYSNET="" PROVIDER_BRIDGE=""
 DRY_RUN=0 ENV_FILE=""
 
 # ---------------------------------------------------------------------------
@@ -545,6 +546,13 @@ phase_preflight() {
     valid_region_name "$REGION_NAME" \
         || die "REGION_NAME '$REGION_NAME' is not valid
      (allowed: letters, digits, '.', '_', '-'; at most 64 characters)"
+    PROVIDER_PHYSNET="${PROVIDER_PHYSNET:-physnet1}"
+    valid_region_name "$PROVIDER_PHYSNET" \
+        || die "PROVIDER_PHYSNET '$PROVIDER_PHYSNET' is not a valid label
+     (allowed: letters, digits, '.', '_', '-')"
+    PROVIDER_BRIDGE="${PROVIDER_BRIDGE:-br-ex}"
+    valid_nic_name "$PROVIDER_BRIDGE" \
+        || die "PROVIDER_BRIDGE '$PROVIDER_BRIDGE' is not a valid bridge name"
 
     # --- management IP ---
     if [ -z "$MGMT_IP" ]; then
@@ -585,7 +593,7 @@ phase_preflight() {
 SECRET_KEYS="MYSQL_ROOT_PASS RABBIT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS
              PLACEMENT_DB_PASS NOVA_DB_PASS NEUTRON_DB_PASS
              ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET
-             GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS"
+             GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS"
 
 # Keys written by an earlier version that are no longer used. They are reported
 # and then left alone: rewriting a live secrets file to drop a key is a bigger
@@ -1483,6 +1491,362 @@ placement_api_authenticated() {
 }
 
 # ---------------------------------------------------------------------------
+# OVN (network infrastructure)
+#
+# Packaging verified on Ubuntu 26.04, not assumed — see
+# STEP4_NEUTRON_OVN_EVIDENCE.md. openvswitch-switch 3.7.1-2, ovn-central and
+# ovn-host 26.03.0-2:
+#   * `ovn-central.service` and `ovn-host.service` are oneshot wrappers whose
+#     ExecStart is /bin/true. They only pull real units in via Wants=:
+#       ovn-central -> ovn-ovsdb-server-nb, ovn-ovsdb-server-sb, ovn-northd
+#       ovn-host    -> ovn-controller
+#     So liveness must be checked on the real units, never on the wrapper.
+#   * Startup order comes from the units' own After=:
+#       openvswitch-switch -> ovn-ovsdb-server-nb/sb -> ovn-northd -> ovn-controller
+#   * The DB servers run with --ovn-manage-ovsdb=no, i.e. they are owned by
+#     their own units rather than spawned by northd/controller.
+#   * /etc/ovn, /var/lib/ovn, /var/log/ovn and /var/run/ovn do NOT exist until
+#     the first start; nothing may assume them.
+#   * The NB/SB servers listen on unix sockets only until a connection is set,
+#     while ml2's defaults point at tcp:127.0.0.1:6641/6642 — so the listeners
+#     have to be established explicitly.
+#
+# Three concerns are kept deliberately separate:
+#   management network  MGMT_IP          API/RPC/OVN southbound reachability
+#   Geneve overlay      ovn-encap-ip     inter-node tunnels (compute-add later)
+#   provider network    PROVIDER_PHYSNET:PROVIDER_BRIDGE   bridge mapping only
+#
+# This phase creates the provider bridge but attaches NO port and assigns NO
+# address. Enslaving a NIC or moving the management IP onto the bridge is a
+# separate, disruptive step and is deliberately not performed here.
+# ---------------------------------------------------------------------------
+OVN_NB_PORT=6641
+OVN_SB_PORT=6642
+
+ovs_vsctl() { _probe ovs-vsctl "$@"; }
+ovn_nbctl()  { _probe ovn-nbctl "$@"; }
+ovn_sbctl()  { _probe ovn-sbctl "$@"; }
+
+# The real daemons behind the oneshot wrappers.
+OVN_CENTRAL_UNITS="ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd"
+OVN_HOST_UNITS="ovn-controller"
+
+ovn_nb_ready() { ovn_nbctl --timeout=10 show >/dev/null 2>&1; }
+ovn_sb_ready() { ovn_sbctl --timeout=10 show >/dev/null 2>&1; }
+ovs_ready()    { ovs_vsctl --timeout=10 show >/dev/null 2>&1; }
+
+phase_ovn() {
+    log_step "network infrastructure (OVS + OVN)"
+
+    local pkgs="openvswitch-switch ovn-central ovn-host"
+    local absent=""
+    local p
+    for p in $pkgs; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || absent="$absent $p"
+    done
+    if [ -n "$absent" ]; then
+        log_info "installing:$absent"
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        log_ok "OVS and OVN installed"
+    else
+        log_ok "OVS and OVN already installed"
+    fi
+    log_info "openvswitch $(dpkg-query -W -f='${Version}' openvswitch-switch 2>/dev/null || echo '?'), \
+ovn $(dpkg-query -W -f='${Version}' ovn-central 2>/dev/null || echo '?')"
+    log_info "ovn-central/ovn-host are oneshot wrappers; the real units are:"
+    log_info "  $OVN_CENTRAL_UNITS $OVN_HOST_UNITS"
+
+    # --- start the data/control plane, in the order the units declare -------
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        service_start_enable openvswitch-switch
+        local u
+        for u in $OVN_CENTRAL_UNITS $OVN_HOST_UNITS; do service_start_enable "$u"; done
+    else
+        log_warn "systemd is not running here; OVS/OVN cannot be started as managed services"
+        log_warn "  -> unit startup and ordering stay a GCE acceptance item (B0a/B0b)"
+    fi
+
+    if ! ovs_ready; then
+        note_skip ovn "the Open vSwitch database is not answering (ovs-vsctl show failed).
+     Nothing was configured. OVS must be running before OVN can be set up."
+        return 0
+    fi
+    log_ok "Open vSwitch database reachable"
+
+    if ! ovn_nb_ready || ! ovn_sb_ready; then
+        note_skip ovn "the OVN northbound/southbound databases are not answering.
+     Checked the real units ($OVN_CENTRAL_UNITS), not the oneshot wrapper.
+     Nothing was configured."
+        return 0
+    fi
+    log_ok "OVN northbound and southbound databases reachable"
+
+    # --- OVN DB listeners --------------------------------------------------
+    # Northbound stays on loopback: only the local Neutron talks to it.
+    # Southbound listens on the management address because compute nodes will
+    # need it at compute-add.
+    local want_nb="ptcp:${OVN_NB_PORT}:127.0.0.1"
+    local want_sb="ptcp:${OVN_SB_PORT}:${MGMT_IP}"
+    local have_nb have_sb
+    # Read the target column, not `get-connection`: on the southbound DB the
+    # latter also prints the role and read-write flags, so a plain string
+    # comparison against it never matches and the listener would be re-set on
+    # every run. Measured: `read-write role="" ptcp:6642:<ip>`.
+    have_nb="$(ovn_nbctl --bare --columns=target list connection 2>/dev/null | tr -d '[:space:]')"
+    have_sb="$(ovn_sbctl --bare --columns=target list connection 2>/dev/null | tr -d '[:space:]')"
+    if [ "$have_nb" = "$want_nb" ]; then
+        log_ok "OVN northbound listener already $want_nb"
+    else
+        ovn_nbctl set-connection "$want_nb" || die "could not set the OVN northbound listener"
+        log_ok "OVN northbound listener set to $want_nb"
+    fi
+    if [ "$have_sb" = "$want_sb" ]; then
+        log_ok "OVN southbound listener already $want_sb"
+    else
+        ovn_sbctl set-connection "$want_sb" || die "could not set the OVN southbound listener"
+        log_ok "OVN southbound listener set to $want_sb (reachable by future compute nodes)"
+    fi
+
+    # --- provider bridge: created, but deliberately left empty -------------
+    if ovs_vsctl br-exists "$PROVIDER_BRIDGE" 2>/dev/null; then
+        log_ok "provider bridge $PROVIDER_BRIDGE already exists"
+    else
+        ovs_vsctl --may-exist add-br "$PROVIDER_BRIDGE" \
+            || die "could not create the provider bridge $PROVIDER_BRIDGE"
+        log_ok "provider bridge $PROVIDER_BRIDGE created"
+    fi
+    local ports
+    ports="$(ovs_vsctl list-ports "$PROVIDER_BRIDGE" 2>/dev/null | tr '\n' ' ')"
+    log_info "ports on $PROVIDER_BRIDGE: ${ports:-<none, by design>}"
+    log_warn "no NIC is enslaved to $PROVIDER_BRIDGE and no address is assigned to it."
+    log_warn "  Attaching a physical NIC and moving the management IP is a separate,"
+    log_warn "  disruptive step that hagistack does not perform here. Until it is done,"
+    log_warn "  provider networks exist in Neutron but have no path to a physical LAN."
+
+    # --- local chassis configuration ---------------------------------------
+    # ovn-encap-ip is the Geneve tunnel endpoint: the management address.
+    # ovn-bridge-mappings is the provider-network concern, kept separate.
+    _ovs_extid() {  # _ovs_extid <key> <value>
+        local cur
+        cur="$(ovs_vsctl --if-exists get open_vswitch . "external_ids:$1" 2>/dev/null | tr -d '"')"
+        if [ "$cur" = "$2" ]; then return 1; fi
+        ovs_vsctl set open_vswitch . "external_ids:$1=$2"
+        return 0
+    }
+    local changed=0
+    _ovs_extid ovn-remote        "tcp:${MGMT_IP}:${OVN_SB_PORT}"            && changed=1
+    _ovs_extid ovn-encap-type    geneve                                     && changed=1
+    _ovs_extid ovn-encap-ip      "$MGMT_IP"                                 && changed=1
+    _ovs_extid ovn-bridge-mappings "${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}" && changed=1
+    _ovs_extid ovn-cms-options   enable-chassis-as-gw                       && changed=1
+    if [ "$changed" -eq 1 ]; then
+        log_ok "local chassis configured (ovn-remote, geneve encap on $MGMT_IP, ${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE})"
+    else
+        log_ok "local chassis already configured (unchanged)"
+    fi
+
+    # --- did this host register itself as a chassis? ------------------------
+    local sysid chassis
+    sysid="$(ovs_vsctl --if-exists get open_vswitch . external_ids:system-id 2>/dev/null | tr -d '"')"
+    chassis="$(ovn_sbctl --bare --columns=name list chassis 2>/dev/null | tr '\n' ' ')"
+    if [ -n "$chassis" ]; then
+        log_ok "chassis registered in the OVN southbound DB: $chassis"
+    else
+        log_warn "no chassis is registered in the southbound DB yet (system-id: ${sysid:-unset})."
+        log_warn "  ovn-controller may still be starting, or it cannot reach ${MGMT_IP}:${OVN_SB_PORT}."
+    fi
+
+    phase_mark_done ovn
+}
+
+# ---------------------------------------------------------------------------
+# Neutron (networking API)
+#
+# Packaging verified on Ubuntu 26.04 (neutron 2:28.0.2-0ubuntu1):
+#   * The API is served by Apache: the `neutron-api` package (NOT
+#     neutron-server) ships /etc/apache2/sites-available/neutron-api.conf with
+#     its own `Listen 9696` and WSGIScriptAlias to
+#     /usr/share/neutron/neutron-api.wsgi, and the site is enabled on install.
+#     `neutron-server` itself ships no systemd unit at all.
+#   * Three further units are separate processes:
+#       neutron-rpc-server.service        User=neutron
+#       neutron-periodic-workers.service
+#       neutron-ovn-metadata-agent.service  User=root (it manipulates netns)
+#   * neutron.conf and plugins/ml2/ml2_conf.ini both come from
+#     `neutron-common`, mode 0640 root:neutron.
+#   * Config loading was checked in neutron/server/__init__.py: with no
+#     OS_NEUTRON_CONFIG_FILES set, the WSGI app defaults to
+#     ['neutron.conf', 'plugins/ml2/ml2_conf.ini'] — so the API and the RPC
+#     server read the same pair and cannot disagree about the mechanism driver.
+#   * There is no /etc/neutron/plugin.ini convention in this packaging.
+#   * DB schema is managed by `neutron-db-manage ... upgrade head`.
+# ---------------------------------------------------------------------------
+NEUTRON_CONF="/etc/neutron/neutron.conf"
+ML2_CONF="/etc/neutron/plugins/ml2/ml2_conf.ini"
+OVN_META_CONF="/etc/neutron/neutron_ovn_metadata_agent.ini"
+NEUTRON_PORT=9696
+NEUTRON_UNITS="neutron-rpc-server neutron-periodic-workers neutron-ovn-metadata-agent"
+
+neutron_serving() {
+    _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:${NEUTRON_PORT}/" 2>/dev/null
+}
+
+phase_neutron() {
+    log_step "networking API (Neutron, ML2/OVN)"
+
+    local pkgs="neutron-server neutron-plugin-ml2 neutron-ovn-metadata-agent"
+    if dpkg-query -W -f='${Status}' neutron-server 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "neutron already installed"
+    else
+        log_info "installing:$pkgs (pulls neutron-api, which provides the Apache vhost)"
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        log_ok "neutron installed"
+    fi
+    log_info "neutron $(dpkg-query -W -f='${Version}' neutron-server 2>/dev/null || echo '?'): \
+API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRON_UNITS"
+
+    # --- dependencies -------------------------------------------------------
+    if ! mariadb_reachable; then
+        note_skip neutron "MariaDB is not reachable; the networking schema cannot be created."
+        return 0
+    fi
+    if ! mysql_root -e "USE neutron" >/dev/null 2>&1; then
+        note_skip neutron "the 'neutron' database does not exist; the database phase did not complete."
+        return 0
+    fi
+    if ! keystone_ready_for_registration; then
+        note_skip neutron "Keystone is not answering, so networking cannot be registered."
+        return 0
+    fi
+    if ! memcached_reachable; then
+        note_skip neutron "memcached is not listening on ${MGMT_IP}:11211; see the glance phase."
+        return 0
+    fi
+    if ! phase_done ovn; then
+        note_skip neutron "the OVN phase did not complete, so ML2/OVN has nothing to drive.
+     Neutron was not configured."
+        return 0
+    fi
+
+    # --- neutron.conf --------------------------------------------------------
+    local changed=0
+    ini_set "$NEUTRON_CONF" DEFAULT core_plugin     ml2                     && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT service_plugins ovn-router              && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT auth_strategy   keystone                && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT transport_url \
+        "rabbit://openstack:${RABBIT_PASS}@${MGMT_IP}:5672/"                && changed=1
+    ini_set "$NEUTRON_CONF" database connection \
+        "mysql+pymysql://neutron:${NEUTRON_DB_PASS}@127.0.0.1/neutron?charset=utf8mb4" && changed=1
+    write_authtoken "$NEUTRON_CONF" neutron "$NEUTRON_SERVICE_PASS"
+
+    # --- ml2_conf.ini --------------------------------------------------------
+    # geneve for tenant networks; flat AND vlan offered on the provider physnet
+    # so that multiple provider LANs can be added later without re-plumbing.
+    ini_set "$ML2_CONF" ml2 type_drivers          "flat,vlan,geneve"        && changed=1
+    ini_set "$ML2_CONF" ml2 tenant_network_types   geneve                   && changed=1
+    ini_set "$ML2_CONF" ml2 mechanism_drivers      ovn                      && changed=1
+    ini_set "$ML2_CONF" ml2 extension_drivers      port_security            && changed=1
+    ini_set "$ML2_CONF" ml2 overlay_ip_version     4                        && changed=1
+    ini_set "$ML2_CONF" ml2_type_geneve vni_ranges       "1:65536"          && changed=1
+    ini_set "$ML2_CONF" ml2_type_geneve max_header_size  38                 && changed=1
+    ini_set "$ML2_CONF" ml2_type_flat   flat_networks       "$PROVIDER_PHYSNET" && changed=1
+    ini_set "$ML2_CONF" ml2_type_vlan   network_vlan_ranges "$PROVIDER_PHYSNET" && changed=1
+    ini_set "$ML2_CONF" securitygroup   enable_security_group true          && changed=1
+    ini_set "$ML2_CONF" ovn ovn_nb_connection "tcp:127.0.0.1:${OVN_NB_PORT}" && changed=1
+    ini_set "$ML2_CONF" ovn ovn_sb_connection "tcp:${MGMT_IP}:${OVN_SB_PORT}" && changed=1
+    ini_set "$ML2_CONF" ovn ovn_l3_scheduler   leastloaded                  && changed=1
+    ini_set "$ML2_CONF" ovn ovn_metadata_enabled true                       && changed=1
+
+    # --- metadata agent ------------------------------------------------------
+    ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$MGMT_IP"          && changed=1
+    ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret \
+        "$METADATA_PROXY_SECRET"                                            && changed=1
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:/var/run/openvswitch/db.sock" && changed=1
+    ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${MGMT_IP}:${OVN_SB_PORT}" && changed=1
+
+    if [ "$changed" -eq 1 ]; then
+        log_ok "neutron.conf, ml2_conf.ini and the metadata agent configured (credentials not shown)"
+    else
+        log_ok "neutron configuration already correct (unchanged)"
+    fi
+    # The packages ship these root:neutron 0640 — keep it.
+    local f
+    for f in "$NEUTRON_CONF" "$ML2_CONF" "$OVN_META_CONF"; do
+        $SUDO chown root:neutron "$f" 2>/dev/null || true
+        $SUDO chmod 0640 "$f"
+    done
+
+    # --- schema --------------------------------------------------------------
+    local before after
+    before="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='neutron'" 2>/dev/null || echo 0)"
+    log_info "running neutron-db-manage upgrade head (idempotent migration)"
+    local nerr; nerr="$(mktemp)"; chmod 0600 "$nerr"
+    if ! $SUDO runuser -u neutron -- neutron-db-manage \
+            --config-file "$NEUTRON_CONF" --config-file "$ML2_CONF" upgrade head >"$nerr" 2>&1; then
+        log_error "neutron-db-manage failed. Diagnostics (credentials redacted):"
+        $SUDO sed "s/${NEUTRON_DB_PASS}/<redacted>/g; s/${NEUTRON_SERVICE_PASS}/<redacted>/g; s/${RABBIT_PASS}/<redacted>/g" "$nerr" \
+          | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        rm -f "$nerr"
+        note_skip neutron "the networking schema could not be created (see the diagnostics above)."
+        return 0
+    fi
+    rm -f "$nerr"
+    after="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='neutron'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "networking schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "networking schema already current ($after tables, unchanged)"
+    else log_ok "networking schema migrated ($before -> $after tables)"; fi
+
+    # --- identity registration ------------------------------------------------
+    ks_ensure_project service
+    ks_ensure_user neutron "$NEUTRON_SERVICE_PASS"
+    ks_ensure_role_assignment neutron service admin
+    ks_ensure_service neutron network "OpenStack Networking"
+    local url="http://${MGMT_IP}:${NEUTRON_PORT}"
+    ks_ensure_endpoint neutron public   "$url"
+    ks_ensure_endpoint neutron internal "$url"
+    ks_ensure_endpoint neutron admin    "$url"
+
+    # --- run it ----------------------------------------------------------------
+    $SUDO a2ensite neutron-api >/dev/null 2>&1 || true
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        if service_active apache2; then
+            $SUDO systemctl reload-or-restart apache2 \
+                || die "apache2 failed to reload after the neutron configuration change"
+            log_ok "apache2 reloaded (identity :5000, placement :8778, networking :${NEUTRON_PORT})"
+        else
+            service_start_enable apache2
+        fi
+        local u
+        for u in $NEUTRON_UNITS; do service_start_enable "$u"; done
+    else
+        log_warn "systemd is not running here; the neutron units cannot be started"
+        for u in $NEUTRON_UNITS; do SERVICE_START_METHOD[$u]="not-started-no-systemd"; done
+    fi
+
+    if ! service_active apache2; then
+        note_skip neutron "apache2 is not running, so the networking API is not being served.
+     The schema, configuration and identity registration ARE in place.
+     Startup under systemd is a GCE acceptance item (B0a/B0b)."
+        return 0
+    fi
+    if ! neutron_serving; then
+        note_skip neutron "apache2 is active but http://${MGMT_IP}:${NEUTRON_PORT}/ did not answer."
+        return 0
+    fi
+    if ! openstack_admin network list >/dev/null 2>&1; then
+        note_skip neutron "the networking endpoint answers but 'openstack network list' failed as admin."
+        return 0
+    fi
+    log_ok "networking API verified (openstack network list succeeded)"
+    log_warn "no network has been created and no instance can boot: Nova is not installed."
+    phase_mark_done neutron
+}
+
+# ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
 # Two outcomes, never conflated: the base layer either came up or it did not.
@@ -1493,7 +1857,7 @@ print_stage_banner() {
         cat <<EOF
 
 ${C_RED}${rule}${C_RESET}
-${C_RED} STEP 3 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
+${C_RED} STEP 4 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
 ${C_RED}${rule}${C_RESET}
  Skipped    : $SKIPPED_PHASES
  Completed  : $(printf '%s' "$(_completed_phases)")
@@ -1501,7 +1865,7 @@ ${C_RED}${rule}${C_RESET}
 
  One or more services could not be reached, so their setup did not run.
  This is expected in a container with no systemd, and it is NOT a failure
- of the shell — but it is also NOT a completed step 3.
+ of the shell — but it is also NOT a completed step 4.
 
  Nothing was left half-written: the skipped phases made no changes and
  carry no state marker, so re-running once the services are up will
@@ -1515,21 +1879,24 @@ EOF
     cat <<EOF
 
 ${C_YEL}${rule}${C_RESET}
-${C_YEL} STEP 3 COMPLETE (IDENTITY + IMAGE + PLACEMENT) — NOT A USABLE CLOUD${C_RESET}
+${C_YEL} STEP 4 COMPLETE (IDENTITY+IMAGE+PLACEMENT+NETWORKING API) — NOT USABLE${C_RESET}
 ${C_YEL}${rule}${C_RESET}
  What ran   : $IMPLEMENTED_PHASES
  Not yet    : $PENDING_PHASES
 
- Up: database, message queue, cache, Keystone identity, the Glance image
- service and Placement. An admin can authenticate, upload and list images,
- and query placement.
+ Up: database, message queue, cache, Keystone identity, Glance, Placement,
+ and the Neutron networking API on ML2/OVN with OVS/OVN running.
 
- Still missing: Neutron/OVN, Nova and Horizon. There is no network, no
- compute and no dashboard. ${C_RED}You cannot create a network or boot an
- instance. This is NOT a usable cloud.${C_RESET}
+ Still missing: Nova and Horizon — there is no compute and no dashboard, so
+ ${C_RED}no instance can be booted.${C_RESET} The provider bridge $PROVIDER_BRIDGE exists but has
+ ${C_RED}no NIC attached and no address${C_RESET}, so provider networks have no path to a
+ physical LAN yet. Geneve tunnelling between nodes is configured but
+ ${C_RED}untested until a second node joins.${C_RESET}
+
+ ${C_RED}This is NOT a usable OpenStack.${C_RESET}
 
  Admin credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
-   . $ADMIN_OPENRC && openstack image list
+   . $ADMIN_OPENRC && openstack network list
    . $ADMIN_OPENRC && openstack endpoint list
 
  Re-running this command is safe: it does not drop databases, does not
@@ -1570,6 +1937,8 @@ cmd_all_in_one() {
     phase_keystone
     phase_glance
     phase_placement
+    phase_ovn
+    phase_neutron
     print_stage_banner
     # `exit` rather than `return`: a non-zero return would trip the ERR trap and
     # print an "aborted" line, which this is not.
@@ -1611,9 +1980,10 @@ cmd_status() {
         echo "implemented layer: INCOMPLETE — missing: $incomplete"
         echo "            'all-in-one' exits 4 while any of these is missing."
     fi
-    echo "NOTE: even when COMPLETE, this is base services + Keystone + Glance"
-    echo "      + Placement only. Neutron/OVN, Nova and Horizon are NOT installed,"
-    echo "      so no network can be created and no instance can be booted."
+    echo "NOTE: even when COMPLETE, Nova and Horizon are NOT installed, so no"
+    echo "      instance can be booted. The provider bridge has no NIC attached"
+    echo "      and no address, so provider networks reach no physical LAN, and"
+    echo "      Geneve node-to-node tunnelling is untested until compute-add."
     echo
     echo "identity:"
     printf '  %-16s %s\n' "keystone pkg" \
@@ -1633,10 +2003,23 @@ cmd_status() {
     printf '  %-16s %s\n' "placement pkg" \
         "$(dpkg-query -W -f='${Version}' placement-api 2>/dev/null || echo 'not installed')"
     printf '  %-16s %s\n' "  served by" "apache2 + mod_wsgi on :8778 (no placement systemd unit)"
+    echo
+    echo "networking:"
+    printf '  %-16s %s\n' "neutron pkg" \
+        "$(dpkg-query -W -f='${Version}' neutron-server 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  API" "apache2 + mod_wsgi on :9696 (neutron-server ships no unit)"
+    printf '  %-16s %s\n' "  other units" "$NEUTRON_UNITS"
+    printf '  %-16s %s\n' "ovn pkg" \
+        "$(dpkg-query -W -f='${Version}' ovn-central 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  real units" "$OVN_CENTRAL_UNITS $OVN_HOST_UNITS"
+    printf '  %-16s %s\n' "mgmt / geneve" "$MGMT_IP"
+    printf '  %-16s %s\n' "provider" "${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE} (no NIC, no address)"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
-        for u in mariadb rabbitmq-server memcached apache2 glance-api; do
+        for u in mariadb rabbitmq-server memcached apache2 glance-api \
+                 ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd ovn-controller \
+                 neutron-rpc-server neutron-ovn-metadata-agent; do
             printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
         done
     else
@@ -1650,14 +2033,15 @@ usage() {
 hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
 
   STAGE: $HAGISTACK_STAGE
-  This build installs the base layer, Keystone, Glance and Placement. It does
-  NOT give you a working OpenStack: there is no Neutron/OVN, Nova or Horizon,
-  so you cannot create a network or boot an instance.
+  This build installs the base layer, Keystone, Glance, Placement and the
+  Neutron networking API on OVN. It does NOT give you a working OpenStack:
+  there is no Nova and no Horizon, so no instance can boot, and the provider
+  bridge has no NIC attached yet.
   See README.md in this directory.
 
 usage:
   hagistack all-in-one  [options]   build controller+compute on one host
-                                    (currently: base + Keystone + Glance + Placement)
+                                    (currently: + Neutron/OVN networking API)
   hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
   hagistack status                  show stage, phase and service state
   hagistack --help                  this text
@@ -1674,6 +2058,8 @@ options:
   --dns-server IP           tenant DNS              (default: provider gateway)
   --virt-type kvm|qemu      hypervisor mode         (default: autodetected)
   --region-name NAME        Keystone region         (default: RegionOne)
+  --provider-physnet NAME   provider physical-network label   (default: physnet1)
+  --provider-bridge NAME    OVS bridge for that physnet       (default: br-ex)
   --env-file PATH           read settings from PATH (default: ./hagistack.env)
   --check                   run preflight only, change nothing
   -h, --help                this text
@@ -1739,6 +2125,10 @@ parse_args() {
                                 _cli_set VIRT_TYPE "$2"; shift 2 ;;
             --region-name)      [ $# -ge 2 ] || die "--region-name requires a value"
                                 _cli_set REGION_NAME "$2"; shift 2 ;;
+            --provider-physnet) [ $# -ge 2 ] || die "--provider-physnet requires a value"
+                                _cli_set PROVIDER_PHYSNET "$2"; shift 2 ;;
+            --provider-bridge)  [ $# -ge 2 ] || die "--provider-bridge requires a value"
+                                _cli_set PROVIDER_BRIDGE "$2"; shift 2 ;;
             --env-file)         [ $# -ge 2 ] || die "--env-file requires a value"
                                 ENV_FILE="$2"; shift 2 ;;
             --check)            DRY_RUN=1; shift ;;

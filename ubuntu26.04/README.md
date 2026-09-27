@@ -3,11 +3,11 @@
 A plain-Bash OpenStack deployment shell. Not OpenStack-Ansible, not
 Kolla-Ansible, not Packstack, not DevStack.
 
-## Current status: Step 3 — **this is not a working OpenStack yet**
+## Current status: Step 4 — **this is not a working OpenStack yet**
 
 | | |
 |---|---|
-| Version | `0.3.0-step3` |
+| Version | `0.4.0-step4` |
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 
@@ -23,18 +23,23 @@ Kolla-Ansible, not Packstack, not DevStack.
   Apache/mod_wsgi on port 5000, and an `admin-openrc` you can authenticate with
 - **Glance** image service on port 9292, and **Placement** on port 8778, both
   registered in the catalogue and answering authenticated requests
+- **Neutron networking API** on port 9696 with **ML2/OVN**, and the OVS/OVN
+  control plane: northbound and southbound databases, `ovn-northd`,
+  `ovn-controller`, Geneve as the tenant network type, and a provider bridge
+  with its physnet mapping
 
 **Not implemented yet**
 
-Neutron/OVN, Nova, Horizon, initial resources
+Nova, Horizon, initial resources
 (flavor / image / network / router / security group / keypair), and the whole
 of `compute-add`. `compute-add` exits with a clear "not implemented" message
 and status 3.
 
 So: after `all-in-one` finishes you have a database, a message queue, a cache,
-identity, an image store and placement. **There is no network and no compute —
-you cannot create a network or boot an instance, and this is not a usable
-cloud.**
+identity, an image store, placement and a networking API. **There is no compute:
+no instance can be booted, the provider bridge has no NIC and no address so
+provider networks reach no physical LAN, and Geneve between nodes is untested
+until a second node joins. This is not a usable OpenStack.**
 The command prints a banner saying exactly that, and `hagistack status` lists
 which phases are implemented versus pending.
 
@@ -81,6 +86,49 @@ services and endpoints are reused, never deleted and recreated.
 Both phases refuse to run unless memcached is listening — a configured but dead
 token cache makes every authenticated call block, so hagistack will not
 configure against one. See `STEP3_GLANCE_PLACEMENT_EVIDENCE.md`.
+
+### Neutron and OVN
+
+A third startup model again, and again it is the packaging's choice rather than
+hagistack's:
+
+| | how it starts |
+|---|---|
+| Neutron **API** (:9696) | **`apache2.service`** — a third vhost beside identity and placement. `neutron-server` ships *no* systemd unit |
+| Neutron RPC / workers / metadata | `neutron-rpc-server`, `neutron-periodic-workers`, `neutron-ovn-metadata-agent` — real units |
+| OVN | `ovn-central` and `ovn-host` are `Type=oneshot`, `ExecStart=/bin/true` **wrappers**. The real units are `ovn-ovsdb-server-nb`, `ovn-ovsdb-server-sb`, `ovn-northd`, `ovn-controller` |
+
+Because the wrappers always "succeed", liveness is checked on the real units —
+never on `ovn-central`. Start order is `openvswitch-switch` → northbound DB →
+southbound DB → `ovn-northd` → `ovn-controller` → Neutron.
+
+Three networks are kept as three separate settings, which is what lets one
+shell serve both a single-LAN lab and a split management/provider deployment:
+
+| Concern | Setting |
+|---|---|
+| management / API plane | `MGMT_IP` |
+| Geneve tunnel endpoint | `external_ids:ovn-encap-ip` (defaults to `MGMT_IP`, but is its own setting) |
+| provider physical network | `external_ids:ovn-bridge-mappings` = `--provider-physnet`:`--provider-bridge` (default `physnet1`:`br-ex`) |
+
+Tenant networks are **geneve**; the provider physnet has both **flat** and
+**vlan** enabled, so further provider LANs can be added later as VLAN segments
+on the same bridge without re-plumbing anything.
+
+The northbound database listens on **loopback only** (`ptcp:6641:127.0.0.1`) —
+only the local Neutron talks to it. The southbound database listens on the
+management address (`ptcp:6642:$MGMT_IP`) because compute nodes will need it.
+
+**The provider bridge is created empty, on purpose.** No NIC is enslaved to it
+and no address is assigned. Attaching a physical NIC and moving the management
+IP onto the bridge is disruptive — done wrong over SSH it takes the host off the
+network — so this step does not do it. Until that happens, provider networks
+exist in Neutron but have **no path to a physical LAN**. The run warns about it,
+`status` repeats it, and the tests assert that the bridge has no port, no
+address, and that the management interface kept exactly the addresses it had.
+
+See `STEP4_NEUTRON_OVN_EVIDENCE.md` for the measured packaging facts behind
+every unit name and config path above.
 
 ### Completion is not assumed
 
@@ -175,10 +223,31 @@ started **by hand** (`mariadbd-safe --bind-address=127.0.0.1`,
 credential keys, bootstrap, and `openstack token issue` succeeding as admin,
 with every artefact unchanged across three consecutive runs.
 
-**Not verified anywhere yet**: service startup *under systemd*, unit ordering
-and dependency resolution, **RabbitMQ** (it would not start in the container,
-even by hand), Nova resource-provider registration, and everything beyond
-Glance and Placement. Those are GCE acceptance items — see
+For step 4 the same container (this time `--privileged`, with `/lib/modules`
+mounted) started MariaDB, memcached, **RabbitMQ** — which did come up this time,
+unlike in step 1 — Apache, `ovsdb-server`, `ovs-vswitchd`, the OVN northbound
+and southbound databases and `ovn-northd`, all by hand and all recorded. What
+that proved: the OVN databases listen exactly where the design says
+(`ptcp:6641:127.0.0.1` and `ptcp:6642:$MGMT_IP`, confirmed with `ss`), the local
+chassis registers itself in the southbound database with a **Geneve** encap
+pointing at the management address, the provider bridge is created with **no
+port and no address**, the management interface keeps exactly the addresses it
+had, and the networking schema is created (135 tables).
+
+Regression on the same build, narrowed to what this change touches: the step 1
+audit suite **39/0/1** and the step 1 verify suite **63/0/8**, both guest exit 0,
+**no FAIL** (the UNVERIFIED entries are tooling the leaner container lacked, not
+behaviour that changed — see `STEP4_NEUTRON_OVN_EVIDENCE.md` §10).
+
+**Not verified anywhere yet**: service startup *under systemd* and unit ordering;
+the **authenticated Neutron API**, networking service/endpoint registration and
+network creation — the container hit its own limit here, a Keystone
+`QueuePool limit of size 5 overflow 50 reached` at 98% disk with the database
+server idle at 56 of 1024 connections, which is an environment constraint and
+not a setting this shell writes (the diagnosis is in
+`STEP4_NEUTRON_OVN_EVIDENCE.md` §4); **Geneve tunnelling between two nodes**; any
+**physical-LAN** provider path or floating IP; Nova resource-provider
+registration; and instance boot. Those are GCE acceptance items — see
 `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
 
 Nothing in this shell has been run on real Ubuntu 26.04 hardware or on a

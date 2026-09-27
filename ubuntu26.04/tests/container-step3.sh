@@ -60,8 +60,13 @@ grep -qE '^hagistack [0-9]+\.[0-9]+\.[0-9]+-step[0-9]+$' <<<"$v" \
 st="$("$H" status 2>&1)"
 grep -q 'glance' <<<"$st" && grep -q 'placement' <<<"$st" \
   && rec G0d-status-lists PASS "status lists glance and placement" || rec G0d-status-lists FAIL "missing"
-grep -qE 'Neutron/OVN, Nova and Horizon are NOT installed' <<<"$st" \
-  && rec G0e-status-honest PASS "status still says what is missing" || rec G0e-status-honest FAIL "overclaims"
+# Pattern, not the literal remaining-service list: later steps shorten that list
+# and the point of the check is that status keeps saying what cannot be done.
+stn="$(tr '\n' ' ' <<<"$st")"
+if grep -qiE '(Nova|Horizon)[^.]{0,60}NOT installed' <<<"$stn" \
+   && grep -qiE 'no +instance +can +be +booted|cannot +be +booted' <<<"$stn"; then
+  rec G0e-status-honest PASS "status still names missing services and says no instance can boot"
+else rec G0e-status-honest FAIL "overclaims: $(head -c 160 <<<"$stn")"; fi
 tr '\n' ' ' < <("$H" --help 2>&1) | grep -qiE 'does +NOT +give you a working' \
   && rec G0f-help-honest PASS "help still disallows 'working OpenStack'" || rec G0f-help-honest FAIL "help overclaims"
 
