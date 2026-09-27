@@ -3,11 +3,11 @@
 A plain-Bash OpenStack deployment shell. Not OpenStack-Ansible, not
 Kolla-Ansible, not Packstack, not DevStack.
 
-## Current status: Step 2 — **this is not a working OpenStack yet**
+## Current status: Step 3 — **this is not a working OpenStack yet**
 
 | | |
 |---|---|
-| Version | `0.2.0-step2` |
+| Version | `0.3.0-step3` |
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 
@@ -21,17 +21,20 @@ Kolla-Ansible, not Packstack, not DevStack.
 - base packages, **MariaDB**, **RabbitMQ**, **memcached**
 - **Keystone identity**: schema, fernet and credential keys, `bootstrap`,
   Apache/mod_wsgi on port 5000, and an `admin-openrc` you can authenticate with
+- **Glance** image service on port 9292, and **Placement** on port 8778, both
+  registered in the catalogue and answering authenticated requests
 
 **Not implemented yet**
 
-Glance, Placement, Neutron/OVN, Nova, Horizon, initial resources
+Neutron/OVN, Nova, Horizon, initial resources
 (flavor / image / network / router / security group / keypair), and the whole
 of `compute-add`. `compute-add` exits with a clear "not implemented" message
 and status 3.
 
-So: after `all-in-one` finishes you have a database, a message queue, a cache
-and a working identity service. **There is no image store, no scheduler, no
-network and no compute — you cannot create a network or boot an instance.**
+So: after `all-in-one` finishes you have a database, a message queue, a cache,
+identity, an image store and placement. **There is no network and no compute —
+you cannot create a network or boot an instance, and this is not a usable
+cloud.**
 The command prints a banner saying exactly that, and `hagistack status` lists
 which phases are implemented versus pending.
 
@@ -52,6 +55,32 @@ openstack token issue
 
 Re-running never rotates the fernet or credential keys, never rewrites the
 admin credential, and never drops the schema.
+
+### Glance and Placement
+
+They start differently, and the difference is in the packaging rather than a
+choice hagistack made:
+
+| | Glance | Placement |
+|---|---|---|
+| started by | **`glance-api.service`** (its own unit) | **`apache2.service`** — a second vhost beside identity |
+| port | 9292 (`bind_port` has no default, so it is set explicitly) | 8778 (from the packaged vhost) |
+| DB key | `[database] connection` | **`[placement_database] connection`** |
+| migration | `glance-manage db_sync` | **`placement-manage db sync`** |
+
+```sh
+. /etc/hagistack/admin-openrc
+openstack image list
+openstack endpoint list
+```
+
+Uploaded images survive re-runs: the image id, Glance's checksum and the bytes
+on disk were all unchanged across three consecutive runs. Service users,
+services and endpoints are reused, never deleted and recreated.
+
+Both phases refuse to run unless memcached is listening — a configured but dead
+token cache makes every authenticated call block, so hagistack will not
+configure against one. See `STEP3_GLANCE_PLACEMENT_EVIDENCE.md`.
 
 ### Completion is not assumed
 
@@ -148,8 +177,9 @@ with every artefact unchanged across three consecutive runs.
 
 **Not verified anywhere yet**: service startup *under systemd*, unit ordering
 and dependency resolution, **RabbitMQ** (it would not start in the container,
-even by hand), and every OpenStack service beyond Keystone. Those are GCE
-acceptance items — see `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
+even by hand), Nova resource-provider registration, and everything beyond
+Glance and Placement. Those are GCE acceptance items — see
+`../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
 
 Nothing in this shell has been run on real Ubuntu 26.04 hardware or on a
 GCE VM.

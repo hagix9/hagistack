@@ -22,13 +22,13 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.2.0-step2"
-HAGISTACK_STAGE="step2: base services + Keystone identity (no Glance/Placement/Neutron/Nova/Horizon)"
+HAGISTACK_VERSION="0.3.0-step3"
+HAGISTACK_STAGE="step3: base services + Keystone + Glance + Placement (no Neutron/OVN, Nova or Horizon)"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
-IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone"
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement"
 # Phases still to come. Listed so the CLI can be honest about where it stops.
-PENDING_PHASES="glance placement ovn neutron nova horizon bootstrap_resources verify"
+PENDING_PHASES="ovn neutron nova horizon bootstrap_resources verify"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -584,7 +584,8 @@ phase_preflight() {
 # database is a no-op and the user keeps the first password.
 SECRET_KEYS="MYSQL_ROOT_PASS RABBIT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS
              PLACEMENT_DB_PASS NOVA_DB_PASS NEUTRON_DB_PASS
-             ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET"
+             ADMIN_PASSWORD SERVICE_PASSWORD METADATA_PROXY_SECRET
+             GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS"
 
 # Keys written by an earlier version that are no longer used. They are reported
 # and then left alone: rewriting a live secrets file to drop a key is a bigger
@@ -693,6 +694,10 @@ service_active() {
     $SUDO systemctl is-active --quiet "$1"
 }
 
+# Raised from the stock 151: several OpenStack services with SQLAlchemy pools
+# share this one server. Overridable for a constrained host.
+MYSQL_MAX_CONNECTIONS="${HAGISTACK_MYSQL_MAX_CONNECTIONS:-1024}"
+
 mysql_root() { $SUDO mariadb -uroot "$@"; }
 
 # Reachability probes are bounded. `rabbitmqctl status` in particular can sit
@@ -709,15 +714,36 @@ _probe() {
 }
 mariadb_reachable()  { _probe mariadb -uroot -e "SELECT 1" >/dev/null 2>&1; }
 rabbitmq_reachable() { _probe rabbitmqctl status >/dev/null 2>&1; }
+# A token cache that is not listening is worse than no token cache: every
+# validation blocks on it. Plain TCP connect — no data exchange, so no race.
+memcached_reachable() {
+    _probe timeout 5 bash -c "exec 3<>/dev/tcp/${MGMT_IP}/11211" >/dev/null 2>&1
+}
 
 phase_database() {
     log_step "database (MariaDB)"
 
-    ini_set /etc/mysql/mariadb.conf.d/99-hagistack.cnf mysqld bind-address "127.0.0.1" >/dev/null \
-        && log_ok "bind-address pinned to 127.0.0.1" \
+    local dbconf=/etc/mysql/mariadb.conf.d/99-hagistack.cnf
+    local db_cfg_changed=0
+    ini_set "$dbconf" mysqld bind-address "127.0.0.1" >/dev/null \
+        && { db_cfg_changed=1; log_ok "bind-address pinned to 127.0.0.1"; } \
         || log_ok "bind-address already 127.0.0.1 (unchanged)"
+    # An all-in-one runs Keystone, Glance, Placement (and later Nova/Neutron)
+    # against one server, each with its own connection pool. The stock 151 is
+    # not enough and shows up as HTTP 500 / "Too many connections".
+    ini_set "$dbconf" mysqld max_connections "$MYSQL_MAX_CONNECTIONS" >/dev/null \
+        && { db_cfg_changed=1; log_ok "max_connections set to $MYSQL_MAX_CONNECTIONS"; } \
+        || log_ok "max_connections already $MYSQL_MAX_CONNECTIONS (unchanged)"
 
     service_start_enable mariadb
+    if [ "$db_cfg_changed" = "1" ] && [ "$HAS_SYSTEMD" -eq 1 ] && service_active mariadb; then
+        log_info "restarting mariadb so the new server settings take effect"
+        $SUDO systemctl restart mariadb || die "mariadb failed to restart after a configuration change"
+        log_ok "mariadb restarted"
+    elif [ "$db_cfg_changed" = "1" ]; then
+        log_warn "server settings changed but MariaDB was not restarted here"
+        log_warn "  (no systemd). They take effect on the next restart."
+    fi
     if ! mariadb_reachable; then
         note_skip database "MariaDB is not reachable (start method: ${SERVICE_START_METHOD[mariadb]}).
      Database and grant setup was NOT performed. Covered by the GCE acceptance (B0b)."
@@ -1086,6 +1112,377 @@ openstack_admin() {
 }
 
 # ---------------------------------------------------------------------------
+# Keystone registration helpers
+#
+# Every one is show-or-create: an existing user, service or endpoint is reused,
+# never deleted and never recreated. Passwords go through the environment.
+# ---------------------------------------------------------------------------
+ks_ensure_project() {
+    if openstack_admin project show "$1" >/dev/null 2>&1; then
+        log_ok "project '$1' already exists"
+    else
+        openstack_admin project create --domain default "$1" >/dev/null
+        log_ok "project '$1' created"
+    fi
+}
+
+# ks_ensure_user <name> <password-value>
+ks_ensure_user() {
+    local name="$1" pass="$2"
+    if openstack_admin user show "$name" >/dev/null 2>&1; then
+        log_ok "service user '$name' already exists — password left unchanged"
+    else
+        # --password-prompt would block; the value is passed as an argument to a
+        # function, which forks no process, and openstack reads it from stdin.
+        printf '%s\n' "$pass" | openstack_admin user create --domain default \
+            --password-prompt "$name" >/dev/null 2>&1 \
+            || openstack_admin user create --domain default --password "$pass" "$name" >/dev/null
+        log_ok "service user '$name' created"
+    fi
+}
+
+ks_ensure_role_assignment() {
+    local user="$1" project="$2" role="$3"
+    if openstack_admin role assignment list --user "$user" --project "$project" \
+         --role "$role" --names -f value 2>/dev/null | grep -q .; then
+        log_ok "role '$role' already granted to '$user' on '$project'"
+    else
+        openstack_admin role add --project "$project" --user "$user" "$role" >/dev/null
+        log_ok "role '$role' granted to '$user' on '$project'"
+    fi
+}
+
+# ks_ensure_service <name> <type> <description>
+ks_ensure_service() {
+    if openstack_admin service show "$1" >/dev/null 2>&1; then
+        log_ok "service '$1' already registered"
+    else
+        openstack_admin service create --name "$1" --description "$3" "$2" >/dev/null
+        log_ok "service '$1' (type $2) registered"
+    fi
+}
+
+# ks_ensure_endpoint <service> <interface> <url>
+ks_ensure_endpoint() {
+    local svc="$1" iface="$2" url="$3" existing
+    existing="$(openstack_admin endpoint list --service "$svc" --interface "$iface" \
+                  --region "$REGION_NAME" -f value -c URL 2>/dev/null | head -1)"
+    if [ -n "$existing" ]; then
+        if [ "$existing" = "$url" ]; then
+            log_ok "endpoint $svc/$iface already correct"
+        else
+            log_warn "endpoint $svc/$iface exists with a different URL and is left as-is:"
+            log_warn "  current: $existing"
+            log_warn "  wanted : $url"
+            log_warn "  hagistack does not delete endpoints; fix it by hand if that is wrong."
+        fi
+    else
+        openstack_admin endpoint create --region "$REGION_NAME" "$svc" "$iface" "$url" >/dev/null
+        log_ok "endpoint $svc/$iface created"
+    fi
+}
+
+# Common [keystone_authtoken] block for a service. The password is written into
+# a root-owned 0640 config file and is never echoed.
+write_authtoken() {
+    local conf="$1" user="$2" pass="$3"
+    ini_set "$conf" keystone_authtoken www_authenticate_uri "http://${MGMT_IP}:5000" >/dev/null || true
+    ini_set "$conf" keystone_authtoken auth_url             "http://${MGMT_IP}:5000" >/dev/null || true
+    # Always written, so the file is byte-identical on every run. The phases
+    # refuse to run at all unless memcached is actually listening, so this can
+    # never point at a dead cache (which would block every token validation).
+    ini_set "$conf" keystone_authtoken memcached_servers "${MGMT_IP}:11211" >/dev/null || true
+    ini_set "$conf" keystone_authtoken auth_type            password                 >/dev/null || true
+    ini_set "$conf" keystone_authtoken project_domain_name  Default                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken user_domain_name     Default                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken project_name         service                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken username             "$user"                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken password             "$pass"                  >/dev/null || true
+}
+
+# Guard shared by the Glance and Placement phases: the identity service has to
+# be answering before anything can be registered against it.
+keystone_ready_for_registration() {
+    keystone_serving && openstack_admin token issue >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Glance (image service)
+#
+# Packaging verified on Ubuntu 26.04 (glance 2:32.0.0-0ubuntu1), not assumed —
+# see STEP3_GLANCE_PLACEMENT_EVIDENCE.md:
+#   * Unlike Keystone, Glance DOES ship its own unit:
+#     /usr/lib/systemd/system/glance-api.service (User=glance, Group=glance).
+#     There is no Apache vhost for Glance at all.
+#   * /etc/glance/glance-api.conf comes from `glance-common`, mode 0640
+#     root:glance, and ships connection = sqlite:////var/lib/glance/glance.sqlite.
+#   * bind_port has NO default (`#bind_port = <None>`), so it must be set
+#     explicitly or Glance will not listen on 9292.
+#   * The store is the multi-backend layout: [DEFAULT] enabled_backends,
+#     [glance_store] default_backend, [file] filesystem_store_datadir.
+#     /var/lib/glance/images already exists as glance:glance 0750.
+#   * Both `glance-manage db_sync` and `glance-manage db sync` are accepted.
+# ---------------------------------------------------------------------------
+GLANCE_CONF="/etc/glance/glance-api.conf"
+GLANCE_PORT=9292
+
+glance_serving() {
+    _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:${GLANCE_PORT}/" 2>/dev/null
+}
+
+phase_glance() {
+    log_step "image service (Glance)"
+
+    if dpkg-query -W -f='${Status}' glance 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "glance already installed"
+    else
+        log_info "installing glance"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq glance
+        log_ok "glance installed"
+    fi
+    log_info "glance $(dpkg-query -W -f='${Version}' glance 2>/dev/null || echo '?') \
+served by glance-api.service (its own unit; Glance has no Apache vhost)"
+
+    if ! mariadb_reachable; then
+        note_skip glance "MariaDB is not reachable; the image schema cannot be created."
+        return 0
+    fi
+    if ! mysql_root -e "USE glance" >/dev/null 2>&1; then
+        note_skip glance "the 'glance' database does not exist; the database phase did not complete."
+        return 0
+    fi
+    if ! keystone_ready_for_registration; then
+        note_skip glance "Keystone is not answering, so the image service cannot be registered.
+     Glance was not configured. Bring identity up first."
+        return 0
+    fi
+    if ! memcached_reachable; then
+        note_skip glance "memcached is not listening on ${MGMT_IP}:11211.
+     Glance's token validation is configured to use it, so configuring Glance
+     against a dead cache would make every authenticated call block. Nothing
+     was changed. Bring the cache up (it is part of the base layer) and re-run."
+        return 0
+    fi
+
+    # --- configuration ---------------------------------------------------
+    local changed=0
+    ini_set "$GLANCE_CONF" database connection \
+        "mysql+pymysql://glance:${GLANCE_DB_PASS}@127.0.0.1/glance?charset=utf8mb4" && changed=1
+    ini_set "$GLANCE_CONF" DEFAULT bind_host        "$MGMT_IP"       && changed=1
+    ini_set "$GLANCE_CONF" DEFAULT bind_port        "$GLANCE_PORT"   && changed=1
+    ini_set "$GLANCE_CONF" DEFAULT enabled_backends "file:file"      && changed=1
+    ini_set "$GLANCE_CONF" glance_store default_backend file         && changed=1
+    ini_set "$GLANCE_CONF" file filesystem_store_datadir /var/lib/glance/images && changed=1
+    ini_set "$GLANCE_CONF" paste_deploy flavor keystone              && changed=1
+    write_authtoken "$GLANCE_CONF" glance "$GLANCE_SERVICE_PASS"
+    if [ "$changed" -eq 1 ]; then
+        log_ok "glance-api.conf updated (credentials not shown)"
+    else
+        log_ok "glance-api.conf already correct (unchanged)"
+    fi
+    # The package ships this file root:glance 0640 — keep it that way.
+    $SUDO chown root:glance "$GLANCE_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$GLANCE_CONF"
+
+    # --- schema ------------------------------------------------------------
+    local before after
+    before="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glance'" 2>/dev/null || echo 0)"
+    log_info "running glance-manage db_sync (idempotent migration)"
+    local gerr; gerr="$(mktemp)"; chmod 0600 "$gerr"
+    if ! $SUDO runuser -u glance -- glance-manage db_sync >"$gerr" 2>&1; then
+        log_error "glance-manage db_sync failed. Diagnostics (credentials redacted):"
+        $SUDO sed "s/${GLANCE_DB_PASS}/<redacted>/g; s/${GLANCE_SERVICE_PASS}/<redacted>/g" "$gerr" \
+          | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        rm -f "$gerr"
+        note_skip glance "the image schema could not be created (see the diagnostics above)."
+        return 0
+    fi
+    rm -f "$gerr"
+    after="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glance'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "image schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "image schema already current ($after tables, unchanged)"
+    else log_ok "image schema migrated ($before -> $after tables)"; fi
+
+    # --- identity registration ---------------------------------------------
+    ks_ensure_project service
+    ks_ensure_user glance "$GLANCE_SERVICE_PASS"
+    ks_ensure_role_assignment glance service admin
+    ks_ensure_service glance image "OpenStack Image"
+    local url="http://${MGMT_IP}:${GLANCE_PORT}"
+    ks_ensure_endpoint glance public   "$url"
+    ks_ensure_endpoint glance internal "$url"
+    ks_ensure_endpoint glance admin    "$url"
+
+    # --- run it --------------------------------------------------------------
+    if [ "$HAS_SYSTEMD" -eq 1 ] && service_active glance-api; then
+        $SUDO systemctl restart glance-api || die "glance-api failed to restart"
+        log_ok "glance-api restarted"
+    else
+        service_start_enable glance-api
+    fi
+    if ! service_active glance-api; then
+        note_skip glance "glance-api is not running, so the image API is not being served.
+     The schema, configuration and identity registration ARE in place.
+     Startup under systemd is a GCE acceptance item (B0a/B0b)."
+        return 0
+    fi
+    if ! glance_serving; then
+        note_skip glance "glance-api is active but http://${MGMT_IP}:${GLANCE_PORT}/ did not answer."
+        return 0
+    fi
+    if ! openstack_admin image list >/dev/null 2>&1; then
+        note_skip glance "the image endpoint answers but 'openstack image list' failed as admin."
+        return 0
+    fi
+    log_ok "image API verified (openstack image list succeeded)"
+    phase_mark_done glance
+}
+
+# ---------------------------------------------------------------------------
+# Placement
+#
+# Packaging verified on Ubuntu 26.04 (placement-api 1:15.0.0-0ubuntu1):
+#   * placement-api ships exactly TWO files: the Apache vhost
+#     /etc/apache2/sites-available/placement-api.conf and /usr/bin/placement-api.
+#     There is NO placement systemd unit — like Keystone, it runs under
+#     apache2.service, on a second vhost alongside identity.
+#   * That vhost carries its own `Listen 8778` and <VirtualHost *:8778>, and the
+#     package enables the site on install.
+#   * /etc/placement/placement.conf comes from `placement-common`, 0640
+#     root:placement, and its database key is [placement_database] connection —
+#     NOT [database]. Writing to [database] would silently leave it on sqlite.
+#   * The migration command is `placement-manage db sync`; `db_sync` is NOT a
+#     valid subcommand here (it is for glance-manage — the two differ).
+# ---------------------------------------------------------------------------
+PLACEMENT_CONF="/etc/placement/placement.conf"
+PLACEMENT_PORT=8778
+
+placement_serving() {
+    _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:${PLACEMENT_PORT}/" 2>/dev/null
+}
+
+phase_placement() {
+    log_step "placement service"
+
+    if dpkg-query -W -f='${Status}' placement-api 2>/dev/null | grep -q "install ok installed"; then
+        log_ok "placement-api already installed"
+    else
+        log_info "installing placement-api (Apache vhost + WSGI entry point)"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq placement-api
+        log_ok "placement-api installed"
+    fi
+    log_info "placement $(dpkg-query -W -f='${Version}' placement-api 2>/dev/null || echo '?') \
+served by apache2 + mod_wsgi on :${PLACEMENT_PORT} (no placement systemd unit exists)"
+
+    if ! mariadb_reachable; then
+        note_skip placement "MariaDB is not reachable; the placement schema cannot be created."
+        return 0
+    fi
+    if ! mysql_root -e "USE placement" >/dev/null 2>&1; then
+        note_skip placement "the 'placement' database does not exist; the database phase did not complete."
+        return 0
+    fi
+    if ! keystone_ready_for_registration; then
+        note_skip placement "Keystone is not answering, so placement cannot be registered."
+        return 0
+    fi
+    if ! memcached_reachable; then
+        note_skip placement "memcached is not listening on ${MGMT_IP}:11211; see the glance
+     phase for why configuring against a dead token cache is refused."
+        return 0
+    fi
+
+    # --- configuration -------------------------------------------------------
+    # NOTE the section name: [placement_database], not [database].
+    local changed=0
+    ini_set "$PLACEMENT_CONF" placement_database connection \
+        "mysql+pymysql://placement:${PLACEMENT_DB_PASS}@127.0.0.1/placement?charset=utf8mb4" && changed=1
+    ini_set "$PLACEMENT_CONF" api auth_strategy keystone && changed=1
+    write_authtoken "$PLACEMENT_CONF" placement "$PLACEMENT_SERVICE_PASS"
+    if [ "$changed" -eq 1 ]; then
+        log_ok "placement.conf updated (credentials not shown)"
+    else
+        log_ok "placement.conf already correct (unchanged)"
+    fi
+    $SUDO chown root:placement "$PLACEMENT_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$PLACEMENT_CONF"
+
+    # --- schema ---------------------------------------------------------------
+    local before after
+    before="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='placement'" 2>/dev/null || echo 0)"
+    log_info "running placement-manage db sync (idempotent migration)"
+    local perr; perr="$(mktemp)"; chmod 0600 "$perr"
+    if ! $SUDO runuser -u placement -- placement-manage db sync >"$perr" 2>&1; then
+        log_error "placement-manage db sync failed. Diagnostics (credentials redacted):"
+        $SUDO sed "s/${PLACEMENT_DB_PASS}/<redacted>/g; s/${PLACEMENT_SERVICE_PASS}/<redacted>/g" "$perr" \
+          | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        rm -f "$perr"
+        note_skip placement "the placement schema could not be created (see the diagnostics above)."
+        return 0
+    fi
+    rm -f "$perr"
+    after="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='placement'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "placement schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "placement schema already current ($after tables, unchanged)"
+    else log_ok "placement schema migrated ($before -> $after tables)"; fi
+
+    # --- identity registration -------------------------------------------------
+    ks_ensure_project service
+    ks_ensure_user placement "$PLACEMENT_SERVICE_PASS"
+    ks_ensure_role_assignment placement service admin
+    ks_ensure_service placement placement "Placement API"
+    local url="http://${MGMT_IP}:${PLACEMENT_PORT}"
+    ks_ensure_endpoint placement public   "$url"
+    ks_ensure_endpoint placement internal "$url"
+    ks_ensure_endpoint placement admin    "$url"
+
+    # --- serve it ----------------------------------------------------------------
+    $SUDO a2ensite placement-api >/dev/null 2>&1 || true
+    if [ "$HAS_SYSTEMD" -eq 1 ] && service_active apache2; then
+        $SUDO systemctl reload-or-restart apache2 \
+            || die "apache2 failed to reload after the placement configuration change"
+        log_ok "apache2 reloaded (now serving identity on 5000 and placement on ${PLACEMENT_PORT})"
+    else
+        service_start_enable apache2
+    fi
+    if ! service_active apache2; then
+        note_skip placement "apache2 is not running, so the placement API is not being served.
+     The schema, configuration and identity registration ARE in place.
+     Startup under systemd is a GCE acceptance item (B0a/B0b)."
+        return 0
+    fi
+    if ! placement_serving; then
+        note_skip placement "apache2 is active but http://${MGMT_IP}:${PLACEMENT_PORT}/ did not answer."
+        return 0
+    fi
+    if ! placement_api_authenticated; then
+        note_skip placement "the placement endpoint answers but an authenticated request failed."
+        return 0
+    fi
+    log_ok "placement API verified (authenticated /resource_providers answered)"
+    phase_mark_done placement
+}
+
+# An authenticated GET against /resource_providers. The token goes into a 0600
+# curl config file rather than argv, so it never shows up in the process list.
+placement_api_authenticated() {
+    local tok cfg rc
+    tok="$(openstack_admin token issue -f value -c id 2>/dev/null)" || return 1
+    [ -n "$tok" ] || return 1
+    cfg="$(mktemp)"; chmod 0600 "$cfg"
+    printf 'header = "X-Auth-Token: %s"\nheader = "OpenStack-API-Version: placement latest"\n' "$tok" > "$cfg"
+    _probe curl -sS -m 15 -o /dev/null -w '%{http_code}' -K "$cfg" \
+        "http://${MGMT_IP}:${PLACEMENT_PORT}/resource_providers" 2>/dev/null | grep -q '^200$'
+    rc=$?
+    rm -f "$cfg"
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
 # Two outcomes, never conflated: the base layer either came up or it did not.
@@ -1096,7 +1493,7 @@ print_stage_banner() {
         cat <<EOF
 
 ${C_RED}${rule}${C_RESET}
-${C_RED} STEP 2 INCOMPLETE — BASE + IDENTITY NOT FULLY UP${C_RESET}
+${C_RED} STEP 3 INCOMPLETE — NOT ALL IMPLEMENTED SERVICES ARE UP${C_RESET}
 ${C_RED}${rule}${C_RESET}
  Skipped    : $SKIPPED_PHASES
  Completed  : $(printf '%s' "$(_completed_phases)")
@@ -1104,7 +1501,7 @@ ${C_RED}${rule}${C_RESET}
 
  One or more services could not be reached, so their setup did not run.
  This is expected in a container with no systemd, and it is NOT a failure
- of the shell — but it is also NOT a completed step 2.
+ of the shell — but it is also NOT a completed step 3.
 
  Nothing was left half-written: the skipped phases made no changes and
  carry no state marker, so re-running once the services are up will
@@ -1118,20 +1515,22 @@ EOF
     cat <<EOF
 
 ${C_YEL}${rule}${C_RESET}
-${C_YEL} STEP 2 COMPLETE (BASE + IDENTITY) — NOT A USABLE OPENSTACK YET${C_RESET}
+${C_YEL} STEP 3 COMPLETE (IDENTITY + IMAGE + PLACEMENT) — NOT A USABLE CLOUD${C_RESET}
 ${C_YEL}${rule}${C_RESET}
  What ran   : $IMPLEMENTED_PHASES
  Not yet    : $PENDING_PHASES
 
- Up: database, message queue, cache, and Keystone identity. An admin can
- authenticate and the service catalogue holds the identity endpoint.
+ Up: database, message queue, cache, Keystone identity, the Glance image
+ service and Placement. An admin can authenticate, upload and list images,
+ and query placement.
 
- Still missing: Glance, Placement, Neutron/OVN, Nova and Horizon. There is
- no image store, no scheduler, no network and no compute. ${C_RED}You cannot
- create a network or boot an instance, and nothing here is a usable cloud.${C_RESET}
+ Still missing: Neutron/OVN, Nova and Horizon. There is no network, no
+ compute and no dashboard. ${C_RED}You cannot create a network or boot an
+ instance. This is NOT a usable cloud.${C_RESET}
 
  Admin credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
-   . $ADMIN_OPENRC && openstack token issue
+   . $ADMIN_OPENRC && openstack image list
+   . $ADMIN_OPENRC && openstack endpoint list
 
  Re-running this command is safe: it does not drop databases, does not
  rotate existing secrets or fernet keys, and does not append duplicate
@@ -1169,6 +1568,8 @@ cmd_all_in_one() {
     phase_rabbitmq
     phase_memcached
     phase_keystone
+    phase_glance
+    phase_placement
     print_stage_banner
     # `exit` rather than `return`: a non-zero return would trip the ERR trap and
     # print an "aborted" line, which this is not.
@@ -1210,8 +1611,9 @@ cmd_status() {
         echo "implemented layer: INCOMPLETE — missing: $incomplete"
         echo "            'all-in-one' exits 4 while any of these is missing."
     fi
-    echo "NOTE: even when COMPLETE, this is base services + Keystone only."
-    echo "      Glance, Placement, Neutron/OVN, Nova and Horizon are NOT installed."
+    echo "NOTE: even when COMPLETE, this is base services + Keystone + Glance"
+    echo "      + Placement only. Neutron/OVN, Nova and Horizon are NOT installed,"
+    echo "      so no network can be created and no instance can be booted."
     echo
     echo "identity:"
     printf '  %-16s %s\n' "keystone pkg" \
@@ -1223,10 +1625,18 @@ cmd_status() {
         "$($SUDO test -s "$KEYSTONE_FERNET_DIR/0" && echo present || echo absent)"
     printf '  %-16s %s\n' "credential keys" \
         "$($SUDO test -s "$KEYSTONE_CRED_DIR/0" && echo present || echo absent)"
+    echo
+    echo "image / placement:"
+    printf '  %-16s %s\n' "glance pkg" \
+        "$(dpkg-query -W -f='${Version}' glance 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  served by" "glance-api.service (its own systemd unit)"
+    printf '  %-16s %s\n' "placement pkg" \
+        "$(dpkg-query -W -f='${Version}' placement-api 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  served by" "apache2 + mod_wsgi on :8778 (no placement systemd unit)"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
-        for u in mariadb rabbitmq-server memcached apache2; do
+        for u in mariadb rabbitmq-server memcached apache2 glance-api; do
             printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
         done
     else
@@ -1240,14 +1650,14 @@ usage() {
 hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
 
   STAGE: $HAGISTACK_STAGE
-  This build installs the base layer and Keystone identity only. It does NOT
-  give you a working OpenStack: there is no Glance, Placement, Neutron/OVN,
-  Nova or Horizon, so you cannot create a network or boot an instance.
+  This build installs the base layer, Keystone, Glance and Placement. It does
+  NOT give you a working OpenStack: there is no Neutron/OVN, Nova or Horizon,
+  so you cannot create a network or boot an instance.
   See README.md in this directory.
 
 usage:
   hagistack all-in-one  [options]   build controller+compute on one host
-                                    (currently: base services + Keystone)
+                                    (currently: base + Keystone + Glance + Placement)
   hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
   hagistack status                  show stage, phase and service state
   hagistack --help                  this text

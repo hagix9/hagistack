@@ -56,7 +56,7 @@ expect_exit B7-status          0 'phases pending'               "$H" status
 # NOTE: never pipe straight into `grep -q` under `set -o pipefail` — grep exits
 # on first match, the producer gets SIGPIPE and the pipeline returns 141.
 help_out="$("$H" --help 2>&1)"
-tr '\n' ' ' <<<"$help_out" | grep -qiE 'does NOT +give you a working' \
+tr '\n' ' ' <<<"$help_out" | grep -qiE 'does +NOT +give you a working' \
     && rec B8-help-honest PASS "help states it is not a working OpenStack" \
     || rec B8-help-honest FAIL "help does not disclose incompleteness"
 status_out="$("$H" status 2>&1)"
@@ -211,7 +211,7 @@ log_error(){ echo "error: $*" >&2; }; die(){ log_error "$*"; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 SEOF
 sed -n '/^gen_secret() {/,/^}$/p'  "$H" >> /tmp/sectest.sh
-sed -n '/^SECRET_KEYS=/,/METADATA_PROXY_SECRET"$/p' "$H" >> /tmp/sectest.sh
+sed -n '/^SECRET_KEYS=/,/"$/p' "$H" >> /tmp/sectest.sh
 sed -n '/^OBSOLETE_SECRET_KEYS=/p'                   "$H" >> /tmp/sectest.sh
 sed -n '/^phase_secrets() {/,/^}$/p' "$H" >> /tmp/sectest.sh
 echo 'phase_secrets' >> /tmp/sectest.sh
@@ -231,7 +231,7 @@ else rec E3-values-stable FAIL "secrets changed on 2nd run"; fi
 [ "$perm2" = "600" ] && rec E4-mode-after-rerun PASS "still 600 after re-run" \
                      || rec E4-mode-after-rerun FAIL "mode $perm2"
 nkeys="$(grep -cE '^[A-Z_]+=' /etc/hagistack/secrets.env || echo 0)"
-want="$(sed -n '/^SECRET_KEYS=/,/METADATA_PROXY_SECRET"$/p' "$H" | tr -d '\n' \
+want="$(sed -n '/^SECRET_KEYS=/,/"$/p' "$H" | tr -d '\n' \
         | sed 's/.*SECRET_KEYS="//; s/".*//' | wc -w)"
 [ "$nkeys" = "$want" ] && rec E5-key-count PASS "$nkeys keys, matching SECRET_KEYS" \
                        || rec E5-key-count FAIL "$nkeys keys, SECRET_KEYS declares $want"
