@@ -173,9 +173,9 @@ rm -rf /etc/hagistack /var/lib/hagistack
 o="$("$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" "${MGMTDEF[@]}" 2>&1)"; rc=$?
 [ "$rc" = "4" ] && rec 4.1-exit-code PASS "exit 4 when base layer incomplete" \
                 || rec 4.1-exit-code FAIL "exit $rc, wanted 4"
-grep -q 'STEP 1 INCOMPLETE' <<<"$o" && rec 4.2-banner PASS "INCOMPLETE banner shown" \
+grep -qE 'STEP [0-9]+ INCOMPLETE' <<<"$o" && rec 4.2-banner PASS "INCOMPLETE banner shown" \
                                     || rec 4.2-banner FAIL "no INCOMPLETE banner"
-grep -q 'STEP 1 COMPLETE' <<<"$o" && rec 4.3-no-false-complete FAIL "still claims COMPLETE" \
+grep -qE 'STEP [0-9]+ COMPLETE' <<<"$o" && rec 4.3-no-false-complete FAIL "still claims COMPLETE" \
                                   || rec 4.3-no-false-complete PASS "does not claim COMPLETE"
 grep -qE 'Skipped +: .*database' <<<"$o" && rec 4.4-lists-skipped PASS "names the skipped phases" \
                                          || rec 4.4-lists-skipped FAIL "skipped phases not named"
@@ -184,7 +184,7 @@ grep -qE 'Skipped +: .*database' <<<"$o" && rec 4.4-lists-skipped PASS "names th
 [ -e /var/lib/hagistack/state/memcached.done ] && rec 4.6-memcached-marker FAIL "memcached marked done though never started" \
                                                || rec 4.6-memcached-marker PASS "memcached not marked done"
 st="$("$H" status 2>&1)"
-grep -q 'base layer: INCOMPLETE' <<<"$st" && rec 4.7-status-agrees PASS "status reports INCOMPLETE" \
+grep -qE '(base|implemented) layer: INCOMPLETE' <<<"$st" && rec 4.7-status-agrees PASS "status reports INCOMPLETE" \
                                           || rec 4.7-status-agrees FAIL "status disagrees with the banner"
 grep -q 'exits 4' <<<"$st" && rec 4.8-status-mentions-exit PASS "status explains the exit code" \
                            || rec 4.8-status-mentions-exit FAIL "status does not mention exit 4"

@@ -1,6 +1,8 @@
 # Operator configuration and generated secrets — never commit these.
 hagistack.env
 secrets.env
+admin-openrc
+admin-openrc.*
 *.secret
 *.pem
 *.key

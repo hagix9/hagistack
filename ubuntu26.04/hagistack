@@ -22,13 +22,13 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.1.0-step1"
-HAGISTACK_STAGE="step1: skeleton + preflight + base services (no OpenStack services yet)"
+HAGISTACK_VERSION="0.2.0-step2"
+HAGISTACK_STAGE="step2: base services + Keystone identity (no Glance/Placement/Neutron/Nova/Horizon)"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
-IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached"
+IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone"
 # Phases still to come. Listed so the CLI can be honest about where it stops.
-PENDING_PHASES="keystone glance placement ovn neutron nova horizon bootstrap_resources verify"
+PENDING_PHASES="glance placement ovn neutron nova horizon bootstrap_resources verify"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -123,7 +123,9 @@ ini_set() {
     [ -f "$file" ] || $SUDO touch "$file"
 
     local tmp; tmp="$(mktemp)"
-    SECTION="$section" KEY="$key" VALUE="$value" \
+    # Read through $SUDO: /etc/keystone/keystone.conf is 0640 keystone:keystone,
+    # so a plain awk cannot open it when the shell runs unprivileged with sudo.
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" VALUE="$value" \
         awk '
         BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; value=ENVIRON["VALUE"]
                 in_section=0; done=0; last_content=0 }
@@ -157,7 +159,7 @@ ini_set() {
                 buf[++n]=key" = "value
             }
             for (i=1; i<=n; i++) print buf[i]
-        }' "$file" > "$tmp"
+        }' > "$tmp"
 
     # Only touch the file when the content actually changes: re-running must
     # produce a byte-identical file and must not bump the mtime.
@@ -172,8 +174,8 @@ ini_set() {
 
 ini_get() {
     local file="$1" section="$2" key="$3"
-    [ -f "$file" ] || return 1
-    SECTION="$section" KEY="$key" awk '
+    $SUDO test -f "$file" || return 1
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" awk '
         BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; in_section=0 }
         /^[[:space:]]*\[.*\][[:space:]]*$/ {
             name=$0; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
@@ -186,7 +188,7 @@ ini_get() {
             kk=substr(k,1,eq-1); vv=substr(k,eq+1)
             gsub(/[[:space:]]+$/,"",kk); gsub(/^[[:space:]]+/,"",vv); gsub(/[[:space:]]+$/,"",vv)
             if (kk==key) { print vv; exit }
-        }' "$file"
+        }'
 }
 
 # ---------------------------------------------------------------------------
@@ -203,7 +205,7 @@ phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done
 # Every value the operator can set, in one place. Used by the argument parser,
 # the config-file parser (as its key allowlist) and the precedence resolver.
 CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
-             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE"
+             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME"
 
 declare -A CLI_VAL=()  CLI_SET=()
 declare -A ENV_VAL=()  ENV_SET=()
@@ -227,6 +229,7 @@ _capture_env
 
 MGMT_IP="" EXT_NIC="" PROVIDER_CIDR="" PROVIDER_GATEWAY=""
 FLOATING_START="" FLOATING_END="" DNS_SERVER="" TENANT_CIDR="" VIRT_TYPE=""
+REGION_NAME=""
 DRY_RUN=0 ENV_FILE=""
 
 # ---------------------------------------------------------------------------
@@ -371,6 +374,12 @@ valid_nic_name() {
 }
 
 nic_exists() { [ -e "/sys/class/net/$1" ]; }
+
+valid_region_name() {
+    [ -n "$1" ] || return 1
+    [ "${#1}" -le 64 ] || return 1
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
 
 # ---------------------------------------------------------------------------
 # preflight
@@ -532,6 +541,10 @@ phase_preflight() {
     valid_cidr "$TENANT_CIDR" || die "TENANT_CIDR '$TENANT_CIDR' is not a valid IPv4 CIDR"
     DNS_SERVER="${DNS_SERVER:-$PROVIDER_GATEWAY}"
     valid_ipv4 "$DNS_SERVER" || die "DNS_SERVER '$DNS_SERVER' is not a valid IPv4 address"
+    REGION_NAME="${REGION_NAME:-RegionOne}"
+    valid_region_name "$REGION_NAME" \
+        || die "REGION_NAME '$REGION_NAME' is not valid
+     (allowed: letters, digits, '.', '_', '-'; at most 64 characters)"
 
     # --- management IP ---
     if [ -z "$MGMT_IP" ]; then
@@ -791,6 +804,288 @@ phase_memcached() {
 }
 
 # ---------------------------------------------------------------------------
+# Keystone (identity)
+#
+# Packaging facts verified against Ubuntu 26.04 (keystone 2:29.0.0-0ubuntu1.2),
+# not assumed — see STEP2_KEYSTONE_EVIDENCE.md:
+#
+#   * The `keystone` binary package ships exactly one file:
+#     /etc/apache2/sites-available/keystone.conf. There is NO keystone
+#     systemd unit of any kind, and no uwsgi anywhere. Keystone is served by
+#     **apache2.service** through libapache2-mod-wsgi-py3.
+#   * That vhost carries its own `Listen 5000` and `<VirtualHost *:5000>`,
+#     pointing at /usr/bin/keystone-wsgi-public. Installing the package also
+#     enables the site, so /etc/apache2/sites-enabled/keystone.conf already
+#     exists. There is no separate admin port (the old 35357 is long gone).
+#   * /etc/keystone/keystone.conf comes from the `keystone-common` package,
+#     mode 0640 keystone:keystone, and ships
+#     `connection = sqlite:////var/lib/keystone/keystone.db` — which must be
+#     replaced. `[token] provider` and `[credential] provider` already default
+#     to fernet, so we set them explicitly only to pin the behaviour.
+#   * Default key repositories are /etc/keystone/fernet-keys/ (created by the
+#     package, 0700 keystone:keystone) and /etc/keystone/credential-keys/
+#     (NOT created by the package).
+#   * `keystone-manage bootstrap` accepts OS_BOOTSTRAP_* environment
+#     variables, so the admin password never has to appear in argv.
+# ---------------------------------------------------------------------------
+KEYSTONE_CONF="/etc/keystone/keystone.conf"
+KEYSTONE_FERNET_DIR="/etc/keystone/fernet-keys"
+KEYSTONE_CRED_DIR="/etc/keystone/credential-keys"
+ADMIN_OPENRC="$HAGISTACK_ETC/admin-openrc"
+
+# Run a command as the keystone system user so that logs and key files do not
+# end up owned by root.
+as_keystone() {
+    if have runuser; then $SUDO runuser -u keystone -- "$@"
+    else                  $SUDO su -s /bin/sh -c "$(printf '%q ' "$@")" keystone
+    fi
+}
+
+keystone_pkgs_installed() {
+    dpkg-query -W -f='${Status}' keystone 2>/dev/null | grep -q "install ok installed" \
+    && dpkg-query -W -f='${Status}' python3-openstackclient 2>/dev/null | grep -q "install ok installed"
+}
+
+# The identity endpoint answers. Bounded, like every other probe.
+keystone_serving() {
+    _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:5000/v3" 2>/dev/null
+}
+
+phase_keystone() {
+    log_step "identity (Keystone)"
+
+    # --- packages -------------------------------------------------------
+    if keystone_pkgs_installed; then
+        log_ok "keystone and python3-openstackclient already installed"
+    else
+        log_info "installing keystone (pulls apache2 + libapache2-mod-wsgi-py3) and python3-openstackclient"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            keystone python3-openstackclient
+        log_ok "packages installed"
+    fi
+    log_info "keystone $(dpkg-query -W -f='${Version}' keystone 2>/dev/null || echo '?') \
+served by apache2 + mod_wsgi (no keystone systemd unit exists on Ubuntu)"
+
+    # --- the database must be there before anything else ----------------
+    if ! mariadb_reachable; then
+        note_skip keystone "MariaDB is not reachable, so the identity schema cannot be created.
+     Nothing was changed. Covered by the GCE acceptance (B0b)."
+        return 0
+    fi
+    if ! mysql_root -e "USE keystone" >/dev/null 2>&1; then
+        note_skip keystone "the 'keystone' database does not exist; the database phase did not complete."
+        return 0
+    fi
+
+    # --- keystone.conf ---------------------------------------------------
+    # The value carries the DB password, so it is never echoed. ini_set is a
+    # shell function, so it forks no process whose argv could expose it.
+    # 127.0.0.1, not MGMT_IP: the database phase pins MariaDB to
+    # `bind-address = 127.0.0.1`, so anything aimed at the management address is
+    # refused. all-in-one keeps Keystone on the same host as its database, and
+    # loopback also keeps the credential off the wire.
+    local conn="mysql+pymysql://keystone:${KEYSTONE_DB_PASS}@127.0.0.1/keystone?charset=utf8mb4"
+    local changed=0
+    ini_set "$KEYSTONE_CONF" database   connection "$conn"       && changed=1
+    ini_set "$KEYSTONE_CONF" token      provider   fernet        && changed=1
+    ini_set "$KEYSTONE_CONF" credential provider   fernet        && changed=1
+    if [ "$changed" -eq 1 ]; then
+        log_ok "keystone.conf updated (database credentials not shown)"
+    else
+        log_ok "keystone.conf already correct (unchanged)"
+    fi
+    $SUDO chown keystone:keystone "$KEYSTONE_CONF" 2>/dev/null || true
+    $SUDO chmod 0640 "$KEYSTONE_CONF"
+
+    # --- can Keystone actually reach the database the way it is configured? --
+    # keystone-manage logs to its own file and writes nothing useful to stderr,
+    # so probe first and fail with something actionable. The password goes in a
+    # 0600 defaults file: not argv, not the environment.
+    local dbf; dbf="$(mktemp)"; chmod 0600 "$dbf"
+    printf '[client]\npassword=%s\n' "$KEYSTONE_DB_PASS" > "$dbf"
+    if ! _probe mariadb --defaults-extra-file="$dbf" --protocol=TCP \
+            -h 127.0.0.1 -ukeystone -e "SELECT 1" >/dev/null 2>&1; then
+        rm -f "$dbf"
+        # Consistent with every other unreachable-service path: report it and
+        # leave the run incomplete (exit 4) rather than aborting. Nothing has
+        # been changed beyond keystone.conf, which is idempotent.
+        note_skip keystone "the keystone DB user cannot reach MariaDB over TCP at 127.0.0.1:3306.
+     Keystone connects with mysql+pymysql, which needs a TCP listener; a server
+     started with --skip-networking, or bound elsewhere, will refuse it.
+     Check:  ss -ltn | grep 3306
+             mariadb --protocol=TCP -h 127.0.0.1 -ukeystone -p -e 'SELECT 1'"
+        return 0
+    fi
+    rm -f "$dbf"
+    log_ok "keystone DB user can reach MariaDB over TCP on 127.0.0.1"
+
+    # --- schema ----------------------------------------------------------
+    local before after
+    before="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keystone'" 2>/dev/null || echo 0)"
+    log_info "running keystone-manage db_sync (idempotent migration)"
+    local syncerr; syncerr="$(mktemp)"; chmod 0600 "$syncerr"
+    if ! as_keystone keystone-manage db_sync 2>"$syncerr"; then
+        log_error "keystone-manage db_sync failed. Diagnostics (credentials redacted):"
+        # stderr is usually empty: keystone-manage logs to /var/log/keystone.
+        {
+            $SUDO cat "$syncerr" 2>/dev/null
+            $SUDO tail -20 /var/log/keystone/keystone.log 2>/dev/null
+        } | $SUDO sed "s/${KEYSTONE_DB_PASS}/<redacted>/g" \
+          | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        rm -f "$syncerr"
+        die "the identity schema could not be created.
+     The usual cause is that [database] connection cannot reach MariaDB.
+     The database phase pins MariaDB to 127.0.0.1, so the connection must
+     use 127.0.0.1 as well. Check: mariadb -uroot -e 'SELECT 1'"
+    fi
+    rm -f "$syncerr"
+    after="$(mysql_root -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keystone'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then
+        log_ok "identity schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then
+        log_ok "identity schema already current ($after tables, unchanged)"
+    else
+        log_ok "identity schema migrated ($before -> $after tables)"
+    fi
+
+    # --- fernet / credential keys ----------------------------------------
+    # Guarded: re-running fernet_setup on a live deployment must never rotate
+    # keys, because that invalidates every issued token.
+    if $SUDO test -s "$KEYSTONE_FERNET_DIR/0"; then
+        log_ok "fernet token keys already present — not touched"
+    else
+        as_keystone keystone-manage fernet_setup \
+            --keystone-user keystone --keystone-group keystone
+        log_ok "fernet token keys created in $KEYSTONE_FERNET_DIR"
+    fi
+    if $SUDO test -s "$KEYSTONE_CRED_DIR/0"; then
+        log_ok "credential keys already present — not touched"
+    else
+        as_keystone keystone-manage credential_setup \
+            --keystone-user keystone --keystone-group keystone
+        log_ok "credential keys created in $KEYSTONE_CRED_DIR"
+    fi
+
+    # --- bootstrap --------------------------------------------------------
+    # Writes straight to the database, so it does not need Apache running.
+    # The password goes through the environment, never argv.
+    local auth_url="http://${MGMT_IP}:5000/v3/"
+    log_info "keystone-manage bootstrap (admin user, project, role, endpoints)"
+    $SUDO env \
+        OS_BOOTSTRAP_PASSWORD="$ADMIN_PASSWORD" \
+        OS_BOOTSTRAP_USERNAME=admin \
+        OS_BOOTSTRAP_PROJECT_NAME=admin \
+        OS_BOOTSTRAP_ROLE_NAME=admin \
+        OS_BOOTSTRAP_SERVICE_NAME=keystone \
+        OS_BOOTSTRAP_REGION_ID="$REGION_NAME" \
+        OS_BOOTSTRAP_PUBLIC_URL="$auth_url" \
+        OS_BOOTSTRAP_INTERNAL_URL="$auth_url" \
+        OS_BOOTSTRAP_ADMIN_URL="$auth_url" \
+        keystone-manage bootstrap
+    log_ok "bootstrap applied (idempotent; the stored admin password is reused, never regenerated)"
+
+    # --- admin credentials file ------------------------------------------
+    write_admin_openrc
+
+    # --- serve it ----------------------------------------------------------
+    configure_apache_servername
+    $SUDO a2ensite keystone >/dev/null 2>&1 || true
+
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        if service_active apache2; then
+            $SUDO systemctl reload-or-restart apache2 \
+                || die "apache2 failed to reload after the keystone configuration change"
+            log_ok "apache2 reloaded"
+        else
+            service_start_enable apache2
+        fi
+    else
+        service_start_enable apache2
+    fi
+
+    if ! service_active apache2; then
+        note_skip keystone "apache2 is not running, so the identity endpoint is not being served.
+     The schema, fernet keys, credential keys and bootstrap ARE in place, but an
+     administrator cannot authenticate yet. Startup under systemd is a GCE
+     acceptance item (B0a/B0b)."
+        return 0
+    fi
+
+    if ! keystone_serving; then
+        note_skip keystone "apache2 is active but http://${MGMT_IP}:5000/v3 did not answer."
+        return 0
+    fi
+    log_ok "identity endpoint answering on http://${MGMT_IP}:5000/v3"
+
+    # --- prove an administrator can actually authenticate -------------------
+    if openstack_admin token issue >/dev/null 2>&1; then
+        log_ok "admin authentication verified (token issued; value not shown)"
+    else
+        note_skip keystone "the identity endpoint answers but 'openstack token issue' failed as admin."
+        return 0
+    fi
+
+    phase_mark_done keystone
+}
+
+# ServerName keeps apache from complaining that it cannot determine the FQDN.
+configure_apache_servername() {
+    local f=/etc/apache2/conf-available/hagistack-servername.conf
+    local want="ServerName ${MGMT_IP}"
+    if $SUDO test -f "$f" && [ "$($SUDO cat "$f")" = "$want" ]; then
+        log_ok "apache ServerName already set (unchanged)"
+    else
+        printf '%s\n' "$want" | $SUDO tee "$f" >/dev/null
+        log_ok "apache ServerName set to $MGMT_IP"
+    fi
+    $SUDO a2enconf hagistack-servername >/dev/null 2>&1 || true
+}
+
+# The admin credentials live outside the repository, 0600, and are rewritten
+# only when their content would actually change.
+write_admin_openrc() {
+    local tmp; tmp="$(mktemp)"; chmod 0600 "$tmp"
+    cat > "$tmp" <<RCEOF
+# hagistack admin credentials — generated, do not commit.
+export OS_AUTH_URL=http://${MGMT_IP}:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=${ADMIN_PASSWORD}
+export OS_REGION_NAME=${REGION_NAME}
+RCEOF
+    if $SUDO cmp -s "$tmp" "$ADMIN_OPENRC" 2>/dev/null; then
+        log_ok "$ADMIN_OPENRC already current (unchanged)"
+    else
+        $SUDO cp "$tmp" "$ADMIN_OPENRC"
+        log_ok "admin credentials written to $ADMIN_OPENRC"
+    fi
+    rm -f "$tmp"
+    $SUDO chmod 0600 "$ADMIN_OPENRC"
+    local perm; perm="$($SUDO stat -c '%a' "$ADMIN_OPENRC")"
+    [ "$perm" = "600" ] || die "$ADMIN_OPENRC has mode $perm; expected 600"
+}
+
+# Run the openstack client as admin. Credentials go through the environment so
+# that they never appear in argv or in any log line.
+openstack_admin() {
+    $SUDO env \
+        OS_AUTH_URL="http://${MGMT_IP}:5000/v3" \
+        OS_IDENTITY_API_VERSION=3 \
+        OS_PROJECT_DOMAIN_NAME=Default \
+        OS_USER_DOMAIN_NAME=Default \
+        OS_PROJECT_NAME=admin \
+        OS_USERNAME=admin \
+        OS_PASSWORD="$ADMIN_PASSWORD" \
+        OS_REGION_NAME="$REGION_NAME" \
+        openstack "$@"
+}
+
+# ---------------------------------------------------------------------------
 # where we stop
 # ---------------------------------------------------------------------------
 # Two outcomes, never conflated: the base layer either came up or it did not.
@@ -801,21 +1096,21 @@ print_stage_banner() {
         cat <<EOF
 
 ${C_RED}${rule}${C_RESET}
-${C_RED} STEP 1 INCOMPLETE — BASE LAYER NOT VERIFIED${C_RESET}
+${C_RED} STEP 2 INCOMPLETE — BASE + IDENTITY NOT FULLY UP${C_RESET}
 ${C_RED}${rule}${C_RESET}
  Skipped    : $SKIPPED_PHASES
  Completed  : $(printf '%s' "$(_completed_phases)")
  Not yet    : $PENDING_PHASES
 
- One or more base services could not be reached, so their setup did not
- run. This is expected in a container with no systemd, and it is NOT a
- failure of the shell — but it is also NOT a completed step 1.
+ One or more services could not be reached, so their setup did not run.
+ This is expected in a container with no systemd, and it is NOT a failure
+ of the shell — but it is also NOT a completed step 2.
 
  Nothing was left half-written: the skipped phases made no changes and
  carry no state marker, so re-running once the services are up will
  complete them.
 
- Exit status 4 = ran to the end, base layer incomplete.
+ Exit status 4 = ran to the end, the layer is incomplete.
 ${C_RED}${rule}${C_RESET}
 EOF
         return 0
@@ -823,18 +1118,24 @@ EOF
     cat <<EOF
 
 ${C_YEL}${rule}${C_RESET}
-${C_YEL} STEP 1 COMPLETE (BASE LAYER) — THIS IS NOT A WORKING OPENSTACK${C_RESET}
+${C_YEL} STEP 2 COMPLETE (BASE + IDENTITY) — NOT A USABLE OPENSTACK YET${C_RESET}
 ${C_YEL}${rule}${C_RESET}
  What ran   : $IMPLEMENTED_PHASES
  Not yet    : $PENDING_PHASES
 
- The base layer is up: database, message queue and cache. No OpenStack
- service has been installed or started. There is no Keystone, no Glance,
- no Placement, no Nova, no Neutron/OVN and no Horizon. You cannot create
- a network or boot an instance yet.
+ Up: database, message queue, cache, and Keystone identity. An admin can
+ authenticate and the service catalogue holds the identity endpoint.
+
+ Still missing: Glance, Placement, Neutron/OVN, Nova and Horizon. There is
+ no image store, no scheduler, no network and no compute. ${C_RED}You cannot
+ create a network or boot an instance, and nothing here is a usable cloud.${C_RESET}
+
+ Admin credentials: $ADMIN_OPENRC (mode 0600, outside the repository)
+   . $ADMIN_OPENRC && openstack token issue
 
  Re-running this command is safe: it does not drop databases, does not
- rotate existing secrets, and does not append duplicate configuration.
+ rotate existing secrets or fernet keys, and does not append duplicate
+ configuration.
 ${C_YEL}${rule}${C_RESET}
 EOF
 }
@@ -867,6 +1168,7 @@ cmd_all_in_one() {
     phase_database
     phase_rabbitmq
     phase_memcached
+    phase_keystone
     print_stage_banner
     # `exit` rather than `return`: a non-zero return would trip the ERR trap and
     # print an "aborted" line, which this is not.
@@ -903,15 +1205,28 @@ cmd_status() {
     done
     echo
     if [ -z "$incomplete" ]; then
-        echo "base layer: COMPLETE (all implemented phases carry a state marker)"
+        echo "implemented layer: COMPLETE (every implemented phase carries a state marker)"
     else
-        echo "base layer: INCOMPLETE — missing: $incomplete"
+        echo "implemented layer: INCOMPLETE — missing: $incomplete"
         echo "            'all-in-one' exits 4 while any of these is missing."
     fi
+    echo "NOTE: even when COMPLETE, this is base services + Keystone only."
+    echo "      Glance, Placement, Neutron/OVN, Nova and Horizon are NOT installed."
+    echo
+    echo "identity:"
+    printf '  %-16s %s\n' "keystone pkg" \
+        "$(dpkg-query -W -f='${Version}' keystone 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "served by" "apache2 + mod_wsgi (no keystone systemd unit exists)"
+    printf '  %-16s %s\n' "admin openrc" \
+        "$($SUDO test -f "$ADMIN_OPENRC" && echo "$ADMIN_OPENRC (mode $($SUDO stat -c '%a' "$ADMIN_OPENRC"))" || echo 'not created yet')"
+    printf '  %-16s %s\n' "fernet keys" \
+        "$($SUDO test -s "$KEYSTONE_FERNET_DIR/0" && echo present || echo absent)"
+    printf '  %-16s %s\n' "credential keys" \
+        "$($SUDO test -s "$KEYSTONE_CRED_DIR/0" && echo present || echo absent)"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         echo
         local u
-        for u in mariadb rabbitmq-server memcached; do
+        for u in mariadb rabbitmq-server memcached apache2; do
             printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
         done
     else
@@ -925,12 +1240,14 @@ usage() {
 hagistack $HAGISTACK_VERSION — OpenStack deployment shell for Ubuntu Server 26.04 LTS
 
   STAGE: $HAGISTACK_STAGE
-  This build installs the base layer only. It does NOT give you a working
-  OpenStack. See README.md in this directory.
+  This build installs the base layer and Keystone identity only. It does NOT
+  give you a working OpenStack: there is no Glance, Placement, Neutron/OVN,
+  Nova or Horizon, so you cannot create a network or boot an instance.
+  See README.md in this directory.
 
 usage:
   hagistack all-in-one  [options]   build controller+compute on one host
-                                    (currently: preflight + base services)
+                                    (currently: base services + Keystone)
   hagistack compute-add [options]   add a compute node   (NOT IMPLEMENTED YET)
   hagistack status                  show stage, phase and service state
   hagistack --help                  this text
@@ -946,6 +1263,7 @@ options:
   --tenant-cidr CIDR        demo tenant subnet      (default: 10.10.10.0/24)
   --dns-server IP           tenant DNS              (default: provider gateway)
   --virt-type kvm|qemu      hypervisor mode         (default: autodetected)
+  --region-name NAME        Keystone region         (default: RegionOne)
   --env-file PATH           read settings from PATH (default: ./hagistack.env)
   --check                   run preflight only, change nothing
   -h, --help                this text
@@ -1009,6 +1327,8 @@ parse_args() {
                                 _cli_set DNS_SERVER "$2"; shift 2 ;;
             --virt-type)        [ $# -ge 2 ] || die "--virt-type requires a value"
                                 _cli_set VIRT_TYPE "$2"; shift 2 ;;
+            --region-name)      [ $# -ge 2 ] || die "--region-name requires a value"
+                                _cli_set REGION_NAME "$2"; shift 2 ;;
             --env-file)         [ $# -ge 2 ] || die "--env-file requires a value"
                                 ENV_FILE="$2"; shift 2 ;;
             --check)            DRY_RUN=1; shift ;;

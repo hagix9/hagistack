@@ -153,11 +153,11 @@ rc=0; "$H" "${ARGS[@]}" > /out/db-partial.log 2>&1 || rc=$?
 [ -e /var/lib/hagistack/state/rabbitmq.done ] \
   && rec DB27-skipped-no-marker FAIL "rabbitmq marked done though skipped" \
   || rec DB27-skipped-no-marker PASS "skipped rabbitmq carries no marker"
-grep -q 'STEP 1 INCOMPLETE' /out/db-partial.log \
+grep -qE 'STEP [0-9]+ INCOMPLETE' /out/db-partial.log \
   && rec DB28-partial-banner PASS "INCOMPLETE banner even though the DB succeeded" \
   || rec DB28-partial-banner FAIL "banner does not report INCOMPLETE"
 st="$("$H" status 2>&1)"
-if grep -q 'base layer: INCOMPLETE' <<<"$st" && grep -qE 'missing:.*rabbitmq' <<<"$st"; then
+if grep -qE '(base|implemented) layer: INCOMPLETE' <<<"$st" && grep -qE 'missing:.*rabbitmq' <<<"$st"; then
   rec DB29-status-names-gap PASS "status names rabbitmq as the missing phase"
 else rec DB29-status-names-gap FAIL "status does not identify the gap"; fi
 grep -qE '^  database +done' <<<"$st" \

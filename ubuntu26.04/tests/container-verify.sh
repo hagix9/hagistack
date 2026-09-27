@@ -48,7 +48,7 @@ echo
 echo "== B. CLI surface =="
 expect_exit B1-help            0 'usage:'                       "$H" --help
 expect_exit B2-no-args-help    0 'usage:'                       "$H"
-expect_exit B3-version         0 '^hagistack 0\.1\.0-step1'     "$H" --version
+expect_exit B3-version         0 '^hagistack [0-9]+\.[0-9]+\.[0-9]+-step[0-9]+'     "$H" --version
 expect_exit B4-bad-command     2 'unknown command'              "$H" frobnicate
 expect_exit B5-bad-option      2 'unknown option'               "$H" all-in-one --nope
 expect_exit B6-compute-add-NI  3 'not implemented yet'          "$H" compute-add
@@ -56,7 +56,7 @@ expect_exit B7-status          0 'phases pending'               "$H" status
 # NOTE: never pipe straight into `grep -q` under `set -o pipefail` — grep exits
 # on first match, the producer gets SIGPIPE and the pipeline returns 141.
 help_out="$("$H" --help 2>&1)"
-grep -qi 'does NOT give you a working' <<<"$help_out" \
+tr '\n' ' ' <<<"$help_out" | grep -qiE 'does NOT +give you a working' \
     && rec B8-help-honest PASS "help states it is not a working OpenStack" \
     || rec B8-help-honest FAIL "help does not disclose incompleteness"
 status_out="$("$H" status 2>&1)"
@@ -345,15 +345,15 @@ else rec G1-systemd-absent-detected FAIL "did not report missing systemd"; fi
 if grep -qE 'SKIPPED|NOT VERIFIED' <<<"$o"; then
     rec G2-marks-unverified PASS "reports SKIPPED/NOT VERIFIED instead of claiming success"
 else rec G2-marks-unverified FAIL "did not mark unverified"; fi
-if grep -qE 'STEP 1 (COMPLETE|INCOMPLETE)' <<<"$o"; then
-    rec G3-stage-banner PASS "prints a stage banner ($(grep -oE 'STEP 1 [A-Z]+' <<<"$o" | head -1))"
+if grep -qE 'STEP [0-9]+ (COMPLETE|INCOMPLETE)' <<<"$o"; then
+    rec G3-stage-banner PASS "prints a stage banner ($(grep -oE 'STEP [0-9]+ [A-Z]+' <<<"$o" | head -1))"
 else rec G3-stage-banner FAIL "no stage banner"; fi
 # With no systemd the base layer cannot come up, so the run must say INCOMPLETE
 # and exit 4 rather than claiming success.
 o_rc=0; "$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" >/dev/null 2>&1 || o_rc=$?
 [ "$o_rc" = "4" ] && rec G3b-incomplete-exit PASS "exit 4 when the base layer is incomplete" \
                   || rec G3b-incomplete-exit FAIL "exit $o_rc, wanted 4"
-grep -q 'STEP 1 COMPLETE' <<<"$o" && rec G3c-no-false-complete FAIL "claimed COMPLETE with services down" \
+grep -qE 'STEP [0-9]+ COMPLETE' <<<"$o" && rec G3c-no-false-complete FAIL "claimed COMPLETE with services down" \
                                   || rec G3c-no-false-complete PASS "did not claim COMPLETE"
 rec G4-mariadb-start UNVERIFIED "not started here (no systemd); manual-start case covered in db-results.tsv; systemd case = GCE B0b"
 rec G5-rabbitmq-start UNVERIFIED "not started here; would not start manually either (see db-results.tsv); GCE B0b"

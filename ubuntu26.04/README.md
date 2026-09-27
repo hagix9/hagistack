@@ -3,11 +3,11 @@
 A plain-Bash OpenStack deployment shell. Not OpenStack-Ansible, not
 Kolla-Ansible, not Packstack, not DevStack.
 
-## Current status: Step 1 — **this is not a working OpenStack yet**
+## Current status: Step 2 — **this is not a working OpenStack yet**
 
 | | |
 |---|---|
-| Version | `0.1.0-step1` |
+| Version | `0.2.0-step2` |
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 
@@ -19,18 +19,39 @@ Kolla-Ansible, not Packstack, not DevStack.
   single-NIC warning
 - secret generation into `/etc/hagistack/secrets.env` (mode `0600`)
 - base packages, **MariaDB**, **RabbitMQ**, **memcached**
+- **Keystone identity**: schema, fernet and credential keys, `bootstrap`,
+  Apache/mod_wsgi on port 5000, and an `admin-openrc` you can authenticate with
 
 **Not implemented yet**
 
-Keystone, Glance, Placement, Neutron/OVN, Nova, Horizon, initial resources
+Glance, Placement, Neutron/OVN, Nova, Horizon, initial resources
 (flavor / image / network / router / security group / keypair), and the whole
 of `compute-add`. `compute-add` exits with a clear "not implemented" message
 and status 3.
 
-So: after `all-in-one` finishes you have a database, a message queue and a
-cache. **You cannot create a network or boot an instance.** The command prints
-a banner saying exactly that, and `hagistack status` lists which phases are
-implemented versus pending.
+So: after `all-in-one` finishes you have a database, a message queue, a cache
+and a working identity service. **There is no image store, no scheduler, no
+network and no compute — you cannot create a network or boot an instance.**
+The command prints a banner saying exactly that, and `hagistack status` lists
+which phases are implemented versus pending.
+
+### Keystone
+
+Served by **`apache2.service`** with `libapache2-mod-wsgi-py3`. There is no
+Keystone systemd unit on Ubuntu — the `keystone` package ships exactly one
+file, `/etc/apache2/sites-available/keystone.conf`, which carries its own
+`Listen 5000` and points at `/usr/bin/keystone-wsgi-public`, and installing it
+enables the site. hagistack drives that packaged vhost rather than inventing a
+unit or installing uwsgi. The evidence behind each of those statements is in
+`STEP2_KEYSTONE_EVIDENCE.md`.
+
+```sh
+. /etc/hagistack/admin-openrc
+openstack token issue
+```
+
+Re-running never rotates the fernet or credential keys, never rewrites the
+admin credential, and never drops the schema.
 
 ### Completion is not assumed
 
@@ -49,7 +70,7 @@ failure of the shell — but it is not a completed step 1 either.
 | 1 | configuration or preflight error |
 | 2 | usage error |
 | 3 | subcommand not implemented yet |
-| 4 | ran to the end, base layer incomplete (a service was unreachable) |
+| 4 | ran to the end, the layer is incomplete (a service was unreachable) |
 
 ## Usage
 
@@ -60,7 +81,8 @@ sudo ./hagistack all-in-one              # or: --check for preflight only
 ```
 
 Required settings: `EXT_NIC`, `PROVIDER_CIDR`, `PROVIDER_GATEWAY`,
-`FLOATING_START`, `FLOATING_END`. Everything else is autodetected or defaulted.
+`FLOATING_START`, `FLOATING_END`. Everything else is autodetected or defaulted
+(including `REGION_NAME`, which defaults to `RegionOne`).
 
 ### Configuration
 
@@ -118,10 +140,16 @@ With **MariaDB started by hand** inside the container (`mariadbd-safe
 `nova` user to both the `nova` and `nova_api` databases with one credential, and
 survival of a planted row across three consecutive runs.
 
+Keystone specifically was verified in that container with MariaDB and Apache
+started **by hand** (`mariadbd-safe --bind-address=127.0.0.1`,
+`apachectl -k start` — both recorded as such): 49-table schema, fernet and
+credential keys, bootstrap, and `openstack token issue` succeeding as admin,
+with every artefact unchanged across three consecutive runs.
+
 **Not verified anywhere yet**: service startup *under systemd*, unit ordering
 and dependency resolution, **RabbitMQ** (it would not start in the container,
-even by hand), and every OpenStack service. Those are GCE acceptance items —
-see `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
+even by hand), and every OpenStack service beyond Keystone. Those are GCE
+acceptance items — see `../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
 
 Nothing in this shell has been run on real Ubuntu 26.04 hardware or on a
 GCE VM.

@@ -67,11 +67,11 @@ grep -q 'OBSOLETE_SECRET_KEYS' "$H" && echo "  obsolete-key migration: handled" 
                                     || echo "  obsolete-key migration: none"
 
 echo
-echo "--- (4) 'STEP 1 COMPLETE' with no reachable services ---"
+echo "--- (4) premature 'COMPLETE' with no reachable services ---"
 rm -rf /etc/hagistack /var/lib/hagistack
 o="$("$H" all-in-one --env-file /dev/null --ext-nic "$NIC" "${BASE[@]}" 2>&1)"; rc=$?
 echo "  exit code: $rc"
-grep -q 'STEP 1 COMPLETE' <<<"$o" && echo "  RESULT: *** printed 'STEP 1 COMPLETE' despite skipping DB and MQ ***" \
+grep -qE 'STEP [0-9]+ COMPLETE' <<<"$o" && echo "  RESULT: *** claimed COMPLETE despite skipping services ***" \
                                   || echo "  RESULT: did not claim completion"
 grep -qE 'INCOMPLETE|not verified|NOT VERIFIED' <<<"$o" && echo "  (an incomplete/unverified notice was present)"
 echo "  phase markers: $(ls /var/lib/hagistack/state 2>/dev/null | tr '\n' ' ')"
