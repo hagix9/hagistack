@@ -129,6 +129,79 @@ checkout_pinned() {   # checkout_pinned <repo> <commit> -> prints the checkout d
 }
 
 # ---------------------------------------------------------------------------
+# a PyPI package, from the generic template
+#
+# Ten of Horizon's dependencies are pure-Python PyPI packages that EL10 either
+# carries too old or does not carry at all, and none has an RDO distgit. They
+# are built from one template so the versions live in the manifest rather than
+# in ten hand-written spec files.
+#
+# These are pinned by sha256 and NOT by signature: PyPI sdists are unsigned, so
+# the GPG chain that protects the OpenStack tarballs does not exist here. That
+# is a real difference and it is not papered over.
+# ---------------------------------------------------------------------------
+TEMPLATE="$HERE/spec-templates/python-pypi-generic.spec.in"
+
+build_pypi() {   # build_pypi <rpm-name> <pypi-name> <version> <sdist> <sha256> <license> <summary>
+    local rpmname="$1" pypi="$2" version="$3" sdist="$4" tsha="$5" lic="$6"; shift 6
+    local summary="$*"
+    say "$rpmname — PyPI $pypi $version (sha256-pinned, unsigned upstream)"
+    [ -r "$TEMPLATE" ] || die "spec template not found: $TEMPLATE"
+
+    # PyPI's files are addressed by a content hash, so fetch through the stable
+    # /packages/source/ path and let fetch_pinned check the digest.
+    local first="${pypi:0:1}"
+    local url="https://files.pythonhosted.org/packages/source/${first}/${pypi}/${sdist}"
+    fetch_pinned "$url" "$SRC/$sdist" "$tsha"
+
+    local topdir
+    topdir="$(tar tzf "$SRC/$sdist" 2>/dev/null | head -1 | cut -d/ -f1)"
+    [ -n "$topdir" ] || die "$sdist does not look like a tarball"
+
+    local spec="$SPECS/$rpmname.spec"
+    sed -e "s|@RPM_NAME@|$rpmname|g" \
+        -e "s|@PYPI_NAME@|$pypi|g" \
+        -e "s|@VERSION@|$version|g" \
+        -e "s|@RELEASE@|1|g" \
+        -e "s|@SDIST@|$sdist|g" \
+        -e "s|@TOPDIR@|$topdir|g" \
+        -e "s|@LICENSE@|$lic|g" \
+        -e "s|@SUMMARY@|$summary|g" \
+        -e "s|@DATE@|$(LC_ALL=C date '+%a %b %d %Y')|g" \
+        "$TEMPLATE" > "$spec"
+    ok "spec generated from the template (unpacks into $topdir)"
+
+    say "$rpmname — build dependencies"
+    sudo dnf -y builddep "$spec" > "$LOGDIR/$rpmname.builddep.log" 2>&1
+    printf '  static builddep exit=%s\n' "$?"
+    local round
+    for round in 1 2 3; do
+        rpmbuild -br --nodeps "$spec" > "$LOGDIR/$rpmname.br.log" 2>&1
+        local nosrc; nosrc="$(ls -t "$RPMTOP"/SRPMS/*.buildreqs.nosrc.rpm 2>/dev/null | head -1)"
+        [ -n "$nosrc" ] || break
+        sudo dnf -y builddep "$nosrc" >> "$LOGDIR/$rpmname.builddep.log" 2>&1
+        rm -f "$nosrc"
+    done
+
+    say "$rpmname — rpmbuild"
+    local checkflag=""
+    [ "$NOCHECK" -eq 1 ] && checkflag="--nocheck"
+    # shellcheck disable=SC2086
+    rpmbuild -bb $checkflag "$spec" > "$LOGDIR/$rpmname.rpmbuild.log" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "rpmbuild exit=0"
+        find "$RPMTOP/RPMS" -name "$rpmname-$version*.rpm" -printf '      %f\n' | sort
+        RESULTS+=("PASS $rpmname (PyPI; built; %check $([ "$NOCHECK" -eq 1 ] && echo 'NOT run' || echo 'per spec'))")
+    else
+        bad "rpmbuild exit=$rc — see $LOGDIR/$rpmname.rpmbuild.log"
+        grep -aE "^error:|No matching package|is needed by|File not found" \
+            "$LOGDIR/$rpmname.rpmbuild.log" | sort -u | head -8 | sed 's/^/      /' >&2
+        RESULTS+=("FAIL $rpmname (PyPI, rpmbuild exit $rc)")
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # one package
 # ---------------------------------------------------------------------------
 build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <tarball> <sha256> <urlproj> <signing-key>
@@ -309,9 +382,18 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
 #     so trunk cannot re-supply it at any version.
 # ---------------------------------------------------------------------------
 publish_repo() {
-    local repodir="$RPMTOP/RPMS" names=() n
+    # Where the repository lives. Defaults to this build's own output, but a
+    # builder that is adding packages to an EXISTING release repository must
+    # point this at that directory — otherwise the published repo file is
+    # rewritten to contain only what this run built, and every package from
+    # earlier runs silently disappears from dnf's view.
+    local repodir="${REPO_PUBLISH_DIR:-$RPMTOP/RPMS}" names=() n
     command -v createrepo_c >/dev/null || { bad "createrepo_c is not installed; cannot publish"; return 1; }
-    createrepo_c --quiet "$repodir" >/dev/null || { bad "createrepo_c failed"; return 1; }
+    # The repository may be root-owned when it is a shared release tree rather
+    # than this user's own output, so fall back to sudo rather than failing.
+    createrepo_c --quiet "$repodir" >/dev/null 2>&1 \
+        || sudo createrepo_c --quiet "$repodir" >/dev/null 2>&1 \
+        || { bad "createrepo_c failed on $repodir"; return 1; }
 
     # The repository is named after the manifest, so a repo called
     # hagistack-gazpacho cannot be mistaken for a 2025.1 build. The old name
@@ -370,6 +452,15 @@ if [ "${1:-}" = "--publish" ]; then publish_repo; exit $?; fi
 
 while read -r pkg repo commit specfile version release tarball tsha urlproj signkey _rest; do
     case "$pkg" in ''|\#*|KEY) continue ;; esac
+    # PYPI <rpm-name> <pypi-name> <version> <sdist> <sha256> <license> <summary...>
+    if [ "$pkg" = "PYPI" ]; then
+        if [ ${#WANT[@]} -gt 0 ]; then
+            printf '%s\n' "${WANT[@]}" | grep -qx "$repo" || continue
+        fi
+        build_pypi "$repo" "$commit" "$specfile" "$version" "$release" "$tarball" \
+                   "$tsha $urlproj $signkey $_rest"
+        continue
+    fi
     if [ ${#WANT[@]} -gt 0 ]; then
         printf '%s\n' "${WANT[@]}" | grep -qx "$pkg" || continue
     fi

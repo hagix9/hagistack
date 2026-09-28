@@ -1,0 +1,54 @@
+Build RDO's rpm-master python-django-horizon.spec without its documentation.
+
+The spec turns documentation on by default, which drags in a Sphinx extension
+EL10 does not package as an importable module:
+
+    python3dist(sphinxcontrib-svg2pdfconverter) >= 0.1 is needed by
+      python-django-horizon-1:25.7.3-1.el10.noarch
+
+Only a `-common` subpackage of that exists on EL10, and it does not provide the
+dist name the generated BuildRequires asks for. Horizon's documentation is not
+part of what this shell deploys - the dashboard is - so the doc build is turned
+off rather than a documentation toolchain being assembled to satisfy it. This
+also drops the python-django-horizon-doc subpackage, which nothing here
+installs.
+
+Everything that actually serves the dashboard is unaffected: the spec's
+%if 0%{?with_doc} blocks guard only the doc build and the doc package.
+
+Second hunk: horizon 25.7.3 compiles 100 message catalogs in %build and its
+pyproject wheel carries none of them, so the buildroot has empty locale trees
+and the find-lang step fails with "No translations found for django". The
+catalogs are copied into the two trees the install section lays out - the python
+package under site-packages, and openstack_dashboard under
+/usr/share/openstack-dashboard, which the spec has already moved by that point.
+
+--- a/python-django-horizon.spec	2026-09-28 21:43:18
++++ b/python-django-horizon.spec	2026-09-29 06:56:24
+@@ -12,7 +12,7 @@
+ %endif
+ %global rhosp 0
+ 
+-%global with_doc 1
++%global with_doc 0
+ 
+ Name:       python-django-horizon
+ # Liberty semver reset
+@@ -259,6 +259,17 @@
+ mv %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/conf/*.yaml %{buildroot}%{_sysconfdir}/openstack-dashboard
+ mv %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/conf/nova_policy.d %{buildroot}%{_sysconfdir}/openstack-dashboard
+ 
++# horizon 25.7.3 compiles its message catalogs in the build section, but its
++# pyproject wheel does not carry them: 100 .mo files exist in the build tree and
++# none reaches the buildroot, so the lang-file step below finds nothing and the
++# build stops. Copy them into the two trees the install section has just laid
++# out. tar is used rather than a shell loop because a loop here ends up inside
++# the generated script and is easy to break.
++find horizon openstack_auth -name '*.mo' -print0 2>/dev/null \
++  | tar --null -cf - -T - | tar -xf - -C %{buildroot}%{python3_sitelib} || :
++find openstack_dashboard -name '*.mo' -print0 2>/dev/null \
++  | tar --null -cf - -T - | tar -xf - -C %{buildroot}%{_datadir}/openstack-dashboard || :
++
+ %find_lang django --all-name
+ 
+ grep "\/usr\/share\/openstack-dashboard" django.lang > dashboard.lang

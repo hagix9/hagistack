@@ -126,3 +126,30 @@ os-client-config       os-client-config-distgit   710b29da292f9d99991be863030047
 oslo-metrics           oslo-metrics-distgit       55b70d7db34590d7881baeda9573e48749f95a1f python-oslo-metrics.spec       0.15.1   1 oslo_metrics-0.15.1.tar.gz         d70a5cdaee963eb9ed9071936ce732866baa3725c3d245df9a58cbf1e7243790 oslo.metrics           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 requestsexceptions     requestsexceptions-distgit 19b76e755acb8ecc4c2e5807851cc7cfe5fd2c1a python-requestsexceptions.spec 1.4.0    1 requestsexceptions-1.4.0.tar.gz    b095cbc77618f066d459a02b137b020c37da9f46d9b057704019c9f77dba3065 requestsexceptions     0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363
 wsme                   wsme-distgit               93ceebf281683ea65785d306b9d72ef96e02dc52 python-wsme.spec               0.12.1   1 WSME-0.12.1.tar.gz                 9c049f64c2abb14b702635c70fb16ad89f9e046789c61c7c41ee0deadf29a10d wsme                   0x815afec729392386480e076dcc0dfe2d21c023c9
+#
+# --- Horizon's PyPI dependencies ---------------------------------------------
+#
+# Ten packages Horizon 2026.1 needs that Rocky 10 and EPEL 10 either carry too
+# old or do not carry at all, and that have NO RDO distgit to build from. They
+# are built from spec-templates/python-pypi-generic.spec.in, so the versions
+# live here rather than in ten hand-written spec files.
+#
+# UNLIKE EVERY OTHER ROW IN THIS FILE, these are pinned by sha256 ONLY. PyPI
+# sdists are not GPG-signed, so there is no signature chain for them the way
+# there is for the OpenStack tarballs. Stated plainly rather than left implicit.
+#
+# Versions are the exact 2026.1 upper-constraints pins; digests were read from
+# the PyPI JSON API on 2026-09-29.
+#
+# fields: PYPI  rpm-name  pypi-name  version  sdist  sha256  license  summary...
+#
+PYPI python3-qrcode qrcode 8.2 qrcode-8.2.tar.gz 35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c BSD-3-Clause QR Code image generator
+PYPI python3-XStatic XStatic 1.0.3 XStatic-1.0.3.tar.gz 402544cc9e179489441054f09c807804e115ea246907de87c0355fb4f5a31268 MIT Base package for XStatic static file packages
+PYPI python3-XStatic-Angular XStatic-Angular 1.8.2.3 xstatic_angular-1.8.2.3.tar.gz 4ad638c12955e8146f5526fe19e08ef33fb63f901b503ec59ccb030bf268337e MIT AngularJS packaged for XStatic
+PYPI python3-XStatic-Font-Awesome XStatic-Font-Awesome 6.2.1.2 xstatic_font_awesome-6.2.1.2.tar.gz 9f3cb2f038fad7d352722375d3f25af346da9ee093ed9dc2c8c46bd911ab1971 OFL-1.1 AND MIT Font Awesome packaged for XStatic
+PYPI python3-XStatic-jQuery XStatic-jQuery 3.7.1.1 xstatic_jquery-3.7.1.1.tar.gz 0c2ac780d8388bfd8b94586f6a0f86541e8702b5fc96f1ded997866214809445 MIT jQuery packaged for XStatic
+PYPI python3-XStatic-JQuery-Migrate XStatic-JQuery-Migrate 3.3.2.2 xstatic_jquery_migrate-3.3.2.2.tar.gz 641ca995d838c151dfdcadbb0eb8d2e7d9855bcd398c77c36cc65c3e79f57228 MIT jQuery Migrate packaged for XStatic
+PYPI python3-XStatic-JQuery-quicksearch XStatic-JQuery.quicksearch 2.0.3.3 xstatic_jquery_quicksearch-2.0.3.3.tar.gz 71d7fc84a73fd5da4ae08d54ada83c6e1d809465c50106a94d72747f36023a3c MIT jQuery quicksearch packaged for XStatic
+PYPI python3-XStatic-JQuery-TableSorter XStatic-JQuery.TableSorter 2.14.5.3 xstatic_jquery_tablesorter-2.14.5.3.tar.gz e8a4f4900992fe87e2a41167a07fab0aaab39ef194090f58e0083892dc4bcc34 MIT jQuery TableSorter packaged for XStatic
+PYPI python3-XStatic-jquery-ui XStatic-jquery-ui 1.13.0.2 xstatic_jquery_ui-1.13.0.2.tar.gz 11b2aa7eaa1ad69c6e594cae11a817a8fa171cec9ceb82ae2ca4ba7e93d5ae43 MIT jQuery UI packaged for XStatic
+PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar.gz afda65f80b08fafb056ef216b47d2d1b31b2f607c956abb8c6b186d2727041ae MIT term.js packaged for XStatic

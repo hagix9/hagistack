@@ -14,7 +14,7 @@ guessed at:**
 | architecture | **x86_64** only |
 | OpenStack | **2026.1 Gazpacho**, one release, built from the released tarballs |
 | SELinux | **permissive** — policy loaded, decisions logged, nothing denied. **Enforcing is out of scope and untested.** `Disabled` is a different thing again and is *not* this configuration; the shell reports it as such rather than treating it as equivalent |
-| dashboard | see §10 |
+| dashboard | **Horizon 25.7.3, admin sign-in verified** (§10) |
 | network | tenant and east-west only; `br-ex` has no NIC on GCE, so no physical-LAN path was exercised |
 
 **How to read this document.** It grew as an investigation and it is kept that
@@ -29,7 +29,7 @@ way on purpose, because the wrong turns are the useful part:
 * **§8 is the x86_64 build** that is actually shipped.
 * **§9 is the hardware acceptance**, and it is the current statement of what
   works.
-* **§10 is Horizon**, tracked separately.
+* **§10 is Horizon**, including how the sign-in was actually checked.
 
 > **About the RPMs in §0–§3.** They were produced on an **aarch64** builder,
 > because that is what was available locally. They are `noarch` and the spec
@@ -668,3 +668,128 @@ analogy. The last one cost the most time and is the most instructive.
 * **No physical-LAN path.** `br-ex` has no NIC attached on GCE, so the provider
   network and its floating IPs were never routed off-host.
 * **Live migration, volumes, more than two nodes** — not attempted.
+
+---
+
+## 10. Horizon — built, installed, and signed into
+
+**Status: PASS.** Horizon 25.7.3 is built from the 2026.1 tarball, installed
+from the same single-release repository as everything else, and an administrator
+can sign in and use the dashboard. Verified on GCE on 2026-09-29.
+
+### 10.1 What was missing, and what it cost
+
+Horizon has 30 asset and library requirements. **Twenty were already satisfied**
+by EL10. Ten were not, and none of them had an RDO distgit to build from:
+
+| package | needed by 2026.1 | EL10 had |
+|---|---|---|
+| `qrcode` | 8.2 | 7.4.2 |
+| `XStatic` | 1.0.3 | 1.0.1 |
+| `XStatic-Angular` | 1.8.2.3 | 1.5.8.0 |
+| `XStatic-Font-Awesome` | 6.2.1.2 | 4.7.0.0 |
+| `XStatic-jQuery` | 3.7.1.1 | 1.10.2.1 |
+| `XStatic-JQuery-Migrate` | 3.3.2.2 | 1.2.1.1 |
+| `XStatic-jquery-ui` | 1.13.0.2 | 1.12.0.1 |
+| `XStatic-JQuery.quicksearch` | 2.0.3.3 | **not packaged** |
+| `XStatic-JQuery.TableSorter` | 2.14.5.3 | **not packaged** |
+| `XStatic-term.js` | 0.0.7.1 | **not packaged** |
+
+They are all the same shape — a pyproject sdist of static assets with no
+compiled code — so instead of ten hand-written spec files there is one template,
+`spec-templates/python-pypi-generic.spec.in`, and ten `PYPI` rows in
+`gazpacho.manifest`. The versions are the exact 2026.1 upper-constraints pins.
+
+**These inputs are pinned by sha256 ONLY.** PyPI sdists are not GPG-signed, so
+the signature chain that protects the OpenStack tarballs does not exist for
+them. `build-rpms.sh` refuses to build on a digest mismatch, and that is the
+whole of the guarantee. It is stated here rather than left implicit.
+
+### 10.2 Four defects, and what each one looked like
+
+| what broke | how it presented |
+|---|---|
+| `qrcode` ships `#!/usr/bin/env python` in a module | rpm refuses an ambiguous shebang; the template now strips the line |
+| `XStatic` emits a setuptools namespace `.pth` | "Installed (but unpackaged) file(s)". The other nine produce none and import fine under PEP 420, so it is removed rather than packaged |
+| console scripts are outside site-packages | `/usr/bin/qr` unpackaged; the template lists whatever lands in bindir |
+| **rpm expands macros inside spec COMMENTS** | a comment naming a macro turned the rest of the comment into its arguments: `ValueError: Globs did not match any module: and, but, console, covers, not, scripts,, site-packages`. The same trap as the keystone spec in §3. The template now says so in a comment of its own |
+
+Horizon itself needed two spec changes (`spec-patches/horizon.patch`):
+
+* documentation is turned off, because the Sphinx extension it wants
+  (`sphinxcontrib-svg2pdfconverter`) exists on EL10 only as a `-common`
+  subpackage that does not provide the dist name;
+* **the compiled message catalogs are copied into the buildroot by hand.**
+  `%build` compiles 100 `.mo` files and the pyproject wheel carries none of
+  them, so the lang-file step failed with "No translations found for django".
+
+### 10.3 The deployment side
+
+Read off a real install, not assumed:
+
+* the RPM ships `/etc/httpd/conf.d/openstack-dashboard.conf` and **it is live
+  the moment it is installed** — EL has no `conf-available`/`conf-enabled`
+  split — serving `/dashboard` from `openstack_dashboard/wsgi.py`;
+* settings live in `/etc/openstack-dashboard/local_settings`, with **no `.py`
+  extension**, executed as Python top to bottom;
+* `local_settings.d` exists but `settings.py` globs only `*.conf` from it and
+  feeds them to oslo.config, so it is **not** a place to drop Python. The shell
+  therefore appends a marked block to `local_settings` and compares that block
+  whole, which is idempotent without pretending the drop-in directory works;
+* `COMPRESS_OFFLINE` is `True`, so the static assets are rebuilt whenever the
+  block changes — and only then. Two consecutive re-runs rebuilt them **zero**
+  times.
+
+**One conflict between two things the distribution ships.** The
+`openstack-dashboard` RPM adds two `ExecStartPre` steps to `httpd.service` that
+write into `/usr/share/openstack-dashboard/static`, and `httpd.service` sets
+`ProtectSystem=yes`, which makes `/usr` read-only for the unit. httpd then
+refuses to start at all:
+
+```
+OSError: [Errno 30] Read-only file system:
+  '/usr/share/openstack-dashboard/static/app/_app.scss'
+```
+
+The shell writes one drop-in with `ReadWritePaths=/usr/share/openstack-dashboard`
+— a single hole, rather than turning the protection off.
+
+### 10.4 The acceptance, separated by claim
+
+| claim | result |
+|---|---|
+| **builds** | PASS — horizon 25.7.3 and all ten dependencies |
+| **`%check`** | **NOT RUN.** Every package here was built with `--nocheck` |
+| **dependency resolution** | PASS — `dnf install --assumeno openstack-dashboard` resolved **312 packages** (a dry run) |
+| **real install** | PASS — `dnf install` exit 0, `Complete!` |
+| **HTTP response** | PASS — the login page returns 200 with a form |
+| **real sign-in** | **PASS** — see below |
+| **re-run safety** | PASS — two consecutive runs: exit 0, 90 unchanged lines, 0 units restarted, 0 phases skipped, 0 asset rebuilds; sign-in still works afterwards |
+| **existing services** | PASS — keystone, glance, placement, neutron and nova all still answer authenticated calls; a guest still reaches ACTIVE in 18 s |
+| **SELinux** | measured `Permissive`, on-boot `permissive` — the stated scope |
+
+**How the sign-in was checked** (`tests-horizon-login.sh`, exit code 0):
+
+```
+GET  /dashboard/auth/login/        -> HTTP 200, form with csrfmiddlewaretoken
+POST /dashboard/auth/login/        -> HTTP 302, sessionid cookie ISSUED
+GET  /project/instances/           -> HTTP 200  login-form=0  admin-in-page=2
+GET  /identity/                    -> HTTP 200  login-form=0  admin-in-page=3
+GET  /project/networks/            -> HTTP 200  login-form=0  admin-in-page=2
+GET  /project/api_access/          -> HTTP 200  login-form=0  admin-in-page=2
+PASS: authenticated session; pages render with no login form
+```
+
+Every hidden field is read back from the rendered form rather than guessed.
+That is not fussiness: Horizon's `region` field is the literal string
+`default`, not the Keystone URL, and posting the URL gives
+`Invalid region ''` **with HTTP 200** — a failure that looks like a success if
+you only check the status code.
+
+### 10.5 Not done
+
+* **`%check` was not run** for Horizon or any of its ten dependencies.
+* **SELinux enforcing is out of scope**, here as elsewhere.
+* Only the admin user and the pages listed above were exercised. No instance was
+  created *through* the dashboard, and no theme, quota or Cinder/Swift panel was
+  tested — this cloud has neither of those services.

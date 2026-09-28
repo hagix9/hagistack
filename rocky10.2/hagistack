@@ -846,6 +846,33 @@ httpd_grant_wsgi_dir() {   # httpd_grant_wsgi_dir <directory>
     return 0
 }
 
+# The openstack-dashboard RPM adds two ExecStartPre steps to httpd.service that
+# regenerate the static assets, and both write into
+# /usr/share/openstack-dashboard/static. httpd.service also sets
+# ProtectSystem=yes, which makes /usr read-only for the unit, so httpd refuses
+# to start at all:
+#   OSError: [Errno 30] Read-only file system:
+#     '/usr/share/openstack-dashboard/static/app/_app.scss'
+# That is a conflict between two things the distribution ships, not a mistake
+# here. The narrowest fix is to punch one writable hole rather than turn the
+# protection off, so ProtectSystem keeps applying to the rest of /usr.
+httpd_dashboard_writepath() {
+    [ -d /usr/share/openstack-dashboard ] || return 1
+    local f="/etc/systemd/system/httpd.service.d/10-hagistack-dashboard-static.conf"
+    local want='[Service]
+# openstack-dashboard adds ExecStartPre steps that write here, and
+# ProtectSystem=yes would otherwise make it read-only and stop httpd starting.
+ReadWritePaths=/usr/share/openstack-dashboard'
+    local cur=""; [ -f "$f" ] && cur="$($SUDO cat "$f" 2>/dev/null)"
+    [ "$cur" = "$want" ] && return 1
+    $SUDO install -d -m 0755 "$(dirname "$f")"
+    printf '%s\n' "$want" | $SUDO tee "$f" >/dev/null
+    $SUDO chmod 0644 "$f"
+    [ "$HAS_SYSTEMD" -eq 1 ] && $SUDO systemctl daemon-reload
+    log_ok "httpd may write /usr/share/openstack-dashboard (the dashboard's own ExecStartPre needs it)"
+    return 0
+}
+
 httpd_servername() {
     local f="$HTTPD_CONF_D/00-hagistack-servername.conf"
     local want="ServerName ${MGMT_IP}"
@@ -1419,7 +1446,7 @@ EOF
 # One line each, deliberately. These are matched with `case " $LIST " in *" $k "*`
 # and a newline inside the list is not a space, so a wrapped list silently fails
 # to match whichever key sits at the end of a line.
-SECRET_KEYS="MYSQL_ROOT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS PLACEMENT_DB_PASS NEUTRON_DB_PASS NOVA_DB_PASS RABBIT_PASS ADMIN_PASSWORD GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS NOVA_SERVICE_PASS METADATA_PROXY_SECRET"
+SECRET_KEYS="MYSQL_ROOT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS PLACEMENT_DB_PASS NEUTRON_DB_PASS NOVA_DB_PASS RABBIT_PASS ADMIN_PASSWORD GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS NOVA_SERVICE_PASS METADATA_PROXY_SECRET HORIZON_SECRET_KEY"
 COMPUTE_SECRET_KEYS="RABBIT_PASS NOVA_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS METADATA_PROXY_SECRET"
 
 phase_secrets() {
@@ -1470,6 +1497,7 @@ CONTROLLER_PKGS="openstack-keystone openstack-glance openstack-placement-api
                  openstack-neutron-ovn-metadata-agent
                  openstack-nova-api openstack-nova-conductor openstack-nova-scheduler
                  openstack-nova-compute
+                 openstack-dashboard
                  python3-openstackclient httpd python3-mod_wsgi
                  mariadb-server rabbitmq-server memcached
                  openvswitch3.5 ovn26.03 ovn26.03-central ovn26.03-host
@@ -1659,6 +1687,7 @@ phase_keystone() {
     fi
 
     httpd_servername || true
+    httpd_dashboard_writepath || true
     write_vhost keystone "$KEYSTONE_PORT" keystone "$SITELIB/keystone/wsgi/api.py" && changed=1
     service_start_enable httpd
     httpd_reload
@@ -2133,6 +2162,153 @@ phase_nova_compute() {
 }
 
 # ---------------------------------------------------------------------------
+# Horizon
+#
+# Read off a real install rather than assumed:
+#   * the RPM ships /etc/httpd/conf.d/openstack-dashboard.conf and it is ACTIVE
+#     the moment it is installed — EL has no conf-available/conf-enabled split —
+#     with WSGIScriptAlias /dashboard at openstack_dashboard/wsgi.py.
+#   * the settings file is /etc/openstack-dashboard/local_settings, with NO .py
+#     extension, and it is a Python file executed top to bottom.
+#   * local_settings.d exists but settings.py globs only *.conf from it and
+#     feeds them to oslo.config — it is not a place to drop Python. So the
+#     settings are appended to local_settings inside a marked block, which makes
+#     the edit idempotent without pretending a drop-in directory works.
+#   * COMPRESS_OFFLINE is True, so changing settings without rebuilding the
+#     static assets gives an OfflineGenerationError at the first page load.
+# ---------------------------------------------------------------------------
+HORIZON_SETTINGS="/etc/openstack-dashboard/local_settings"
+HORIZON_MANAGE="/usr/share/openstack-dashboard/manage.py"
+HORIZON_URL_PATH="/dashboard"
+HZ_BEGIN="# >>> hagistack begin — managed block, edit above this line"
+HZ_END="# <<< hagistack end"
+
+horizon_login_page() {
+    curl -s -o /dev/null -m 15 -w '%{http_code}' \
+        "http://${MGMT_IP}${HORIZON_URL_PATH}/auth/login/" 2>/dev/null | grep -q '^200$'
+}
+
+# Rebuild the offline compression manifest. Needed whenever the settings change,
+# because the package builds it at install time against settings we then edit.
+horizon_build_assets() {
+    log_info "regenerating static assets (collectstatic + compress); this takes a minute"
+    $SUDO "$HORIZON_MANAGE" collectstatic --noinput --clear >/dev/null 2>&1 \
+        || { log_warn "collectstatic failed"; return 1; }
+    $SUDO "$HORIZON_MANAGE" compress --force >/dev/null 2>&1 \
+        || { log_warn "compress failed"; return 1; }
+    $SUDO chown -R apache:apache /usr/share/openstack-dashboard/static 2>/dev/null || true
+    log_ok "static assets and the offline manifest regenerated"
+    return 0
+}
+
+phase_horizon() {
+    log_step "dashboard (Horizon)"
+    keystone_ready_for_registration || { note_skip horizon "Keystone is not answering"; return 0; }
+    memcached_reachable || { note_skip horizon "memcached is not answering"; return 0; }
+    [ -f "$HORIZON_SETTINGS" ] || { note_skip horizon "$HORIZON_SETTINGS does not exist; is openstack-dashboard installed?"; return 0; }
+
+    # The managed block. Written whole, compared whole, so a re-run that changes
+    # nothing rewrites nothing and the assets are not rebuilt for no reason.
+    local block
+    block="$(cat <<EOF
+$HZ_BEGIN
+# Everything below is written by hagistack. The packaged settings above are left
+# exactly as they were shipped; this file is Python and executes top to bottom,
+# so these assignments win.
+DEBUG = False
+WEBROOT = '${HORIZON_URL_PATH}/'
+LOGIN_URL = WEBROOT + 'auth/login/'
+LOGOUT_URL = WEBROOT + 'auth/logout/'
+LOGIN_REDIRECT_URL = WEBROOT
+ALLOWED_HOSTS = ['*']
+
+OPENSTACK_HOST = "${MGMT_IP}"
+OPENSTACK_KEYSTONE_URL = "http://${MGMT_IP}:${KEYSTONE_PORT}/v3"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
+OPENSTACK_API_VERSIONS = {"identity": 3, "image": 2, "volume": 3}
+OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = False
+OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+
+SECRET_KEY = "${HORIZON_SECRET_KEY}"
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
+        'LOCATION': '${MGMT_IP}:11211',
+    },
+}
+SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+
+# This cloud has no Cinder and no Swift; leaving them advertised produces a
+# dashboard whose Volumes pages fail rather than one that does not offer them.
+OPENSTACK_NEUTRON_NETWORK = {
+    'enable_router': True,
+    'enable_quotas': True,
+    'enable_ipv6': False,
+    'enable_distributed_router': False,
+    'enable_ha_router': False,
+    'enable_fip_topology_check': False,
+}
+$HZ_END
+EOF
+)"
+    local cur_block=""
+    if $SUDO grep -qF "$HZ_BEGIN" "$HORIZON_SETTINGS" 2>/dev/null; then
+        cur_block="$($SUDO awk -v m="$HZ_BEGIN" 'index($0,m)==1{f=1} f' "$HORIZON_SETTINGS")"
+    fi
+    local settings_changed=0
+    if [ "$cur_block" = "$block" ]; then
+        log_ok "dashboard settings already correct (unchanged)"
+    else
+        local tmp; tmp="$(mktemp)"; chmod 0640 "$tmp"
+        $SUDO awk -v m="$HZ_BEGIN" 'index($0,m)==1{exit} {print}' "$HORIZON_SETTINGS" > "$tmp"
+        printf '%s\n' "$block" >> "$tmp"
+        $SUDO cp "$tmp" "$HORIZON_SETTINGS"
+        rm -f "$tmp"
+        settings_changed=1
+        log_ok "dashboard settings written (secret key not shown)"
+    fi
+    $SUDO chown root:apache "$HORIZON_SETTINGS" 2>/dev/null || true
+    $SUDO chmod 0640 "$HORIZON_SETTINGS"
+
+    # Horizon needs somewhere writable for its own bits, and apache must own the
+    # static tree it compresses into.
+    $SUDO install -d -o apache -g apache -m 0750 /var/lib/openstack-dashboard 2>/dev/null || true
+    $SUDO install -d -o apache -g apache -m 0755 /usr/share/openstack-dashboard/static 2>/dev/null || true
+
+    local wp_changed=0
+    httpd_dashboard_writepath && wp_changed=1
+
+    local vhost="$HTTPD_CONF_D/openstack-dashboard.conf"
+    if [ -f "$vhost" ]; then
+        log_ok "packaged dashboard vhost in place: ${HORIZON_URL_PATH} (EL conf.d is active as shipped)"
+    else
+        note_skip horizon "the openstack-dashboard RPM did not install $vhost"
+        return 0
+    fi
+
+    if [ "$settings_changed" -eq 1 ] || [ "$wp_changed" -eq 1 ]; then
+        horizon_build_assets || { note_skip horizon "the static assets could not be rebuilt"; return 0; }
+    else
+        log_ok "settings unchanged, so the offline manifest is left alone"
+    fi
+    httpd_reload
+
+    if ! wait_for 90 "the dashboard login page" horizon_login_page; then
+        # A stale offline manifest is the one failure worth one automatic retry:
+        # the package built it before these settings existed.
+        log_warn "the login page did not answer 200; rebuilding the offline manifest once and retrying"
+        horizon_build_assets || true
+        httpd_reload
+        wait_for 90 "the dashboard login page" horizon_login_page \
+            || { note_skip horizon "http://${MGMT_IP}${HORIZON_URL_PATH}/ does not serve a login page"; return 0; }
+    fi
+    log_ok "dashboard login page served (HTTP 200) at http://${MGMT_IP}${HORIZON_URL_PATH}/"
+    log_warn "a login PAGE is not a login. Signing in is checked separately; see the README."
+    phase_mark_done horizon
+}
+
+# ---------------------------------------------------------------------------
 # initial resources
 # ---------------------------------------------------------------------------
 phase_bootstrap_resources() {
@@ -2343,6 +2519,10 @@ print_banner() {
     echo
     if [ "$SUBCOMMAND" = "all-in-one" ]; then
         echo " Credentials: $HAGISTACK_ETC/admin-openrc (mode 0600)"
+        if phase_done horizon; then
+            echo " Dashboard  : http://$MGMT_IP$HORIZON_URL_PATH/   (user: admin)"
+            echo "              the admin password is in admin-openrc; it is never printed here"
+        fi
         echo
         echo " Boot a guest to find out whether any of this actually works:"
         echo "   . $HAGISTACK_ETC/admin-openrc"
@@ -2378,6 +2558,7 @@ cmd_all_in_one() {
     phase_nova
     phase_nova_compute
     phase_bootstrap_resources
+    phase_horizon
     print_banner
 }
 
@@ -2439,7 +2620,7 @@ cmd_status() {
       Enforcing) echo "                 NOTE: enforcing is out of scope here and untested" ;;
     esac
     echo "  phases done  :"
-    $SUDO ls "$STATE_DIR" 2>/dev/null | sed 's/\.done$//; s/^/    /' || echo "    (none)"
+    $SUDO ls "$STATE_DIR" 2>/dev/null | grep '\.done$' | sed 's/\.done$//; s/^/    /' || echo "    (none)"
     echo "  services     :"
     local u
     for u in mariadb rabbitmq-server memcached httpd openstack-glance-api \
