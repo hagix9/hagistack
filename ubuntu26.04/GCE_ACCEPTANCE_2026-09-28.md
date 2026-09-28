@@ -1,5 +1,13 @@
 # GCE acceptance, 2026-09-27/28 — Ubuntu 26.04 on real hardware
 
+> **Superseded in part by `GCE_ACCEPTANCE_2026-09-28_RUN2.md`.** The two items
+> this document leaves open — guest boot (§3.1) and the compute-node
+> `[database]` connection (§2.11) — were both solved in run 2. Note also that
+> §2.8's conclusion was **wrong**: the 200 in the Nova access log was a
+> `network-changed` event, not `network-vif-plugged`, which was never sent at
+> all. Run 2 §2 has the correlated logs and the actual cause (`ProcSubset=pid`
+> on `apache2.service`). Everything else here stands.
+
 The first time any of this ran outside a container. It found **ten defects**,
 nine of which are fixed here. None of them could have been found in a container:
 every one depends on systemd, on a package starting its own unit, on a real
@@ -269,6 +277,11 @@ node must not attempt database access at all. Removing configuration conflicts
 with this shell's "never delete" rule and needs a deliberate `ini_unset` that
 comments the key out audibly. **Not done. Recorded as open.**
 
+> **Done in run 2.** `ini_comment_out` comments the key out, keeps its value on
+> the line, and the shell then reads nova-compute's journal and reports
+> `0 database lines (no SQL connection attempted)`. See
+> `GCE_ACCEPTANCE_2026-09-28_RUN2.md` §3.
+
 ---
 
 ## 3. Acceptance results
@@ -295,8 +308,8 @@ comments the key out audibly. **Not done. Recorded as open.**
 
 | Item | Where it stops |
 |---|---|
-| **guest boot** | Scheduling works (2.6), the libvirt domain is created and paused (2.7), ovn-controller claims the logical port and sets it `up` in the southbound database, and Neutron's `os-server-external-events` POST returns 200 (2.8) — and the instance still reaches ERROR after **252 s** with `VirtualInterfaceCreateException`. Nova is not acting on the plug event. Next step: `nova-compute` debug logging around `_wait_for_instance_event`, and whether the event's host matches. |
-| **cloud-init / metadata** | not reached — no guest ever ran |
+| **guest boot** | Scheduling works (2.6), the libvirt domain is created and paused (2.7), ovn-controller claims the logical port and sets it `up` in the southbound database, and Neutron's `os-server-external-events` POST returns 200 (2.8) — and the instance still reaches ERROR after **252 s** with `VirtualInterfaceCreateException`. **SOLVED in run 2**: the 200 was a `network-changed` event; `network-vif-plugged` was never sent, because `ProcSubset=pid` on `apache2.service` hides `/proc/meminfo` and every OVN event is dropped inside Neutron's `notify()`. Guest boot now reaches ACTIVE in 18 s. |
+| **cloud-init / metadata** | not reached — no guest ever ran. **SOLVED in run 2**: cloud-init completes, key injected, `login:` reached. |
 
 ### 3.2 node2 — compute-add
 
@@ -322,7 +335,10 @@ comments the key out audibly. **Not done. Recorded as open.**
   interface counters at `rx_packets=0 tx_packets=0`. There was nothing to carry:
   guest boot failed, so no tenant traffic existed. A configured tunnel is not a
   used tunnel and is not reported as one.
+  **Verified in run 2**: 17 Geneve packets captured carrying guest ICMP between
+  the two nodes, 8/8 ping replies, 0% loss.
 * **Guest boot on node2** — blocked by the same defect as node1.
+  **Verified in run 2**: ACTIVE in 12 s on node2.
 
 ---
 

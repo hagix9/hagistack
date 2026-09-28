@@ -34,8 +34,8 @@ if [ -z "${BASH_VERSINFO[0]:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
-HAGISTACK_VERSION="0.6.0-step6"
-HAGISTACK_STAGE="step6: full all-in-one + compute-add implemented; NOTHING verified on real hardware"
+HAGISTACK_VERSION="0.7.0-step7"
+HAGISTACK_STAGE="step7: all-in-one + compute-add implemented; guest boot and cross-node traffic VERIFIED on GCE 2026-09-28"
 
 # Phases implemented in this step. `all-in-one` runs exactly these.
 IMPLEMENTED_PHASES="preflight base_packages database rabbitmq memcached keystone glance placement ovn neutron nova nova_compute horizon bootstrap_resources"
@@ -47,10 +47,10 @@ PENDING_PHASES=""
 # What has actually been observed working on a real machine. Kept as a separate
 # string from IMPLEMENTED_PHASES on purpose: `status`, `--help` and the closing
 # banner all print both, and they must never be collapsed into one claim.
-VERIFIED_ON_HARDWARE="partly, on two GCE VMs 2026-09-28: Horizon login, cells v2, Placement, compute-add, OVN chassis and re-run safety PASSED; guest boot FAILED"
+VERIFIED_ON_HARDWARE="on two GCE VMs 2026-09-28: guest boot on BOTH nodes, cloud-init, cross-node guest ping over a captured Geneve tunnel, Horizon login, cells v2, Placement, compute-add and re-run safety all PASSED"
 # The specific behaviours a container cannot settle. Printed verbatim wherever
 # the shell reports what it did, so that no reader has to infer it.
-UNVERIFIED_ITEMS="guest boot (FAILS: VIF plug times out); Geneve carrying traffic (tunnel exists, 0 packets); cloud-init; any physical-LAN path"
+UNVERIFIED_ITEMS="any physical-LAN path (br-ex has no NIC on GCE, so floating IPs were never routed off-host); live migration; volumes/Cinder; more than two nodes"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -185,6 +185,69 @@ ini_set() {
 
     # Only touch the file when the content actually changes: re-running must
     # produce a byte-identical file and must not bump the mtime.
+    if $SUDO cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1   # unchanged
+    fi
+    $SUDO cp "$tmp" "$file"
+    rm -f "$tmp"
+    return 0       # changed
+}
+
+# Stop a key taking effect, without losing what it said.
+#
+# hagistack never deletes an operator's configuration, and that rule is right
+# almost everywhere. It is wrong for exactly one case: a key whose mere presence
+# makes a service do something harmful. A compute node that carries a
+# [database] connection really does open it — nova-compute logs
+#     WARNING oslo_db.sqlalchemy.engines SQL connection failed. 7 attempts left.
+#     WARNING nova.context Timed out waiting for response from cell ...
+# on every start, because oslo.db reads the key regardless of role.
+#
+# So the key is commented out rather than deleted: it stops taking effect, the
+# value stays on the line so it can be put back, and a comment says who did it
+# and why. Only the named key in the named section is touched — nothing else in
+# the file is rewritten.
+#
+# Returns 0 when the file changed, 1 when it did not (key absent, or already
+# commented out by an earlier run). That makes a second run a no-op, so
+# service_apply sees no new mtime and restarts nothing.
+ini_comment_out() {   # ini_comment_out <file> <section> <key> <why>
+    local file="$1" section="$2" key="$3" why="${4:-}"
+    [ -n "$file" ] && [ -n "$section" ] && [ -n "$key" ] \
+        || die "ini_comment_out: file, section and key are required"
+    $SUDO test -f "$file" || return 1
+
+    local tmp; tmp="$(mktemp)"
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" WHY="$why" \
+        awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; why=ENVIRON["WHY"]
+                in_section=0 }
+        {
+            line=$0
+            if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+                name=line; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+                in_section = (name == section)
+                print line; next
+            }
+            if (in_section) {
+                k=line
+                sub(/^[[:space:]]*/,"",k)
+                # an already-commented line is left exactly as it is
+                if (k ~ /^[#;]/) { print line; next }
+                eq=index(k,"=")
+                if (eq > 0) {
+                    kk=substr(k,1,eq-1); gsub(/[[:space:]]+$/,"",kk)
+                    if (kk == key) {
+                        print "# commented out by hagistack: " why
+                        print "#" line
+                        next
+                    }
+                }
+            }
+            print line
+        }' > "$tmp"
+
     if $SUDO cmp -s "$tmp" "$file"; then
         rm -f "$tmp"
         return 1   # unchanged
@@ -623,6 +686,64 @@ wait_for() {   # wait_for <seconds> <what> <command...>
         [ "$waited" -lt "$limit" ] || return 1
         sleep 2; waited=$((waited + 2))
     done
+}
+
+# Ubuntu 26.04 ships /usr/lib/systemd/system/apache2.service with
+#     ProtectProc=invisible
+#     ProcSubset=pid
+# ProcSubset=pid hides every non-pid file in /proc from the Apache workers,
+# /proc/meminfo among them. Neutron's ML2/OVN driver runs inside those workers
+# and calls neutron/service.py:_get_worker_count(), which does
+# psutil.virtual_memory() -> open('/proc/meminfo'). That call sits inside
+# OvnIdlDistributedLock.notify(), so the FileNotFoundError escapes the notify
+# handler and EVERY northbound OVN row event is dropped:
+#
+#   ERROR ... ovsdb_monitor  File ".../ovsdb_monitor.py", line 884, in notify
+#   FileNotFoundError: [Errno 2] No such file or directory: '/proc/meminfo'
+#
+# The consequence is silent and looks like something else entirely. OVN binds
+# the port and sets Logical_Switch_Port.up=true, but Neutron never runs
+# set_port_status_up(), so the "L2" provisioning block is never released, the
+# port stays DOWN, and the nova notifier logs
+#   Ignoring state change previous_port_status: DOWN current_port_status: DOWN
+# and sends only network-changed — never network-vif-plugged. nova-compute
+# waits out vif_plugging_timeout and every guest dies with
+#   nova.exception.VirtualInterfaceCreateException: Virtual Interface creation failed
+#
+# Measured on GCE on 2026-09-28: with ProcSubset=pid the guest reached ERROR
+# after 300 s; with ProcSubset=all it reached ACTIVE in 18 s and cloud-init
+# completed. ProtectProc=invisible is left alone — it hides other processes'
+# directories, which is not what breaks this, so the hardening that still
+# applies is kept.
+APACHE_DROPIN="/etc/systemd/system/apache2.service.d/10-hagistack-procsubset.conf"
+
+apache_allow_proc_subset() {
+    local want='[Service]
+# See hagistack: Neutron ML2/OVN reads /proc/meminfo inside the Apache workers.
+# ProcSubset=pid (Ubuntu 26.04 default) hides it and every OVN event is dropped.
+ProcSubset=all'
+    local cur=""
+    [ -f "$APACHE_DROPIN" ] && cur="$($SUDO cat "$APACHE_DROPIN" 2>/dev/null)"
+    if [ "$cur" = "$want" ]; then
+        log_ok "apache2 ProcSubset override already in place (unchanged)"
+        return 1
+    fi
+    $SUDO install -d -m 0755 "$(dirname "$APACHE_DROPIN")"
+    printf '%s\n' "$want" | $SUDO tee "$APACHE_DROPIN" >/dev/null
+    $SUDO chmod 0644 "$APACHE_DROPIN"
+    [ "$HAS_SYSTEMD" -eq 1 ] && $SUDO systemctl daemon-reload
+    log_ok "apache2 ProcSubset=all written ($APACHE_DROPIN)"
+    log_info "  without it Neutron's OVN driver drops every port-up event and no guest can boot"
+    return 0
+}
+
+# Report whether the running Apache can actually see /proc/meminfo. This is the
+# thing that matters, so it is measured rather than assumed.
+apache_sees_meminfo() {
+    local pid
+    pid="$($SUDO pgrep -f 'wsgi:neutron' 2>/dev/null | head -1)"
+    [ -n "$pid" ] || return 2   # no neutron worker yet; nothing to say
+    $SUDO nsenter -t "$pid" -m -- test -r /proc/meminfo 2>/dev/null
 }
 
 service_apply() {   # service_apply <unit> <config-file>...
@@ -2121,8 +2242,18 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
 
     # --- run it ----------------------------------------------------------------
     $SUDO a2ensite neutron-api >/dev/null 2>&1 || true
+    # Must happen before apache2 is (re)started: ProcSubset is a unit property,
+    # so a reload does not pick it up and a running Apache keeps the old view
+    # of /proc. Returns 0 when it changed the drop-in, which forces a full
+    # restart rather than a reload.
+    local procsubset_changed=0
+    apache_allow_proc_subset && procsubset_changed=1
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
-        if service_active apache2; then
+        if [ "$procsubset_changed" -eq 1 ] && service_active apache2; then
+            $SUDO systemctl restart apache2 \
+                || die "apache2 failed to restart after the ProcSubset override was written"
+            log_ok "apache2 restarted so the ProcSubset override takes effect"
+        elif service_active apache2; then
             $SUDO systemctl reload-or-restart apache2 \
                 || die "apache2 failed to reload after the neutron configuration change"
             log_ok "apache2 reloaded (identity :5000, placement :8778, networking :${NEUTRON_PORT})"
@@ -2154,6 +2285,18 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
         return 0
     fi
     log_ok "networking API verified (openstack network list succeeded)"
+    # Measure the thing the override exists for, rather than trusting that
+    # writing a drop-in worked. A neutron worker that cannot read /proc/meminfo
+    # drops every OVN event and no guest will ever boot, so this is reported
+    # loudly rather than left to be discovered 300 seconds into a build.
+    apache_sees_meminfo
+    case $? in
+      0) log_ok "apache2 workers can read /proc/meminfo (OVN port-up events will be processed)" ;;
+      2) log_info "no neutron wsgi worker is up yet; /proc/meminfo visibility is checked on the next run" ;;
+      *) log_warn "apache2 workers still cannot read /proc/meminfo."
+         log_warn "  Neutron's OVN driver will drop every port-up event and NO GUEST WILL BOOT."
+         log_warn "  Check $APACHE_DROPIN and 'systemctl show apache2 -p ProcSubset'." ;;
+    esac
     log_warn "the API answers, but no network exists yet and nothing has been routed:"
     log_warn "  the initial resources are created later, by the bootstrap_resources phase."
     phase_mark_done neutron
@@ -3401,10 +3544,34 @@ phase_compute_nova() {
     else
         log_ok "nova.conf already correct (unchanged)"
     fi
-    if [ -n "$(ini_get "$NOVA_CONF" database connection 2>/dev/null || true)" ]; then
-        log_warn "nova.conf still carries a [database] connection from an earlier role."
-        log_warn "  hagistack does not delete configuration; remove it by hand if this node"
-        log_warn "  is meant to be compute-only."
+    # A compute node must not open the cell database. nova-compute reaches the
+    # cell only through nova-conductor over RPC; if [database] connection (or
+    # [api_database] connection) is present — the package ships one, and a host
+    # that was ever a controller keeps one — oslo.db opens it anyway and
+    # nova-compute logs, on every start:
+    #     WARNING oslo_db.sqlalchemy.engines SQL connection failed. 7 attempts left.
+    #     WARNING nova.context Timed out waiting for response from cell 00000000-...
+    # Measured on GCE node2 during the 2026-09-28 acceptance; registration still
+    # succeeded, which is exactly why it is easy to leave in place.
+    #
+    # Only these two keys are touched, and they are commented out rather than
+    # deleted, so the value survives and the file says who silenced it. A
+    # re-run finds them already commented and rewrites nothing.
+    local dbsec
+    for dbsec in database api_database; do
+        if ini_comment_out "$NOVA_CONF" "$dbsec" connection \
+               "compute-only node; nova-compute reaches the cell through nova-conductor"; then
+            log_ok "[$dbsec] connection commented out in nova.conf (value kept on the line)"
+            changed=1
+        fi
+    done
+    local dbleft
+    dbleft="$(ini_get "$NOVA_CONF" database connection 2>/dev/null || true)$(ini_get "$NOVA_CONF" api_database connection 2>/dev/null || true)"
+    if [ -n "$dbleft" ]; then
+        log_warn "nova.conf STILL has an active [database]/[api_database] connection."
+        log_warn "  This node will try to open the cell database. Remove it by hand."
+    else
+        log_ok "no active [database]/[api_database] connection: this node opens no database"
     fi
     $SUDO chown root:nova "$NOVA_CONF" 2>/dev/null || true
     $SUDO chmod 0640 "$NOVA_CONF"
@@ -3435,6 +3602,22 @@ phase_compute_nova() {
         note_skip compute_nova "nova-compute is not running; check 'journalctl -u nova-compute'."
         return 0; }
     log_ok "nova-compute running"
+
+    # Evidence rather than assertion for the database question above: read this
+    # node's own nova-compute journal since the current start and count the
+    # lines that only appear when it opens, or waits on, a database.
+    local since dblines
+    since="$($SUDO systemctl show -p ActiveEnterTimestamp --value nova-compute 2>/dev/null || true)"
+    [ -n "$since" ] || since="-2min"
+    sleep 10   # bounded settle: these lines appear within seconds of start, or not at all
+    dblines="$($SUDO journalctl -u nova-compute --since "$since" --no-pager 2>/dev/null \
+        | grep -cE 'oslo_db\.sqlalchemy\.engines|SQL connection failed|Timed out waiting for response from cell' || true)"
+    if [ "${dblines:-0}" -eq 0 ]; then
+        log_ok "nova-compute journal since start: 0 database lines (no SQL connection attempted)"
+    else
+        log_warn "nova-compute journal since start: $dblines database lines — this node is still opening a database"
+    fi
+
     log_warn "this node cannot confirm its own registration: it has no admin credential"
     log_warn "  and no database access, by design. Run on the CONTROLLER:"
     log_warn "      sudo hagistack discover-hosts"

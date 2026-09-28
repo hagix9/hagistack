@@ -15,11 +15,11 @@ report **two different things**, and never merge them:
 
 | | |
 |---|---|
-| Version | `0.6.0-step6` |
+| Version | `0.7.0-step7` |
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 | Implemented | **everything below.** Neither `all-in-one` nor `compute-add` has a stub left |
-| **Verified on hardware** | **partly.** Two GCE VMs on 2026-09-28 — see `GCE_ACCEPTANCE_2026-09-28.md`. Most of it passed; **guest boot still fails** |
+| **Verified on hardware** | **yes, including guest boot.** Two GCE VMs on 2026-09-28 — see `GCE_ACCEPTANCE_2026-09-28.md` (run 1) and `GCE_ACCEPTANCE_2026-09-28_RUN2.md` (run 2). Guests reach ACTIVE on both nodes, cloud-init completes, and two guests on different hosts ping each other over a captured Geneve tunnel. A physical-LAN path is still untested |
 
 **Implemented**
 
@@ -64,22 +64,33 @@ OVSDB, Neutron unable to tell Nova a VIF was plugged, and Keystone exhausting
 its SQLAlchemy pool — which the step 4 notes had blamed on disk pressure and
 which turned out to have nothing to do with disk.
 
-**Still failing, and still honest about it**
+**Guest boot — solved in run 2**
 
-**Guest boot.** It gets as far as: scheduled, libvirt domain created and paused,
-OVN claims the port and marks it up, Neutron posts `os-server-external-events`
-and Nova answers 200 — and the instance still reaches ERROR after 252 s with
-`VirtualInterfaceCreateException`. Nothing downstream of that has run, so
-**cloud-init is untested** and **Geneve has carried zero packets** (the tunnel
-exists with the right endpoints; `tcpdump` on udp/6081 saw nothing, because
-there was no guest to generate traffic). No path onto a physical LAN was
-attempted; it is out of scope.
+Run 1 left this failing and misattributed it. The 200 in the Nova access log was
+a **`network-changed`** event; `network-vif-plugged` was never sent at all. The
+cause was one systemd line: Ubuntu 26.04 ships `apache2.service` with
+**`ProcSubset=pid`**, which hides `/proc/meminfo`. Neutron's ML2/OVN driver runs
+inside the Apache workers (the networking API is a vhost, not a unit), and
+`psutil.virtual_memory()` raises inside `OvnIdlDistributedLock.notify()` — the
+single funnel for every northbound OVN event. So every event was dropped,
+`set_port_status_up()` never ran, the port stayed `DOWN` for ever, and Neutron
+only ever sent `network-changed`.
 
-So after `all-in-one` finishes you have a host on which every OpenStack service
-this project targets has been installed, configured and, as far as one machine
-can check, started — and **on which nobody has ever logged in to the dashboard
-or booted a virtual machine.** Both halves of that sentence are true and the
-command prints both.
+`phase_neutron` now writes a `ProcSubset=all` drop-in, restarts apache2 when it
+changes, and **measures** that the workers can read `/proc/meminfo`. With that:
+
+* guest **ACTIVE in 18 s** on node1 and **12 s** on node2;
+* **cloud-init completes** — metadata fetched from `169.254.169.254`, key
+  injected, `login:` reached;
+* two guests on different hosts ping each other, **8/8, 0% loss**, and
+  `tcpdump` captured **17 Geneve packets** carrying the inner ICMP between
+  `10.146.0.26` and `10.146.0.29`.
+
+`GCE_ACCEPTANCE_2026-09-28_RUN2.md` has the correlated logs.
+
+**Still untested.** No path onto a physical LAN: `br-ex` has no NIC attached on
+GCE, so the provider network and its floating IPs were never routed off-host.
+Live migration, volumes and more than two nodes were not attempted either.
 
 ### Horizon
 

@@ -3,26 +3,28 @@
 **Status: NOT IMPLEMENTED. There is no `hagistack` shell in this directory, and
 this document does not say "Rocky is supported".**
 
-**Update 2026-09-28.** The RDO EL10 build failures were diagnosed from their own
-logs (§1.6) and are ordinary packaging debt, not EL10 incompatibility — and one
-core service, `openstack-keystone 27.0.0`, was **built from source on Rocky
-Linux 10.2** with every input pinned and GPG-verified (§1.7). What blocks a
-Rocky build is now a single, sharp question: **which OpenStack release** (§1.8).
-Still not implemented, and still not called supported.
+**Update 2026-09-28 (second pass).** The release question of §1.8 has been
+answered with measurements rather than argument, and it is **2025.1 Epoxy**:
 
-What it does say is more precise than the previous verdict, and it corrects part
-of it. The earlier research (`../HAGISTACK_RENEWAL_RESEARCH_2026-09-26.md` §
-"Rocky Linux 10.2") concluded **NO-GO for a direct build from distributed RPMs**,
-on the grounds that *no EL10 RPMs exist* — not for OpenStack, and not even for
-Open vSwitch/OVN. That scope limit was correct to state, but **the factual claim
-inside it was partly wrong**: it only looked at released mirrors.
+* `epoxy-rdo` is the newest release branch in **every** `rdo-packages` distgit
+  checked — 6 services and 8 libraries. There is no `flamingo-rdo` (2025.2) and
+  no `gazpacho-rdo` (2026.1). Matching Ubuntu 26.04's 2026.1 would mean creating
+  packaging that exists nowhere (§1.9).
+* **All six core services now build on Rocky Linux 10.2 at one release** —
+  keystone 27.0.0, placement 13.0.0, glance 30.0.0, neutron 26.0.0, nova 31.0.0
+  and horizon 25.3.0 — producing **45 RPMs**, every input pinned by distgit
+  **commit id** and tarball **sha256** (§1.10).
+* Both remaining failures were diagnosed and fixed, and **neither was an EL10
+  incompatibility** (§1.11): one was RDO hardcoding `x86_64` in a repository
+  URL, the other was a 2025.1 service built against a **trunk** library.
+* What still blocks a Rocky `hagistack` is now a **counted** quantity:
+  **61 more source packages** — the OpenStack libraries — must also be built at
+  Epoxy, because RDO's EL10 binaries for them are trunk builds (§1.12).
 
-Looking where RDO itself points, EL10 RPMs **do** exist, and on Rocky Linux 10.2
-`dnf` resolves a complete OpenStack install — 704 packages — and the one service
-tried actually installs and runs. The reason Rocky is still not implemented has
-moved from *"the parts do not exist"* to *"the parts that exist are not a
-release, and the places they come from are not stable enough to build a simple
-Bash installer against."*
+So the answer moved again: from *"the parts do not exist"*, to *"the parts that
+exist are not a release"*, to **"one release can be built, and here is exactly
+how much of it is left"**. Still not implemented, and still not called
+supported.
 
 ---
 
@@ -273,6 +275,207 @@ silently.** Ubuntu 26.04 gives 2026.1. The realistic Rocky 10.2 path gives
 **2025.1** — one year older — and costs a build pipeline. Making Rocky match
 Ubuntu means creating 2026.1 packaging that does not exist anywhere today.
 
+## 1.9 Which single release can actually be assembled — measured
+
+`git ls-remote` on every relevant distgit (no API limits, so the whole list was
+checked rather than sampled). Release branches, newest first:
+
+| distgit | newest release branch |
+|---|---|
+| keystone, glance, placement, neutron, nova, horizon | **`epoxy-rdo`** (2025.1) |
+| neutron-lib, os-traits, os-resource-classes, oslo-limit, oslo-service, oslo-policy, os-ken, ovsdbapp | **`epoxy-rdo`** (2025.1) |
+
+No `flamingo-rdo`, no `gazpacho-rdo`, anywhere. And the `epoxy-rdo` specs are a
+**coherent set** — this was read from the spec files at the pinned commits, not
+inferred:
+
+| service | spec `Version:` | cycle |
+|---|---|---|
+| keystone | 27.0.0 | 2025.1 |
+| glance | 30.0.0 | 2025.1 |
+| placement | 13.0.0 | 2025.1 |
+| neutron | 26.0.0 | 2025.1 |
+| nova | 31.0.0 | 2025.1 |
+| horizon (`python-django-horizon`) | 25.3.0 | 2025.1 |
+
+Compare §1.3, where RDO's **pre-built** centos10-master mixes three cycles
+(keystone 27.1.0 / nova 32.1.0 / glance 32.1.0). Building from `epoxy-rdo`
+avoids that entirely. Ubuntu 26.04 ships 2026.1 (keystone 29, glance 32,
+neutron 28, nova 33); **Rocky cannot match that today**, and choosing Rocky
+means choosing a release one year older.
+
+## 1.10 Pinning the build inputs — a branch name is not a pin
+
+`build-keystone-epoxy.sh` fetched raw files from the `epoxy-rdo` **branch**.
+That proves nothing about what you got: RDO can push to that branch at any time
+and the next run silently builds different software. It is replaced by
+`epoxy.manifest` + `build-epoxy.sh`, in which every input is pinned and
+verified **before** it is handed to `rpmbuild`:
+
+* **distgit by commit id.** `git checkout --detach <sha>`, then `git rev-parse
+  HEAD` is compared with the manifest and the tree is required to be clean.
+  A commit id is content-addressed, so this fixes the *entire* spec tree —
+  spec, patches, logrotate files and all — not just one file.
+* **tarball by sha256**, in addition to the GPG signature the spec itself
+  verifies in `%prep` via `%{gpgverify}`.
+* **the signing key by sha256** as well.
+* **a fetch failure or a digest mismatch stops the build**, and the bad file is
+  deleted so no later step can pick it up. Nothing falls back to "latest".
+
+The pinned commits, verified on 2026-09-28:
+
+```
+keystone   967070efb58987e2d9f5bdf81def3cb32f061a4e
+placement  45766cd06ac2205d41c7abbe06e5dbad70fc5ac7
+glance     6110108606fd6d927875699ba9dec6d1b57e4984
+neutron    8ec48e57b963f0798cad147e7f14901b1b8a9ee4
+nova       c4da8f3f133dcc8d9e1314aefa716e449afc98dc
+horizon    5aff204f8f3eb8dc5534175fc5282eeb10005723
+oslo-limit 7164a7b05f4d5c5e55c7111943cd99b27cbe0550
+```
+
+**Result — 45 RPMs, one release, on Rocky Linux 10.2:**
+
+```
+openstack-keystone-27.0.0        openstack-placement-api-13.0.0
+python3-keystone-27.0.0          openstack-placement-common-13.0.0
+python3-keystone+ldap-27.0.0     python3-placement-13.0.0
+python3-glance-30.0.0            openstack-nova-31.0.0  (+ api, common, compute,
+openstack-neutron-common-26.0.0     conductor, migration, novncproxy, scheduler,
+openstack-neutron-ml2-26.0.0        serialproxy, spicehtml5proxy)
+openstack-neutron-rpc-server-26.0.0   python3-nova-31.0.0
+openstack-neutron-ovn-metadata-agent-26.0.0
+openstack-neutron-periodic-workers-26.0.0
+python3-neutron-26.0.0           python3-django-horizon-25.3.0
+python3-oslo-limit-2.6.1         openstack-dashboard-25.3.0
+```
+
+Every one is `noarch`. The builder was aarch64; the output is
+architecture-independent, and an x86_64 builder is still not separately proven.
+
+### Fixing the dependency versions, and distributing the result
+
+Pinning the *sources* is not enough. RDO's centos10-master repositories carry
+**trunk** versions of the OpenStack libraries, and they are almost always newer
+than the release ones — so a self-built 2025.1 library does not stay installed.
+Measured: `python3-oslo-limit` was downgraded to Epoxy 2.6.1, and the very next
+`dnf builddep` pulled trunk 2.8.0 straight back, after which glance failed its
+tests again with exactly the same error.
+
+`build-epoxy.sh --publish` therefore does two things, not one:
+
+* `createrepo_c` over the built RPMs, published as `[hagistack-epoxy]` with
+  `priority=1`; and
+* an explicit `exclude=` in the RDO repositories for **every package name it
+  built**, so trunk cannot re-supply any of them at any version.
+
+After that, `dnf` offers exactly one candidate:
+
+```
+$ dnf repoquery --qf '%{version}-%{release} (%{reponame})' python3-oslo-limit
+2.6.1-1.el10  (hagistack-epoxy)
+```
+
+`build-epoxy.sh --lock` additionally writes `build-env.lock`, every RPM present
+in the builder as `name-epoch:version-release.arch` — **1012 packages** — so the
+build environment itself can be recreated, not just the sources. A local
+`createrepo_c` repository is also the answer to *how would this be distributed*:
+a directory of signed RPMs plus one `.repo` file, which is the same shape as
+any other EL repository and needs no hash-pinned URLs (§2.2).
+
+## 1.11 The two build failures — and why neither was an EL10 problem
+
+The first run of `build-epoxy.sh` gave **3 PASS / 3 FAIL**. Both failure causes
+were found and fixed, and this is the part that matters: *neither was EL10, and
+neither was the release*.
+
+### Failure A — neutron and nova: an architecture hardcoded in RDO's repo file
+
+`rpmbuild` exited 11, "Failed build dependencies", naming `os-vif`,
+`oslo-versionedobjects`, `tooz`, `websockify`, `glanceclient`, `neutronclient`
+and `neutron-lib-tests`. Every one of those **does exist** on EL10 — checked
+with `repoquery`. The real message was one level down:
+
+```
+package python3-os-vif-4.1.0 requires python3.12dist(ovsdbapp) >= 0.12.1,
+  but none of the providers can be installed
+- nothing provides python3.12dist(ovs) >= 2.10 needed by python3-ovsdbapp-2.13.0
+```
+
+`python3dist(ovs)` is the Python module that ships **with Open vSwitch**, and
+RDO's `delorean-deps.repo` points at it with the architecture written into the
+URL:
+
+```
+[centos10-nfv-ovs]
+baseurl=https://buildlogs.centos.org/centos/10-stream/nfv/x86_64/openvswitch-2/
+```
+
+On any builder that is not x86_64 that repository yields nothing. The
+architecture-specific mirrors all exist (`aarch64` and `x86_64` both answer
+HTTP 200 on `mirror.stream.centos.org` and `buildlogs.centos.org`); RDO simply
+does not use `$basearch`. Pointing one repo file at
+`.../nfv/$basearch/openvswitch-2/` made `python3-openvswitch3.5` resolvable and
+**neutron 26.0.0 and nova 31.0.0 then both built, exit 0**.
+
+This is worth stating plainly because it is exactly the kind of thing that gets
+written up as "nova cannot be built on Rocky 10". It can. The builder was
+pointed at the wrong repository.
+
+### Failure B — glance: a 2025.1 service against a trunk library
+
+glance built and then failed `%check`: **7 failures out of 2228 tests**, all in
+one class, `TestImageKeystoneQuota`:
+
+```
+TypeError: KeystoneQuotaFixture.setUp.<locals>.fake_limits()
+           missing 1 required positional argument: 'resource_name'
+```
+
+Epoxy glance's test fixture matches the Epoxy `oslo.limit` callback signature.
+The installed library was **oslo.limit 2.8.0**, a trunk build from 2025-09-03;
+Epoxy is **2.6.1**. glance's `requirements.txt` only says `oslo.limit>=1.6.0`,
+so packaging resolves happily and **only the test suite notices**.
+
+Building `oslo-limit` 2.6.1 from its own `epoxy-rdo` commit, publishing it at
+`priority=1` and excluding the trunk package (§1.10) fixed it:
+
+```
+rpmbuild exit=0    PASS glance      Ran: 2228 tests
+```
+
+That is the mixed-release problem of §1.3 caught in the act, on a real build,
+rather than argued from version numbers. It is also the strongest available
+evidence that "2025.1 services + trunk libraries" is not merely untested but
+**observably incompatible**, and therefore that the library set has to be built
+too.
+
+## 1.12 What is left, counted
+
+The recursive dependency closure of the nine core packages
+(`dnf repoquery --requires --resolve --recursive`) is **1145 packages**:
+
+| source | count | needs building for a single release? |
+|---|---|---|
+| Rocky BaseOS / AppStream / CRB | 870 | no — the distribution |
+| RDO `delorean-master-testing` / `build-deps` (third-party Python) | 179 | no — release-agnostic |
+| **RDO `delorean-component-*` (OpenStack-owned)** | **92** | **yes** |
+| other (storage SIG, EPEL) | 4 | no |
+
+Those 92 binary RPMs come from **68 source packages**. Seven are now built
+(the six services plus `oslo.limit`), which leaves **61**: the oslo libraries,
+`neutron-lib`, `os-ken`, `ovsdbapp`, `os-vif`, `os-traits`,
+`os-resource-classes`, `glance-store`, `keystoneauth1`, `keystonemiddleware`,
+the service clients, `openstacksdk`, `os-brick`, `taskflow`, `tooz`, `cliff`,
+`stevedore` and the rest. Every one of them has an `epoxy-rdo` branch, so the
+work is *known*, bounded and mechanical — `build-epoxy.sh` already takes them
+as manifest rows — but it is 61 builds that have not been done.
+
+**Until they are, an install on Rocky 10.2 still pulls trunk libraries, and
+this document will not call that a single release.** That is why there is still
+no `hagistack` shell here: the six services build, the platform is fine, and
+the library set is the remaining cost.
+
 ## 2. Why it is still not implemented
 
 Not "the parts are missing". These four:
@@ -374,7 +577,9 @@ carries over unchanged — only the packaging layer differs.
 |---|---|
 | `README.md` | this document |
 | `probe-repos.sh` | re-runs every availability check in §1 and prints a verdict line per condition in §4. Read-only: it fetches HTTP listings and repository metadata and installs nothing |
-| `build-keystone-epoxy.sh` | builds `openstack-keystone 27.0.0` (2025.1 Epoxy) on Rocky Linux 10.2 from the `epoxy-rdo` spec and the signed upstream tarball, with every input pinned. This is the §1.7 proof, re-runnable. It installs build dependencies, so run it in a throwaway VM or container, not on a host you care about. |
+| `build-keystone-epoxy.sh` | the original single-service proof (§1.7). **Superseded by `build-epoxy.sh`**: it fetches from the `epoxy-rdo` *branch*, which is not a pin. Kept because §1.7 refers to it |
+| `epoxy.manifest` | the pinned build inputs — distgit **commit id**, spec file, tarball name and **sha256** — for keystone, placement, glance, neutron, nova, horizon and oslo.limit. Add a row to build another package |
+| `build-epoxy.sh` | builds any subset of the manifest on Rocky Linux 10.2, verifying every input first and **stopping** on a fetch failure or digest mismatch (§1.10). `--publish` turns the output into a `priority=1` repository and excludes those names from RDO trunk; `--lock` records the whole build environment. It installs build dependencies, so run it in a throwaway VM or container, not on a host you care about |
 
 `probe-repos.sh` needs only `curl`; the `dnf` checks run if `dnf` is present
 (i.e. on an EL host) and are skipped with a note otherwise.
