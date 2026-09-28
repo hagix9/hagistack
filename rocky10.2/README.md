@@ -505,3 +505,140 @@ does.
 * **`%check` was not run on x86_64** for any package.
 * **Horizon** is still blocked (§3.5) and is not in the 182.
 * There is still **no `hagistack` shell** in this directory.
+
+---
+
+## 9. GCE acceptance, 2026-09-29 — Rocky 10.2 x86_64, OpenStack 2026.1
+
+The goal of all of the above, reached: a plain Bash shell installs 2026.1 on
+Rocky 10.2 and boots guests on two nodes that talk to each other.
+
+Six things are kept apart on purpose, because they are six different claims:
+
+| claim | result |
+|---|---|
+| **builds** | 182 RPMs, 61 packages, all 2026.1 (§8) |
+| **`%check`** | **not run on x86_64.** Ran on aarch64 for 9 packages (§3.7) |
+| **dependency resolution** | `dnf install --assumeno` resolved 710 packages (§8.3) — a dry run, and labelled as one |
+| **real install** | **`dnf install` exit 0, "Complete!", 992 packages on the host** |
+| **API response** | every service answered a **token-authenticated** call |
+| **guest boot** | **ACTIVE in 18 s on both nodes, cloud-init completed** |
+
+### 9.1 Environment and cost
+
+| | |
+|---|---|
+| node1 | `hagistack-rocky-node1`, n2-standard-4, 60 GB, `10.146.0.31` |
+| node2 | `hagistack-rocky-node2`, n2-standard-2, 40 GB, `10.146.0.32` |
+| image | `rocky-linux-10` (Rocky 10.2, Python 3.12.14), nested virtualisation on |
+| builder | `hagistack-rocky-build`, n2-standard-4, deleted after the build |
+| cost | builder ≈ $0.40, node1 ≈ $0.75, node2 ≈ $0.10 — order **$1.25**, list-price estimate |
+
+### 9.2 Provenance of the real install
+
+From the transaction itself, not from a plan:
+
+```
+281 appstream        67 baseos       3 crb          Rocky 10.2
+ 88 hagistack-gazpacho                              our 2026.1 build
+ 50 epel                                            EPEL 10
+ 35 delorean-master-testing                         third-party python, NOT OpenStack
+ 19 centos10-rabbitmq   6 nfv-ovs    2 storage
+```
+
+**No `delorean-component-*` repository was configured on either node**, and the
+shell refuses to stay quiet if one is: it checks and warns that the install is
+not a single release.
+
+The 35 packages from `delorean-master-testing` were each checked against the
+2026.1 deliverable list and the upper-constraints file. **Not one is an
+OpenStack deliverable.** They are third-party Python libraries — `eventlet`,
+`httplib2`, `pysaml2`, `kombu`, `paste`, `retrying`, `zipp` and similar — plus
+RDO's OVS compatibility shims (`rdo-openvswitch`, `openstack-network-scripts`).
+Honestly stated: several are **older than the 2026.1 upper-constraints pin**
+(`amqp` 5.2.0 against 5.3.1, `httplib2` 0.22.0 against 0.31.2). Upper-constraints
+is a testing pin, not a requirement; the services' own lower bounds are
+satisfied, which is what the RPM dependencies encode. **The OpenStack layer is
+one release. The third-party Python layer is whatever EL10 has** — exactly the
+position any distribution-packaged OpenStack is in.
+
+### 9.3 Results
+
+**node1 — all-in-one — PASS**
+
+| item | evidence |
+|---|---|
+| real install | `dnf install` exit 0, 992 packages |
+| all-in-one | **exit 0, no phases skipped** |
+| keystone | `openstack token issue` succeeded — served by httpd from `keystone/wsgi/api.py` |
+| glance | `openstack image list` succeeded — `openstack-glance-api.service`, the one packaged unit that still works |
+| placement | `GET /resource_providers` with a real token — the packaged vhost, retargeted by our spec patch |
+| neutron | `openstack network list` succeeded — httpd from `neutron/wsgi/api.py` |
+| nova | `openstack compute service list` succeeded — httpd from `nova/wsgi/osapi_compute.py` |
+| OVN | chassis registered, `br-ex` mapped to `physnet1`, loopback ovsdb manager for os_vif |
+| **guest boot** | **ACTIVE in 18 s**, port ACTIVE |
+| **cloud-init** | **`=== datasource: ec2 net ===`, `instance-id: i-00000005`, ssh key injected, `demo1 login:`** |
+| re-run safety | two consecutive runs: **exit 0, 88 unchanged lines, 0 units restarted, 0 phases skipped**, guest still ACTIVE |
+
+**node2 — compute-add — PASS**
+
+| item | evidence |
+|---|---|
+| credential delivery | exactly **5** keys, **0** database or admin keys |
+| compute-add | **exit 0, every phase completed** |
+| `[database]` safety | commented out, and the journal shows **0 database lines** |
+| registration | both nodes `up` in `compute service list` and `hypervisor list` |
+| OVN | **2 chassis**, hostnames matching nova's host, geneve encaps `10.146.0.31` and `10.146.0.32` |
+| **guest boot on node2** | **ACTIVE in 12 s** |
+| re-run safety | exit 0, 13 unchanged lines, **0 units restarted**, 0 phases skipped |
+
+**Cross-node traffic — PASS**
+
+```
+30 packets transmitted, 30 received, 0% packet loss
+rtt min/avg/max/mdev = 0.991/1.332/2.736/0.280 ms
+```
+
+and the tunnel carrying it, captured on the physical NIC:
+
+```
+IP 10.146.0.31.47109 > 10.146.0.32.geneve: Geneve, Flags [C], vni 0x2,
+   options [8 bytes]: IP 10.10.10.50 > 10.10.10.52: ICMP echo request
+IP 10.146.0.32.iris-lwz > 10.146.0.31.geneve: Geneve, Flags [C], vni 0x2,
+   options [8 bytes]: IP 10.10.10.52 > 10.10.10.50: ICMP echo reply
+```
+
+### 9.4 What Rocky needed that Ubuntu did not
+
+Every one of these was found from an installed file or a failure, not by
+analogy. The last one cost the most time and is the most instructive.
+
+| | |
+|---|---|
+| **host identity** | Neutron's OVN driver binds a port by matching `Chassis.hostname` to nova's `binding:host_id`. Rocky leaves nova on the short name while ovn-controller records the FQDN, so every boot failed with *"Refusing to bind port … due to no OVN chassis for host"* — with the chassis plainly visible in `ovn-sbctl show`. Both sides are now set from one variable |
+| **metadata `root_helper`** | lives in `[AGENT]`, not `[DEFAULT]`. In the wrong section it silently reads as the built-in `sudo`, the haproxy spawn dies with *"a terminal is required to read the password"*, the `ovnmeta` namespace exists with nothing listening in it, and the only symptom is a guest that cannot reach `169.254.169.254` |
+| **`/etc/keystone/keystone.conf`** | does not exist; the RPM ships only a dist conf |
+| **`/etc/neutron/plugin.ini`** | required by `neutron-rpc-server.service`, created by nothing |
+| **`neutron-db-manage`** | in the main `openstack-neutron` package, which also ships the dead `neutron-server.service` |
+| **nova `state_path`** | unset, nova writes its node identity into site-packages, gets EACCES and exits — after logging enough to look healthy |
+| **nova `compute_driver`** | Ubuntu gets it from `nova-compute-kvm`'s own conf; EL ships nothing |
+| **metadata agent ovsdb** | runs as `neutron` and cannot read the root-owned OVS socket |
+| **`default` security group** | not a unique name once the service project exists |
+| **`ProcSubset=pid`** | Rocky's httpd does **not** have it, so the Ubuntu defect does not apply here — checked, not assumed |
+
+### 9.5 Not done
+
+* **Horizon.** Not built and not installed. Its 2026.1 dependencies —
+  `XStatic-Font-Awesome 6.2.1.2`, `XStatic-Angular 1.8.2.3`,
+  `XStatic-jQuery 3.7.1.1`, `XStatic-JQuery-Migrate 3.3.2.2`, `qrcode 8.2` —
+  are not packaged for EL10 at those versions and have **no distgit to build
+  from**, so roughly ten new spec files would have to be written. It did not
+  block anything above, and it is still part of the goal.
+* **SELinux is permissive.** `openstack-selinux` is published only in RDO's
+  OpenStack component repositories, which this shell refuses to enable. The
+  shell sets `httpd_can_network_connect`, then drops to permissive and says so
+  every run and in `hagistack status`.
+* **`%check` was not run on x86_64** for any package.
+* **No physical-LAN path.** `br-ex` has no NIC attached on GCE, so the provider
+  network and its floating IPs were never routed off-host.
+* **Live migration, volumes, more than two nodes** — not attempted.
