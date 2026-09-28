@@ -1,0 +1,25 @@
+Adapt RDO's rpm-master python-oslo-utils.spec to the released 2026.1 tarball
+(oslo.utils 10.0.1).
+
+    error: Failed build dependencies:
+        python3dist(tzdata) >= 2022.4 is needed by python-oslo-utils-10.0.1
+
+tzdata appears only in oslo.utils's test-requirements.txt, not in
+requirements.txt, so it is a test dependency and not a runtime one. Nothing on
+EL10 provides python3dist(tzdata): Rocky ships the system tzdata package, which
+is what zoneinfo actually reads, and does not package the PyPI fallback. Added
+to the spec's own excluded_brs list, which is the mechanism it already uses for
+exactly this - the list is applied to test-requirements.txt in %prep.
+
+diff -ur a/oslo-utils/python-oslo-utils.spec b/oslo-utils/python-oslo-utils.spec
+--- a/python-oslo-utils.spec	2026-09-28 17:10:58.093140565 +0000
++++ b/python-oslo-utils.spec	2026-09-28 17:20:03.724438915 +0000
+@@ -8,7 +8,7 @@
+ %{?dlrn: %global tarsources oslo.utils}
+ %{!?dlrn: %global tarsources oslo_utils}
+ # we are excluding some BRs from automatic generator
+-%global excluded_brs doc8 bandit pre-commit hacking flake8-import-order
++%global excluded_brs tzdata doc8 bandit pre-commit hacking flake8-import-order
+ # Exclude sphinx from BRs if docs are disabled
+ %if ! 0%{?with_doc}
+ %global excluded_brs %{excluded_brs} sphinx openstackdocstheme

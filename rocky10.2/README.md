@@ -388,9 +388,120 @@ x86_64 is the official target architecture for Rocky 10.2, matching Ubuntu
 26.04, which is already verified on two GCE x86_64 machines up to guest boot and
 cross-node Geneve traffic.
 
-The aarch64 work in §0–§3 is reused as **investigation and spec repair**: the
-seven patches in `./spec-patches`, `gazpacho.manifest`, and the knowledge of
-which 33 libraries are still missing. None of the aarch64 RPMs is shipped or
-treated as evidence for x86_64.
+The aarch64 work in §0–§3 is reused as **investigation and spec repair**. None
+of the aarch64 RPMs is shipped or treated as evidence for x86_64.
 
-**Status: not started.** This section is filled in as the x86_64 build runs.
+### 8.1 Where it was built, and why not locally
+
+On a GCE `n2-standard-4` running the stock Rocky Linux 10 x86_64 image
+(Rocky 10.2, Python 3.12.14), created for this and deleted afterwards. Building
+locally would have meant qemu emulation of x86_64 on an Apple Silicon host for
+60-odd packages, which is the wrong tool for a build this size. Cost of the
+builder: about **$0.40**.
+
+Everything was built with `--nocheck`. The test suites here reach 121 166 tests
+(os-ken) and 21 189 (neutron); re-running them on a second architecture proves
+little about `noarch` Python and costs hours. **So for x86_64 the honest claim
+is "builds", not "passes its tests"** — §3.7 records which suites did run, on
+aarch64.
+
+### 8.2 Result: 182 RPMs, 61 packages, one release
+
+All five core services and every OpenStack library they need:
+
+```
+keystone 29.1.0   glance 32.0.0   placement 15.0.0   neutron 28.0.2   nova 33.0.2
+```
+
+plus 56 libraries and clients at their exact 2026.1 upper-constraints versions.
+Horizon is deliberately not built (§3.5).
+
+### 8.3 The gate: a clean install from one release
+
+This is the measurement that decides whether a real host can be attempted.
+Against a clean `--installroot`, with **RDO's OpenStack component repositories
+disabled** so nothing can silently fall back to a trunk snapshot:
+
+```
+Install 710 Packages
+
+  307 baseos          Rocky 10.2
+  224 appstream       Rocky 10.2
+   88 hagistack-epoxy our 2026.1 build
+   47 epel            EPEL 10
+   36 delorean-master-testing   third-party Python libs, NOT OpenStack
+    3 crb / 3 nfv-ovs / 2 storage
+```
+
+**Every OpenStack package came from the 2026.1 repository**, with three
+deliberate exceptions, none of which is a release mixture:
+
+* `python3-cliff 4.13.3` and `python3-requestsexceptions 1.4.0` come from
+  **EPEL 10** at exactly the versions 2026.1 pins. A released distribution
+  repository carrying the right version is better than building it again.
+* `openstack-network-scripts` is a CentOS network-scripts compatibility package,
+  not an OpenStack release component.
+
+The 36 packages from `delorean-master-testing` are third-party Python libraries
+that neither Rocky nor EPEL package — `eventlet`, `httplib2`, `retrying`,
+`flask-restful`, `pysaml2` and similar. That repository is RDO's **dependency**
+tree, not its OpenStack component tree, so using it mixes no releases. Removing
+it entirely is not possible today: without it, keystone, glance, neutron and
+nova are all unsatisfiable.
+
+### 8.4 What the x86_64 build taught that aarch64 had not
+
+Five more spec defects, all in `./spec-patches`:
+
+* **`oslo.cache`, `oslo.privsep`** — PEP 625 again, this time in the metadata
+  directory: the build writes `oslo_cache-4.1.1.dist-info` while the spec
+  packages `oslo.cache-…`. `oslo.privsep`'s wildcard does not save it, because
+  the wildcard is only on the version.
+* **`oslo.utils`, `tooz`** — build dependencies that only exist in
+  `test-requirements.txt` and that EL10 does not package at all (`tzdata`,
+  `kubernetes`, `python-consul2`, `sherlock`, `sysv-ipc`). Added to each spec's
+  own `excluded_brs`, the mechanism it already uses for this.
+* **`cliff`** — 4.13.3 still ships `cliff/tests` in the sdist but no longer
+  installs them into the wheel, so the `-tests` subpackage cannot be built.
+* **`tooz`** — three separate faults in one spec, the last of which is the one
+  that mattered: `Requires: python3-tooz+zake`, for an extras subpackage whose
+  extra upstream deleted. That single line made `python3-tooz` uninstallable and
+  was the last thing standing between the build and a clean install.
+
+And one class of defect was **removed from the patch set entirely**. The PEP 625
+unpack-directory problem (`cd os_traits-3.6.0` where the spec says
+`os-traits-3.6.0`) hit six packages. Rather than six near-identical patches,
+`build-rpms.sh` now reads the top-level directory out of the tarball and points
+`%autosetup -n` at it. On the x86_64 run it corrected five specs by itself:
+
+```
+%autosetup -n set to the tarball's actual directory: tooz-8.1.0 (spec said %{pypi_name}-%{upstream_version})
+%autosetup -n set to the tarball's actual directory: osc_lib-4.4.0 (spec said %{library}-%{upstream_version})
+…
+```
+
+### 8.5 How each API has to be started on 2026.1 — read from the RPMs
+
+Not inferred: this is `rpm -qlp` on the packages that were actually built.
+
+| Service | What the RPM ships | Usable on 2026.1? |
+|---|---|---|
+| keystone | `/usr/share/keystone/uwsgi-keystone.conf` only — a template, not installed into `conf.d` | **No unit, no vhost.** The shell must write an httpd vhost at `keystone/wsgi/api.py` |
+| glance | `/usr/bin/glance-wsgi-api`, `openstack-glance-api.service` | **Yes** — glance kept a real daemon, so the unit works as-is |
+| placement | `/etc/httpd/conf.d/00-placement-api.conf` | **Yes, after our patch** retargets it from the removed `/usr/bin/placement-api` to the module |
+| neutron | `neutron-rpc-server.service`, `neutron-ovn-metadata-agent.service` | RPC and metadata units work. **There is no API unit or vhost at all** — the shell must write one at `neutron/wsgi/api.py` |
+| nova API | `openstack-nova-api.service`, `openstack-nova-metadata-api.service`, `openstack-nova-os-compute-api.service` | **All three are dead** — every `ExecStart` names a binary 33.0.2 no longer builds. The shell must write httpd vhosts at `nova/wsgi/osapi_compute.py` and `nova/wsgi/metadata.py` and leave these units disabled |
+| nova compute/scheduler/conductor | real units | **Yes** |
+
+This is the same division Ubuntu 26.04 already uses, so the Ubuntu shell's
+Apache handling carries over — with EL names (`httpd`, `/etc/httpd/conf.d`) and
+one extra job: on Ubuntu the packages enable their own vhosts, and here nothing
+does.
+
+### 8.6 Not done
+
+* **Nothing has been installed or started on a real host.** §8.3 is a dependency
+  resolution, not a deployment. No service has answered a request.
+* **`%check` was not run on x86_64** for any package.
+* **Horizon** is still blocked (§3.5) and is not in the 182.
+* There is still **no `hagistack` shell** in this directory.

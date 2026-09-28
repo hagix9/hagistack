@@ -213,19 +213,39 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
     # manifest names the key per package, and it is checked by fingerprint.
     local keyid keysha
     keyid="$(grep -m1 -E '^%global[[:space:]]+sources_gpg_sign' "$SPECS/$specfile" | awk '{print $3}')"
-    [ -n "$keyid" ] || die "$specfile does not declare %global sources_gpg_sign"
-    if [ -n "$wantkey" ] && [ "$wantkey" != "-" ] && [ "$wantkey" != "$keyid" ]; then
-        sed -i -E "s|^(%global[[:space:]]+sources_gpg_sign[[:space:]]+).*|\\1$wantkey|" "$SPECS/$specfile"
-        ok "signing key retargeted: spec said ${keyid:0:14}…, this release was signed by ${wantkey:0:14}…"
-        keyid="$wantkey"
-    fi
-    keysha="$(awk -v k="$keyid" '$1=="KEY" && $2==k {print $3}' "$MANIFEST" | head -1)"
-    [ -n "$keysha" ] || die "the spec verifies against signing key $keyid, which the manifest does not pin.
+    if [ -z "$keyid" ]; then
+        # Not every RDO spec verifies the upstream signature. That is the spec's
+        # choice and not a failure here, but it does mean this tarball is trusted
+        # on its sha256 alone — so say so rather than letting it pass quietly.
+        printf '  NOTE  %s performs no GPG verification; this tarball is pinned by sha256 only\n' "$specfile"
+    else
+        if [ -n "$wantkey" ] && [ "$wantkey" != "-" ] && [ "$wantkey" != "$keyid" ]; then
+            sed -i -E "s|^(%global[[:space:]]+sources_gpg_sign[[:space:]]+).*|\\1$wantkey|" "$SPECS/$specfile"
+            ok "signing key retargeted: spec said ${keyid:0:14}…, this release was signed by ${wantkey:0:14}…"
+            keyid="$wantkey"
+        fi
+        keysha="$(awk -v k="$keyid" '$1=="KEY" && $2==k {print $3}' "$MANIFEST" | head -1)"
+        [ -n "$keysha" ] || die "the spec verifies against signing key $keyid, which the manifest does not pin.
      Add a line:  KEY $keyid <sha256>
      after checking the key yourself. Nothing unpinned is fetched."
-    fetch_pinned "$KEY_BASE/$keyid.txt" "$SRC/$keyid.txt" "$keysha"
+        fetch_pinned "$KEY_BASE/$keyid.txt" "$SRC/$keyid.txt" "$keysha"
+    fi
 
     local spec="$SPECS/$specfile"
+    # PEP 625 renamed the sdists, and with them the directory they unpack into:
+    # os_traits-3.6.0/ where the spec still says os-traits-3.6.0. Six packages hit
+    # this. Rather than six near-identical patches, take the top-level directory
+    # from the tarball itself and point %autosetup at it. Deterministic, and the
+    # log says when it changed anything.
+    local topdir cur
+    topdir="$(tar tzf "$SRC/$wantname" 2>/dev/null | head -1 | cut -d/ -f1)"
+    cur="$(grep -m1 -E '^%autosetup +-n ' "$SPECS/$specfile" | awk '{print $3}')"
+    if [ -n "$topdir" ] && [ -n "$cur" ]; then
+        sed -i -E "0,/^(%autosetup +-n +)[^ ]+/s//\\1$topdir/" "$SPECS/$specfile"
+        local now; now="$(grep -m1 -E '^%autosetup +-n ' "$SPECS/$specfile" | awk '{print $3}')"
+        [ "$now" = "$cur" ] || ok "%autosetup -n set to the tarball's actual directory: $topdir (spec said $cur)"
+    fi
+
     say "$pkg — build dependencies"
     sudo dnf -y builddep "$spec" > "$LOGDIR/$pkg.builddep.log" 2>&1
     printf '  static builddep exit=%s\n' "$?"

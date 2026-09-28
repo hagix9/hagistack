@@ -39,6 +39,9 @@ KEY 0x4c29ff0e437f3351fd82bdf47c5a3bc787dc7035 af5132b373e8ffa33ea2938b24c78d485
 KEY 0x2ef3fe0ec2b075ab7458b5f8b702b20b13df2318 a4f619daa6f2f0d47c611fabc489cf634e55d2386bb4f92d2929d2c8aafef53e
 KEY 0xc71b007ef97887fd8fb6365ceb4fd6d618e62181 d0ab8b2f991ceb09d6fe495007f63d9a6923f0d312d6a7d3df457acf4cb51108
 KEY 0x22284f69d9eccdf3df7819791c711af193ff8e54 56ae1e9ba54e609920e3c7e92740e2f3b0f93fe7e4cc4fa1b0e6440682229997
+KEY 0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363 ab466df791c8867583c80bbd551d3b3e38ed846fc0069d0ae4e05e32e7ded563
+KEY 0x815afec729392386480e076dcc0dfe2d21c023c9 428437853c204259edb8ee99ed248750cdb0b22fdf22b520e976365611966f21
+KEY 0xa7475c5f2122fec3f90343223fe3bf5aad1080e4 c0fb2667eca4a9d44a1cec674c77b419ff686b5dfac351dcfd3b2741847b974d
 #
 # fields: package  distgit-repo  distgit-commit  spec-file  version  release  tarball  tarball-sha256  url-project  signing-key
 #
@@ -102,3 +105,24 @@ osprofiler             osprofiler-distgit         2e594a302a616598d029f2c7b645cf
 pycadf                 pycadf-distgit             1d68d456afad3a83cfcb1b26171726ffcc1d058c python-pycadf.spec             4.0.1    1 pycadf-4.0.1.tar.gz                b015f1e4cfb6bd968bb8e23f903593328f0d82e1922902447197f4862f259d2f pycadf                 0x22284f69d9eccdf3df7819791c711af193ff8e54
 taskflow               taskflow-distgit           fea0c42cb89be611dbf54ba7d5459d10b6474208 python-taskflow.spec           6.2.0    1 taskflow-6.2.0.tar.gz              0a7584444da6e808582d67e70f3bd166a766a17f1aa010796e0c56b4df735f7c taskflow               0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 tooz                   tooz-distgit               4357bf8faaaa8f5568a51990b248bafaecad234a python-tooz.spec               8.1.0    1 tooz-8.1.0.tar.gz                  80876d8722b52eb9eff92565abb925fd6e59eb581820e6b4739ff4aa18476bda tooz                   0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+#
+# --- the OpenStack clients and small libraries the five services pull in ------
+# Found by installing the five services into a clean --installroot and listing
+# every package whose release was an RDO trunk snapshot (-0.20250903.hash).
+# Without these the install resolves but is a mixture of releases.
+#
+automaton              automaton-distgit          eb61f1fe1848acb2649cd09b99c5296ba339a9f2 python-automaton.spec          3.3.0    1 automaton-3.3.0.tar.gz             d73cf7ba6da43ef2adf75c49dad334fd24116ceea0dd4e6ba1e720740439a293 automaton              0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+barbicanclient         barbicanclient-distgit     b131623733dd4b981ff85384aaab496e84f3e7be python-barbicanclient.spec     7.3.0    1 python_barbicanclient-7.3.0.tar.gz f3930b7b30bce774c77b85f49dbb36bdce7cb783b3b6c6779244775e4e113da6 python-barbicanclient  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cinderclient           cinderclient-distgit       1b68970d1ab81de485cbd33d52d3435ad6e236b0 python-cinderclient.spec       9.9.0    1 python_cinderclient-9.9.0.tar.gz   697e4d12c249f39b41ecf4fa6fcb8c38cbf2d6b2d84d6f515ed567b82dcd0bd1 python-cinderclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cliff                  cliff-distgit              14519e2d9d432f4ade0ebf7a35f2c317bb4f3cd6 python-cliff.spec              4.13.3   1 cliff-4.13.3.tar.gz                5b77f5db16c963dceecd1600d4d74d889a1921e3f1ec0439bdebc91d7f1338dc cliff                  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cursive                cursive-distgit            7105226f8e2e4320d39adf31afeb5294d972a3f6 python-cursive.spec            0.2.3    1 cursive-0.2.3.tar.gz               f435f6cdbe6a517f054c1105c36e436d7868124f1b227d310fe809d918a8c10c cursive                0xa7475c5f2122fec3f90343223fe3bf5aad1080e4
+designateclient        designateclient-distgit    c29be26b624cd6d2052894a8bc8961b7cc27da9e python-designateclient.spec    6.4.0    1 python_designateclient-6.4.0.tar.gz bb49cf1a090e01288d93b966643333833e3417040c06f463ffe3c9e66b10ad48 python-designateclient 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+glanceclient           glanceclient-distgit       7d336e960bef1ccbde69f148802c9518da799281 python-glanceclient.spec       4.11.0   1 python_glanceclient-4.11.0.tar.gz  5ce2118bfe7462934805916617e537bc5b00fd4cab3fb7bb88a4f9253970562d python-glanceclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+keystoneclient         keystoneclient-distgit     cb2b7684f95e95ed9ae189c5f406e159cae5db5f python-keystoneclient.spec     5.8.0    1 python_keystoneclient-5.8.0.tar.gz 3ca87c67c404298ce862310b569f545a58acf75cd5685094c82f35320b3a355d python-keystoneclient  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutronclient          neutronclient-distgit      f259ab2e31530c54f330a90b153fd39d3804a313 python-neutronclient.spec      11.8.0   1 python_neutronclient-11.8.0.tar.gz 6ea711eb88fcde47523250ac829cb9b9da8bc0bf2dd0205add4e1c9a4cce0515 python-neutronclient   0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+novaclient             novaclient-distgit         c4a86fd5d951bbf90976306e815bdf52edea9031 python-novaclient.spec         18.12.0  1 python_novaclient-18.12.0.tar.gz   ead3db2a3dd43a89bb5a56f62f87362a76e7ef9c01938699ff6c1a060f0e9eab python-novaclient      0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+osc-lib                osc-lib-distgit            458eb84df4537b0312ec1ac574dcd2514c699b01 python-osc-lib.spec            4.4.0    1 osc_lib-4.4.0.tar.gz               6a615d744f03fba513d92eb4760a9cd5baa96e3d8530611fe53b217062bf317e osc-lib                0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-client-config       os-client-config-distgit   710b29da292f9d99991be86303004786ce93fdaf python-os-client-config.spec   2.3.0    1 os_client_config-2.3.0.tar.gz      e16a260f2fd500af14f157b9b7b7d69292ce83b0f8a461ec68ce6a8a42967cbd os-client-config       0xc71b007ef97887fd8fb6365ceb4fd6d618e62181
+oslo-metrics           oslo-metrics-distgit       55b70d7db34590d7881baeda9573e48749f95a1f python-oslo-metrics.spec       0.15.1   1 oslo_metrics-0.15.1.tar.gz         d70a5cdaee963eb9ed9071936ce732866baa3725c3d245df9a58cbf1e7243790 oslo.metrics           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+requestsexceptions     requestsexceptions-distgit 19b76e755acb8ecc4c2e5807851cc7cfe5fd2c1a python-requestsexceptions.spec 1.4.0    1 requestsexceptions-1.4.0.tar.gz    b095cbc77618f066d459a02b137b020c37da9f46d9b057704019c9f77dba3065 requestsexceptions     0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363
+wsme                   wsme-distgit               93ceebf281683ea65785d306b9d72ef96e02dc52 python-wsme.spec               0.12.1   1 WSME-0.12.1.tar.gz                 9c049f64c2abb14b702635c70fb16ad89f9e046789c61c7c41ee0deadf29a10d wsme                   0x815afec729392386480e076dcc0dfe2d21c023c9
