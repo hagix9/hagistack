@@ -1849,6 +1849,20 @@ phase_neutron() {
     ini_set "$ML2_CONF" ovn ovn_metadata_enabled true && changed=1
 
     ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$MGMT_IP" && changed=1
+    # The agent spawns haproxy inside the ovnmeta namespace through a root
+    # helper. Unset, oslo defaults it to plain `sudo`, and the sudoers rule EL
+    # ships only covers neutron-rootwrap — so the spawn fails with
+    #   sudo: a terminal is required to read the password
+    # the namespace is created but nothing listens in it, and the only visible
+    # symptom is a guest that cannot reach 169.254.169.254.
+    # These live in [AGENT], not [DEFAULT] — neutron registers them under that
+    # group. Put in the wrong section they are read as the built-in default
+    # `sudo`, which is exactly the failure they are meant to prevent, and the
+    # config file looks correct while nothing changes.
+    ini_set "$OVN_META_CONF" AGENT root_helper \
+        "sudo neutron-rootwrap /etc/neutron/rootwrap.conf" && changed=1
+    ini_set "$OVN_META_CONF" AGENT root_helper_daemon \
+        "sudo neutron-rootwrap-daemon /etc/neutron/rootwrap.conf" && changed=1
     ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
     # The OVN metadata agent runs as `neutron` and /var/run/openvswitch/db.sock
     # is srwxr-x--- root:root, so the unix socket gives
@@ -2116,8 +2130,22 @@ phase_bootstrap_resources() {
     fi
     openstack_admin router set --external-gateway hagistack-provider hagistack-router >/dev/null 2>&1 || true
 
-    bs_secgroup_rule "ssh"  --proto tcp --dst-port 22 default
-    bs_secgroup_rule "icmp" --proto icmp default
+    # "default" is not a unique name: every project has one, so once the service
+    # project exists `openstack security group rule create ... default` fails
+    # with "More than one SecurityGroup exists with the name 'default'". Resolve
+    # the admin project's group by id instead.
+    local admin_project sg
+    admin_project="$(openstack_admin project show admin -f value -c id 2>/dev/null || true)"
+    if [ -n "$admin_project" ]; then
+        sg="$(openstack_admin security group list --project "$admin_project" -f value -c ID -c Name 2>/dev/null \
+              | awk '$2=="default"{print $1; exit}')"
+    fi
+    if [ -n "${sg:-}" ]; then
+        bs_secgroup_rule "ssh"  --proto tcp --dst-port 22 "$sg"
+        bs_secgroup_rule "icmp" --proto icmp "$sg"
+    else
+        log_warn "could not resolve the admin project's default security group; rules not added"
+    fi
 
     if openstack_admin keypair show hagistack-key >/dev/null 2>&1; then
         log_ok "keypair hagistack-key already exists — left untouched"
@@ -2193,6 +2221,20 @@ phase_compute_metadata() {
     log_step "OVN metadata agent on this node"
     local changed=0
     ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$CONTROLLER_IP" && changed=1
+    # The agent spawns haproxy inside the ovnmeta namespace through a root
+    # helper. Unset, oslo defaults it to plain `sudo`, and the sudoers rule EL
+    # ships only covers neutron-rootwrap — so the spawn fails with
+    #   sudo: a terminal is required to read the password
+    # the namespace is created but nothing listens in it, and the only visible
+    # symptom is a guest that cannot reach 169.254.169.254.
+    # These live in [AGENT], not [DEFAULT] — neutron registers them under that
+    # group. Put in the wrong section they are read as the built-in default
+    # `sudo`, which is exactly the failure they are meant to prevent, and the
+    # config file looks correct while nothing changes.
+    ini_set "$OVN_META_CONF" AGENT root_helper \
+        "sudo neutron-rootwrap /etc/neutron/rootwrap.conf" && changed=1
+    ini_set "$OVN_META_CONF" AGENT root_helper_daemon \
+        "sudo neutron-rootwrap-daemon /etc/neutron/rootwrap.conf" && changed=1
     ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
     # The OVN metadata agent runs as `neutron` and /var/run/openvswitch/db.sock
     # is srwxr-x--- root:root, so the unix socket gives
