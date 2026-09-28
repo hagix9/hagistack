@@ -676,40 +676,107 @@ SELINUX_ACTION="not-examined"
 
 phase_selinux() {
     log_step "SELinux"
+    SELINUX_ACTION="not-examined"
     if ! have getenforce; then
-        SELINUX_ACTION="absent"; log_ok "SELinux tools are not installed; nothing to do"
+        _selinux_record "absent"
+        log_ok "SELinux tools are not installed; nothing to do"
         return 0
     fi
     local mode; mode="$(getenforce 2>/dev/null || echo Disabled)"
     log_info "current mode: $mode"
+
+    # Disabled is NOT the configuration this demo was verified in, and it is not
+    # the same thing as permissive: with SELinux disabled there is no policy
+    # loaded at all, nothing is labelled, and turning it back on later needs a
+    # full relabel. Say so rather than letting it pass as "fine".
     if [ "$mode" = "Disabled" ]; then
-        SELINUX_ACTION="disabled-already"; log_ok "SELinux is disabled on this host"
+        _selinux_record "disabled-by-host"
+        log_warn "SELinux is DISABLED on this host."
+        log_warn "  That is not the configuration this shell was verified in. The demo scope"
+        log_warn "  is SELinux PERMISSIVE: policy loaded, decisions logged, nothing denied."
+        log_warn "  Disabled means no policy is loaded and nothing is labelled, so re-enabling"
+        log_warn "  it later requires a full filesystem relabel. Reported, not corrected."
         return 0
     fi
 
+    # If the policy RDO ships for exactly this is reachable, use it and keep
+    # enforcing. It is not, in a single-release repository — but check, because
+    # the day it is, relaxing enforcement would be the wrong answer.
     if $SUDO dnf -q list --available openstack-selinux >/dev/null 2>&1; then
         log_info "openstack-selinux is available; installing the policy rather than relaxing enforcement"
-        $SUDO dnf -y install -q openstack-selinux >/dev/null 2>&1 \
-            && { SELINUX_ACTION="policy-installed"; log_ok "openstack-selinux installed; SELinux left enforcing"; return 0; }
+        if $SUDO dnf -y install -q openstack-selinux >/dev/null 2>&1; then
+            local after; after="$(getenforce 2>/dev/null || echo unknown)"
+            _selinux_record "policy-installed"
+            log_ok "openstack-selinux installed; SELinux is $after"
+            return 0
+        fi
+        log_warn "openstack-selinux is listed but did not install; falling back to permissive"
     fi
 
-    have setsebool && $SUDO setsebool -P httpd_can_network_connect on 2>/dev/null \
-        && log_ok "httpd_can_network_connect=on (every API vhost needs it)"
-
-    if [ "$mode" = "Enforcing" ]; then
-        $SUDO setenforce 0 2>/dev/null || true
-        $SUDO sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
-        SELINUX_ACTION="permissive"
-        log_warn "SELinux has been set to PERMISSIVE, and this is a real gap."
-        log_warn "  openstack-selinux — the policy RDO ships for exactly this — is only"
-        log_warn "  published in RDO's OpenStack component repositories, which this shell"
-        log_warn "  does not enable because they carry trunk libraries. Until that policy"
-        log_warn "  is built from source too, this host runs OpenStack unconfined."
-        log_warn "  Recorded as an open item, not as a supported configuration."
-    else
-        SELINUX_ACTION="permissive-already"; log_ok "SELinux was already permissive"
+    if have setsebool; then
+        if $SUDO setsebool -P httpd_can_network_connect on 2>/dev/null; then
+            log_ok "httpd_can_network_connect=on (every API vhost needs it)"
+        else
+            log_warn "could not set httpd_can_network_connect; continuing to permissive anyway"
+        fi
     fi
+
+    if [ "$mode" = "Permissive" ]; then
+        _selinux_persist_permissive
+        _selinux_record "permissive"
+        log_ok "SELinux already permissive; persistent configuration confirmed"
+        _selinux_warn_scope
+        return 0
+    fi
+
+    # Enforcing -> permissive. Every step is checked, because a silent failure
+    # here produces a host that is still enforcing while the run reports
+    # "permissive", and the next thing to break is something unrelated-looking.
+    $SUDO setenforce 0 \
+        || die "setenforce 0 failed. SELinux is still $(getenforce 2>/dev/null).
+     This shell's verified scope is SELinux permissive, so it stops here rather
+     than continuing into failures that will look like OpenStack bugs."
+    local now; now="$(getenforce 2>/dev/null || echo unknown)"
+    [ "$now" = "Permissive" ] \
+        || die "setenforce 0 reported success but getenforce says '$now'.
+     Refusing to continue: the runtime mode is not what was asked for."
+    log_ok "runtime mode is now Permissive (verified with getenforce)"
+    _selinux_persist_permissive
+    _selinux_record "permissive"
+    _selinux_warn_scope
     return 0
+}
+
+# Make the mode survive a reboot, and verify the file says what we think.
+_selinux_persist_permissive() {
+    local cfg=/etc/selinux/config
+    if [ ! -f "$cfg" ]; then
+        log_warn "$cfg does not exist; the permissive mode will not survive a reboot"
+        return 0
+    fi
+    $SUDO sed -i -E 's/^[[:space:]]*SELINUX=.*/SELINUX=permissive/' "$cfg" \
+        || die "could not write $cfg"
+    $SUDO grep -qx 'SELINUX=permissive' "$cfg" \
+        || die "wrote $cfg but it does not contain 'SELINUX=permissive'.
+     Current setting: $($SUDO grep -E '^[[:space:]]*SELINUX=' "$cfg" | head -1)
+     Refusing to report a persistent change that did not happen."
+    log_ok "$cfg set to SELINUX=permissive (verified by reading it back)"
+}
+
+# Persist what we did so `status` can report it on a later invocation, instead
+# of always printing the initial value of a shell variable.
+_selinux_record() {
+    SELINUX_ACTION="$1"
+    $SUDO mkdir -p "$STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$1" | $SUDO tee "$STATE_DIR/selinux.action" >/dev/null 2>&1 || true
+}
+
+_selinux_warn_scope() {
+    log_warn "SELinux is PERMISSIVE, and that is this demo's stated scope — not a"
+    log_warn "  supported production configuration. openstack-selinux, the policy RDO"
+    log_warn "  ships for exactly this, is published only in RDO's OpenStack component"
+    log_warn "  repositories, which this shell refuses to enable because they carry"
+    log_warn "  trunk libraries. Enforcing mode is out of scope and untested here."
 }
 
 # ---------------------------------------------------------------------------
@@ -2267,8 +2334,12 @@ print_banner() {
     fi
     echo
     echo " $TARGET_RELEASE on $TARGET_OS"
-    [ "$SELINUX_ACTION" = "permissive" ] && \
-      printf ' %sSELinux is PERMISSIVE%s — openstack-selinux is not available in a\n single-release repository. Recorded as an open item.\n' "$C_YEL" "$C_RESET"
+    case "$SELINUX_ACTION" in
+      permissive)
+        printf ' %sSELinux is PERMISSIVE%s (verified with getenforce) — the stated scope of\n this demo. Enforcing is out of scope; openstack-selinux is not available\n in a single-release repository.\n' "$C_YEL" "$C_RESET" ;;
+      disabled-by-host)
+        printf ' %sSELinux is DISABLED on this host%s — NOT the configuration this shell was\n verified in, and not the same as permissive. Reported, not corrected.\n' "$C_YEL" "$C_RESET" ;;
+    esac
     echo
     if [ "$SUBCOMMAND" = "all-in-one" ]; then
         echo " Credentials: $HAGISTACK_ETC/admin-openrc (mode 0600)"
@@ -2358,7 +2429,15 @@ cmd_status() {
     echo "  stage        : $HAGISTACK_STAGE"
     echo "  target       : $TARGET_RELEASE on $TARGET_OS"
     echo "  unverified   : $UNVERIFIED_ITEMS"
-    echo "  selinux      : $(have getenforce && getenforce || echo n/a) (hagistack action: $SELINUX_ACTION)"
+    local sel_now sel_cfg sel_act
+    sel_now="$(have getenforce && getenforce 2>/dev/null || echo n/a)"
+    sel_cfg="$($SUDO grep -hE '^[[:space:]]*SELINUX=' /etc/selinux/config 2>/dev/null | head -1 | cut -d= -f2)"
+    sel_act="$($SUDO cat "$STATE_DIR/selinux.action" 2>/dev/null || echo not-examined)"
+    echo "  selinux      : now=$sel_now  on-boot=${sel_cfg:-unknown}  (hagistack action: $sel_act)"
+    case "$sel_now" in
+      Disabled) echo "                 NOTE: Disabled is NOT the verified configuration; the demo scope is Permissive" ;;
+      Enforcing) echo "                 NOTE: enforcing is out of scope here and untested" ;;
+    esac
     echo "  phases done  :"
     $SUDO ls "$STATE_DIR" 2>/dev/null | sed 's/\.done$//; s/^/    /' || echo "    (none)"
     echo "  services     :"

@@ -1,20 +1,41 @@
 # Rocky Linux 10.2 + OpenStack 2026.1 Gazpacho
 
-**Status: NOT IMPLEMENTED.** There is no `hagistack` shell in this directory.
-This document does not say "Rocky is supported", and it does not call anything
-"2026.1 support" that is not built from 2026.1.
+**Status: IMPLEMENTED and VERIFIED ON HARDWARE, within a stated scope.**
+`./hagistack` installs OpenStack 2026.1 Gazpacho on Rocky Linux 10.2 x86_64 and
+has been run on GCE: `all-in-one` on one node, `compute-add` on a second, guests
+ACTIVE on both, cloud-init completed, and cross-node traffic captured on the
+Geneve tunnel. §9 has the evidence and §9.5 has what is still missing.
 
-**The target is 2026.1 Gazpacho on x86_64** — the same OpenStack release, and
-the same architecture, as the Ubuntu 26.04 shell that is already verified on two
-GCE machines. The 2025.1 Epoxy build described in §4 is kept as a research
-record; it is **not** the deliverable and no Epoxy shell will be written.
+**The scope this was verified in, stated once so nothing below has to be
+guessed at:**
 
-> **About the RPMs described below.** Every result in §0–§3 was produced on an
-> **aarch64** builder, because that is what was available locally. Those RPMs are
-> `noarch`, and the spec defects they uncovered are architecture-independent and
-> carry over directly — that is what they are for. **They are not evidence that
-> the x86_64 build works**, and they are not the deliverable. The x86_64 build is
-> tracked separately in §8.
+| | |
+|---|---|
+| architecture | **x86_64** only |
+| OpenStack | **2026.1 Gazpacho**, one release, built from the released tarballs |
+| SELinux | **permissive** — policy loaded, decisions logged, nothing denied. **Enforcing is out of scope and untested.** `Disabled` is a different thing again and is *not* this configuration; the shell reports it as such rather than treating it as equivalent |
+| dashboard | see §10 |
+| network | tenant and east-west only; `br-ex` has no NIC on GCE, so no physical-LAN path was exercised |
+
+**How to read this document.** It grew as an investigation and it is kept that
+way on purpose, because the wrong turns are the useful part:
+
+* **§0–§7 are a research record**, and they are written in the present tense of
+  the day they were made. They describe an **aarch64** builder, the 2025.1 Epoxy
+  detour, and a period when nothing was implemented. Where they say "not
+  implemented" or "there is no shell here", that was true then and is **not true
+  now**. They are retained because they contain the measurements — which specs
+  are broken and why — that the working build is made of.
+* **§8 is the x86_64 build** that is actually shipped.
+* **§9 is the hardware acceptance**, and it is the current statement of what
+  works.
+* **§10 is Horizon**, tracked separately.
+
+> **About the RPMs in §0–§3.** They were produced on an **aarch64** builder,
+> because that is what was available locally. They are `noarch` and the spec
+> defects they uncovered are architecture-independent and carry over directly —
+> that is what they were for. **They are not evidence that the x86_64 build
+> works**, and they are not what is shipped.
 
 ---
 
@@ -311,7 +332,11 @@ That is §3.6 demonstrated rather than argued.
 
 ---
 
-## 5. Why there is still no `hagistack` here, and what would change it
+## 5. Why there was still no `hagistack` here — as of the 2026-09-28 research pass
+
+> **Superseded.** This section records the state before the shell existed. Four
+> of its five blockers were cleared on 2026-09-29 (§8, §9). What remains of it
+> is item 1 — Horizon — which is tracked in §10.
 
 **Not** "the parts do not exist", and **not** "it does not build". These:
 
@@ -504,7 +529,8 @@ does.
   resolution, not a deployment. No service has answered a request.
 * **`%check` was not run on x86_64** for any package.
 * **Horizon** is still blocked (§3.5) and is not in the 182.
-* There is still **no `hagistack` shell** in this directory.
+* There is still **no `hagistack` shell** in this directory. *(True when §8.6
+  was written; the shell landed the same day — see §9.)*
 
 ---
 
@@ -522,7 +548,7 @@ Six things are kept apart on purpose, because they are six different claims:
 | **dependency resolution** | `dnf install --assumeno` resolved 710 packages (§8.3) — a dry run, and labelled as one |
 | **real install** | **`dnf install` exit 0, "Complete!", 992 packages on the host** |
 | **API response** | every service answered a **token-authenticated** call |
-| **guest boot** | **ACTIVE in 18 s on both nodes, cloud-init completed** |
+| **guest boot** | **node1 ACTIVE in 18 s, node2 ACTIVE in 12 s**; cloud-init completed on node1 |
 
 ### 9.1 Environment and cost
 
