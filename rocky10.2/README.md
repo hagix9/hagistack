@@ -3,6 +3,13 @@
 **Status: NOT IMPLEMENTED. There is no `hagistack` shell in this directory, and
 this document does not say "Rocky is supported".**
 
+**Update 2026-09-28.** The RDO EL10 build failures were diagnosed from their own
+logs (§1.6) and are ordinary packaging debt, not EL10 incompatibility — and one
+core service, `openstack-keystone 27.0.0`, was **built from source on Rocky
+Linux 10.2** with every input pinned and GPG-verified (§1.7). What blocks a
+Rocky build is now a single, sharp question: **which OpenStack release** (§1.8).
+Still not implemented, and still not called supported.
+
 What it does say is more precise than the previous verdict, and it corrects part
 of it. The earlier research (`../HAGISTACK_RENEWAL_RESEARCH_2026-09-26.md` §
 "Rocky Linux 10.2") concluded **NO-GO for a direct build from distributed RPMs**,
@@ -150,9 +157,129 @@ Keystone is served).
 
 ---
 
+## 1.6 Why RDO's EL10 builds fail — read from the build logs
+
+The 2026-09-27 pass treated "the core packages FAILED to build" as a fact to
+route around. On 2026-09-28 the actual `rpmbuild.log` files were read
+(`trunk.rdoproject.org/centos10-master/component/<c>/<hash>/rpmbuild.log`), and
+**not one of the failures is an EL10 incompatibility**. There are two causes,
+both ordinary packaging debt:
+
+### Cause A — the spec patches a file upstream deleted
+
+`openstack-keystone`, `openstack-heat` and `openstack-trove-ui` all die in
+`%prep`:
+
+```
++ sed -i s#/local/bin#/bin# httpd/wsgi-keystone.conf
+sed: can't read httpd/wsgi-keystone.conf: No such file or directory
+error: Bad exit status from /var/tmp/rpm-tmp.0ih6aa (%prep)
+```
+
+The spec — at **both** `rpm-master` and `epoxy-rdo` — runs
+`sed -i 's#/local/bin#/bin#' httpd/wsgi-keystone.conf`. Upstream keystone
+stopped shipping that file after 27.x. Checked directly against opendev:
+
+| keystone ref | `httpd/wsgi-keystone.conf` |
+|---|---|
+| tag `27.0.0` | **HTTP 200** — present |
+| tag `29.0.0` | HTTP 404 — gone |
+| branch `master` | HTTP 404 — gone |
+
+That is why the newest EL10 keystone anyone can install is **27.1.0**: it is the
+last version where the spec still matches upstream. The fix is one line in a
+spec file.
+
+### Cause B — missing BuildRequires on RDO's own Python libraries
+
+```
+nova     : No matching package to install: 'python3dist(os-traits) >= 3.6'
+                                           'python3dist(oslo-limit) >= 2.9.2'
+                                           'python3dist(oslo-service) >= 4.5'
+glance   : No matching package to install: 'python3dist(glance-store) >= 5.3'
+neutron  : No matching package to install: 'python3dist(neutron-lib) >= 4'
+                                           'python3dist(os-ken) >= 4.1.1'
+                                           'python3dist(oslo-policy) >= 5'
+                                           'python3dist(ovsdbapp) >= 2.17'
+           -> Not all dependencies satisfied / Some packages could not be found.
+```
+
+Every one of those is an OpenStack library that RDO itself builds. The core
+services are simply ahead of the libraries in the same repository. This is a
+build-ordering problem inside RDO's chain, not a platform problem.
+
+**So "EL10 does not work" was never the right conclusion. "Nobody is keeping the
+EL10 build green" is.**
+
+## 1.7 A core service, built from one release, on Rocky 10.2 — done
+
+The smallest useful proof: take one core service, build it from a **single**
+OpenStack release with every input pinned, on Rocky Linux 10.2.
+
+`build-keystone-epoxy.sh` in this directory does it and is re-runnable. Result:
+
+```
+openstack-keystone-27.0.0-1.el10.noarch.rpm        8783a27640c5ccb3…
+python3-keystone-27.0.0-1.el10.noarch.rpm          91353e173f9df5c9…
+python3-keystone+ldap-27.0.0-1.el10.noarch.rpm     e09d81cb9acddb22…
+python3-keystone-tests-27.0.0-1.el10.noarch.rpm    c5a36a7ef291df03…
+```
+
+Inputs, all pinned and all fetched over https:
+
+| Input | Source | sha256 (first 16) |
+|---|---|---|
+| spec | `rdo-packages/keystone-distgit` branch `epoxy-rdo` | `0185ee6f527ab5dc…` |
+| tarball | `tarballs.openstack.org/keystone/keystone-27.0.0.tar.gz` (1 770 055 B) | `8f9462fcbe98e3d5…` |
+| signature | same URL `+ .asc` | `327e654324ee7fba…` |
+| signing key | `releases.openstack.org/_static/0x22284f69…txt` | `56ae1e9ba54e6099…` |
+
+**The spec verifies the upstream GPG signature in `%prep`** — `%{gpgverify}
+--keyring=%{SOURCE102} --signature=%{SOURCE101} --data=%{SOURCE0}` — so the
+chain is signed, not merely checksummed. A third party can re-run the script and
+get the same RPMs.
+
+Two things worth recording:
+
+* **Build environment**: Rocky Linux 10.2, Python 3.12.13, in a local VM. The
+  builder was **aarch64**; every RPM produced is `noarch`, so the output is
+  architecture-independent. An x86_64 builder was not used and the x86_64 path
+  is therefore not separately proven.
+* **One gap the automation had to fill**: `%install` runs
+  `python3 setup.py compile_catalog`, which needs Babel registered as a
+  setuptools command. `python3-babel` is pulled in by neither the static nor the
+  dynamic `builddep` pass, so it is installed explicitly. Without it the build
+  ends with `error: invalid command 'compile_catalog'`.
+
+Build dependencies resolved cleanly — `dnf builddep` exit 0, zero unsatisfied —
+from Rocky 10.2 BaseOS/AppStream/CRB + EPEL 10 + the RDO EL10 deps repository.
+
+## 1.8 The release question, which is now the whole problem
+
+`rdo-packages` distgit has release branches up to **`epoxy-rdo` (2025.1)** and
+nothing after it — no `flamingo-rdo` (2025.2), no `gazpacho-rdo` (2026.1). Only
+`rpm-master` continues, and that is the trunk whose builds are broken above.
+
+So the three candidate paths for Rocky 10.2 are:
+
+| Path | Packaging exists? | State |
+|---|---|---|
+| **2025.1 Epoxy**, self-built on EL10 from `epoxy-rdo` | **yes** | one core service **proven to build** (§1.7). The rest is the same work repeated. |
+| **master** from RDO's centos10-master | yes, and pre-built | broken (§1.6), three-cycle mixture, hash-pinned URLs |
+| **2026.1 Gazpacho** — the release Ubuntu 26.04 ships | **no, nowhere** | every spec would have to be branched and updated first |
+
+**This is a scope decision, not a technical one, and it is not ours to make
+silently.** Ubuntu 26.04 gives 2026.1. The realistic Rocky 10.2 path gives
+**2025.1** — one year older — and costs a build pipeline. Making Rocky match
+Ubuntu means creating 2026.1 packaging that does not exist anywhere today.
+
 ## 2. Why it is still not implemented
 
 Not "the parts are missing". These four:
+
+These reasons apply to **RDO's pre-built centos10-master**, which is what §1.3
+describes. They do NOT apply to the self-built 2025.1 path of §1.7, whose only
+open question is the release choice in §1.8.
 
 1. **It is not a release.** Three OpenStack cycles mixed (§1.3). Nobody tests
    keystone 2025.1 with nova 2025.2 and glance 2026.1. A bug found there is a
@@ -195,11 +322,13 @@ Stated so that nobody mistakes this for a complete survey:
   EPEL 10, but nothing here evaluates building the services from source — and
   the non-Python parts (OVS, OVN, libvirt integration, SELinux policy) are the
   hard part, not the Python.
-* **Building our own RPMs from the RDO SRPMs.** The SRPMs are present
-  (`openstack-keystone-…el10.src.rpm` and friends). Whether the *failed* builds
-  fail for a fixable reason was not examined — that is the single most
-  informative unknown left, because if they build, the release-coherence problem
-  largely goes away.
+* ~~**Building our own RPMs from the RDO SRPMs.**~~ **Done on 2026-09-28** —
+  see §1.6 for why the RDO builds fail and §1.7 for a core service built from
+  source. What remains unexamined is the *rest* of the set: glance, neutron,
+  nova, placement and horizon were not built, and the libraries those need
+  (`os-traits`, `oslo-limit`, `oslo-service`, `glance-store`, `neutron-lib`,
+  `os-ken`, `oslo-policy`, `ovsdbapp`) were not built either. Keystone is the
+  easiest of them; nothing here shows the others are as easy.
 * **Containers (Kolla/podified).** Out of scope by the project's own constraint:
   this repository builds with plain Bash on the host.
 * **Whether the resolved 704-package set actually runs.** Only keystone was
@@ -245,6 +374,7 @@ carries over unchanged — only the packaging layer differs.
 |---|---|
 | `README.md` | this document |
 | `probe-repos.sh` | re-runs every availability check in §1 and prints a verdict line per condition in §4. Read-only: it fetches HTTP listings and repository metadata and installs nothing |
+| `build-keystone-epoxy.sh` | builds `openstack-keystone 27.0.0` (2025.1 Epoxy) on Rocky Linux 10.2 from the `epoxy-rdo` spec and the signed upstream tarball, with every input pinned. This is the §1.7 proof, re-runnable. It installs build dependencies, so run it in a throwaway VM or container, not on a host you care about. |
 
 `probe-repos.sh` needs only `curl`; the `dnf` checks run if `dnf` is present
 (i.e. on an EL host) and are skipped with a note otherwise.

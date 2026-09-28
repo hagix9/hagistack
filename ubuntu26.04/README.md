@@ -19,7 +19,7 @@ report **two different things**, and never merge them:
 | Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
 | Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
 | Implemented | **everything below.** Neither `all-in-one` nor `compute-add` has a stub left |
-| **Verified on hardware** | **nothing.** No Ubuntu 26.04 host and no GCE VM has ever run this |
+| **Verified on hardware** | **partly.** Two GCE VMs on 2026-09-28 — see `GCE_ACCEPTANCE_2026-09-28.md`. Most of it passed; **guest boot still fails** |
 
 **Implemented**
 
@@ -44,11 +44,36 @@ report **two different things**, and never merge them:
   `nova-compute` and the OVN metadata agent, with the credentials delivered
   explicitly and no database access at all
 
-**Not verified — these are the GCE acceptance items**
+**Verified on two GCE VMs, 2026-09-28**
 
-Logging in to Horizon. Booting a guest. `compute-add` reaching Placement. A
-second node's OVN chassis appearing. Geneve between two nodes. Any path onto a
-physical LAN. Service startup and unit ordering under systemd.
+Nested virtualisation and `virt_type=kvm`; 17 systemd units active; authenticated
+Keystone, Neutron and Nova APIs; cells v2; Placement resource providers with
+inventory on both nodes; every initial resource; **a real Horizon login** (302 →
+session cookie → authenticated pages rendering `admin`, not merely a 200 on the
+login form); `compute-add` on a second node with credentials delivered and no
+database or admin password; **two OVN chassis** and a **Geneve tunnel** between
+them; and re-run safety — a second `all-in-one` exited 0 changing nothing and
+restarting nothing.
+
+That run found **ten defects**, nine fixed here. Among them: memcached serving
+an address it had not been configured with, every packaged unit still running
+the stock configuration because the package started it first, Horizon 500ing on
+a stale offline manifest, `NoValidHost` because nova-scheduler caches the cell
+list thirteen seconds before the cell exists, os_vif unable to reach the local
+OVSDB, Neutron unable to tell Nova a VIF was plugged, and Keystone exhausting
+its SQLAlchemy pool — which the step 4 notes had blamed on disk pressure and
+which turned out to have nothing to do with disk.
+
+**Still failing, and still honest about it**
+
+**Guest boot.** It gets as far as: scheduled, libvirt domain created and paused,
+OVN claims the port and marks it up, Neutron posts `os-server-external-events`
+and Nova answers 200 — and the instance still reaches ERROR after 252 s with
+`VirtualInterfaceCreateException`. Nothing downstream of that has run, so
+**cloud-init is untested** and **Geneve has carried zero packets** (the tunnel
+exists with the right endpoints; `tcpdump` on udp/6081 saw nothing, because
+there was no guest to generate traffic). No path onto a physical LAN was
+attempted; it is out of scope.
 
 So after `all-in-one` finishes you have a host on which every OpenStack service
 this project targets has been installed, configured and, as far as one machine

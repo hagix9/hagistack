@@ -47,10 +47,10 @@ PENDING_PHASES=""
 # What has actually been observed working on a real machine. Kept as a separate
 # string from IMPLEMENTED_PHASES on purpose: `status`, `--help` and the closing
 # banner all print both, and they must never be collapsed into one claim.
-VERIFIED_ON_HARDWARE="none — no Ubuntu 26.04 host and no GCE VM has ever run this"
+VERIFIED_ON_HARDWARE="partly, on two GCE VMs 2026-09-28: Horizon login, cells v2, Placement, compute-add, OVN chassis and re-run safety PASSED; guest boot FAILED"
 # The specific behaviours a container cannot settle. Printed verbatim wherever
 # the shell reports what it did, so that no reader has to infer it.
-UNVERIFIED_ITEMS="Horizon login; guest boot; compute-add Placement registration; OVN chassis; node-to-node Geneve; any physical-LAN path"
+UNVERIFIED_ITEMS="guest boot (FAILS: VIF plug times out); Geneve carrying traffic (tunnel exists, 0 packets); cloud-init; any physical-LAN path"
 
 # ---------------------------------------------------------------------------
 # paths
@@ -574,6 +574,83 @@ _preflight_host() {
 
 }
 
+# Start a unit, or RESTART it when the configuration it reads is newer than the
+# running process.
+#
+# Measured on a GCE Ubuntu 26.04 host, and invisible in a container because a
+# container has no systemd: every one of these packages starts its unit at
+# install time, which is BEFORE hagistack writes any configuration —
+#   memcached, glance-api, neutron-rpc-server, neutron-periodic-workers,
+#   neutron-ovn-metadata-agent, nova-conductor, nova-scheduler, nova-compute.
+# `systemctl enable --now` is a no-op on an already-active unit, so the daemon
+# keeps running on the stock configuration (sqlite, 127.0.0.1) while the file on
+# disk says otherwise, and `systemctl is-active` cheerfully reports success.
+#
+# Comparing the unit's start time with the mtime of the files it reads is what
+# makes this self-correcting: ini_set only rewrites a file when its content
+# actually changes, so an unchanged re-run restarts nothing.
+_unit_started_epoch() {
+    local t; t="$($SUDO systemctl show -p ExecMainStartTimestamp --value "$1" 2>/dev/null || true)"
+    [ -n "$t" ] || return 1
+    date -d "$t" +%s 2>/dev/null || return 1
+}
+
+_newest_mtime() {
+    local f newest=0 m
+    for f in "$@"; do
+        $SUDO test -f "$f" || continue
+        m="$($SUDO stat -c %Y "$f" 2>/dev/null || echo 0)"
+        [ "$m" -gt "$newest" ] && newest="$m"
+    done
+    printf '%s\n' "$newest"
+}
+
+# Wait, bounded, for something to become true.
+#
+# `systemctl restart` returns as soon as the unit is active, which is seconds
+# before the socket is listening. Probing immediately after a restart is a race,
+# and on GCE it lost: memcached, glance-api and the Apache vhosts were each
+# reported as "active but not answering" while they were simply still starting.
+# Nothing here waits forever — that is the point of the bound.
+wait_for() {   # wait_for <seconds> <what> <command...>
+    local limit="$1" what="$2"; shift 2
+    local waited=0
+    while : ; do
+        if "$@"; then
+            [ "$waited" -gt 0 ] && log_info "$what became ready after ${waited}s"
+            return 0
+        fi
+        [ "$waited" -lt "$limit" ] || return 1
+        sleep 2; waited=$((waited + 2))
+    done
+}
+
+service_apply() {   # service_apply <unit> <config-file>...
+    local unit="$1"; shift
+    if [ "$HAS_SYSTEMD" -ne 1 ]; then
+        service_start_enable "$unit"
+        return 0
+    fi
+    $SUDO systemctl enable "$unit" >/dev/null 2>&1 || true
+    if ! service_active "$unit"; then
+        service_start_enable "$unit"
+        return 0
+    fi
+    local started conf
+    started="$(_unit_started_epoch "$unit" || echo 0)"
+    conf="$(_newest_mtime "$@")"
+    if [ "${conf:-0}" -gt "${started:-0}" ]; then
+        $SUDO systemctl restart "$unit" \
+            || die "$unit failed to restart after its configuration changed"
+        log_ok "$unit restarted (its configuration is newer than the running process)"
+        SERVICE_START_METHOD[$unit]="systemd (restarted)"
+    else
+        log_ok "$unit already running with the current configuration"
+        SERVICE_START_METHOD[$unit]="systemd"
+    fi
+    return 0
+}
+
 phase_preflight() {
     log_step "preflight"
     _preflight_host
@@ -837,6 +914,34 @@ service_active() {
 # share this one server. Overridable for a constrained host.
 MYSQL_MAX_CONNECTIONS="${HAGISTACK_MYSQL_MAX_CONNECTIONS:-1024}"
 
+# Each service's SQLAlchemy pool, per WSGI process. The oslo.db defaults are
+# max_pool_size=5 with max_overflow=50, and Keystone exhausted exactly that on a
+# GCE host after about forty minutes of ordinary use:
+#
+#   sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 50 reached,
+#   connection timed out, timeout 30.00
+#
+# after which POST /v3/auth/tokens answered 500 and every other service's API
+# answered 500 or 503 behind it, because they all validate tokens against
+# Keystone. Restarting apache2 cleared it until the next time.
+#
+# The step 4 write-up guessed this was disk pressure. It was not: when this was
+# reproduced the host had 53 GB free, MariaDB was at 338 of 1024 connections and
+# Aborted_connects was 0. The SERVER had plenty of room; the per-process POOL
+# did not. So the pool is sized explicitly rather than left at a default that is
+# smaller than the number of workers in front of it.
+DB_MAX_POOL_SIZE="${HAGISTACK_DB_MAX_POOL_SIZE:-25}"
+DB_MAX_OVERFLOW="${HAGISTACK_DB_MAX_OVERFLOW:-50}"
+
+# Apply the pool settings to a service configuration file.
+write_db_pool() {   # write_db_pool <conf> [section]
+    local conf="$1" sec="${2:-database}"
+    ini_set "$conf" "$sec" max_pool_size "$DB_MAX_POOL_SIZE"    >/dev/null || true
+    ini_set "$conf" "$sec" max_overflow  "$DB_MAX_OVERFLOW"     >/dev/null || true
+    ini_set "$conf" "$sec" pool_timeout  30                     >/dev/null || true
+    return 0
+}
+
 mysql_root() { $SUDO mariadb -uroot "$@"; }
 
 # Reachability probes are bounded. `rabbitmqctl status` in particular can sit
@@ -952,24 +1057,53 @@ phase_rabbitmq() {
 # ---------------------------------------------------------------------------
 # memcached
 # ---------------------------------------------------------------------------
+MEMCACHED_CONF="/etc/memcached.conf"
+
 phase_memcached() {
     log_step "cache (memcached)"
     # Listen on the management IP for Keystone/Horizon, never on 0.0.0.0.
-    if [ -f /etc/memcached.conf ]; then
-        if $SUDO grep -qE "^-l $MGMT_IP\$" /etc/memcached.conf; then
+    #
+    # /etc/memcached.conf is NOT a dpkg conffile on Ubuntu 26.04: `dpkg -S` finds
+    # no owner. The package ships /usr/share/memcached/memcached.conf.default and
+    # its postinst copies it into place, and the default carries TWO -l lines
+    # (127.0.0.1 and ::1). A blanket `sed -E s/^-l .*/-l $MGMT_IP/` therefore
+    # rewrote BOTH and left the same address listed twice — measured on GCE.
+    # Every -l line is replaced by exactly one, in the first one's place.
+    if $SUDO test -f "$MEMCACHED_CONF"; then
+        local tmp; tmp="$(mktemp)"
+        $SUDO cat "$MEMCACHED_CONF" | awk -v ip="$MGMT_IP" '
+            /^[[:space:]]*-l[[:space:]]/ { if (!seen) { print "-l " ip; seen=1 } ; next }
+            { print }
+            END { if (!seen) print "-l " ip }' > "$tmp"
+        if $SUDO cmp -s "$tmp" "$MEMCACHED_CONF"; then
             log_ok "memcached already bound to $MGMT_IP (unchanged)"
         else
-            $SUDO sed -i -E "s/^-l .*/-l $MGMT_IP/" /etc/memcached.conf
-            log_ok "memcached bound to $MGMT_IP"
+            $SUDO cp "$tmp" "$MEMCACHED_CONF"
+            log_ok "memcached bound to $MGMT_IP (exactly one -l line; the package ships two)"
         fi
-    fi
-    service_start_enable memcached
-    if service_active memcached; then
-        log_ok "memcached active"
-        phase_mark_done memcached
+        rm -f "$tmp"
     else
-        note_skip memcached "service is not running (start method: ${SERVICE_START_METHOD[memcached]})."
+        log_warn "$MEMCACHED_CONF does not exist; memcached keeps its built-in defaults"
     fi
+    service_apply memcached "$MEMCACHED_CONF"
+    if ! service_active memcached; then
+        note_skip memcached "service is not running (start method: ${SERVICE_START_METHOD[memcached]})."
+        return 0
+    fi
+    # `is-active` is not the question. The question is whether the cache is
+    # listening where it was configured to listen, which is what every other
+    # phase depends on.
+    if ! wait_for 60 "memcached" memcached_reachable; then
+        note_skip memcached "memcached is active but is not answering on ${MGMT_IP}:11211.
+     An active unit is not a listening cache: the package starts memcached at
+     install time, before this configuration exists, so a stale process can be
+     serving 127.0.0.1 while the file on disk says otherwise.
+     Check:  ss -lntp | grep 11211
+             systemctl restart memcached"
+        return 0
+    fi
+    log_ok "memcached answering on ${MGMT_IP}:11211"
+    phase_mark_done memcached
 }
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1190,7 @@ served by apache2 + mod_wsgi (no keystone systemd unit exists on Ubuntu)"
     local conn="mysql+pymysql://keystone:${KEYSTONE_DB_PASS}@127.0.0.1/keystone?charset=utf8mb4"
     local changed=0
     ini_set "$KEYSTONE_CONF" database   connection "$conn"       && changed=1
+    write_db_pool "$KEYSTONE_CONF"
     ini_set "$KEYSTONE_CONF" token      provider   fernet        && changed=1
     ini_set "$KEYSTONE_CONF" credential provider   fernet        && changed=1
     if [ "$changed" -eq 1 ]; then
@@ -1182,7 +1317,7 @@ served by apache2 + mod_wsgi (no keystone systemd unit exists on Ubuntu)"
         return 0
     fi
 
-    if ! keystone_serving; then
+    if ! wait_for 60 "the identity endpoint" keystone_serving; then
         note_skip keystone "apache2 is active but http://${MGMT_IP}:5000/v3 did not answer."
         return 0
     fi
@@ -1411,6 +1546,7 @@ served by glance-api.service (its own unit; Glance has no Apache vhost)"
     local changed=0
     ini_set "$GLANCE_CONF" database connection \
         "mysql+pymysql://glance:${GLANCE_DB_PASS}@127.0.0.1/glance?charset=utf8mb4" && changed=1
+    write_db_pool "$GLANCE_CONF"
     ini_set "$GLANCE_CONF" DEFAULT bind_host        "$MGMT_IP"       && changed=1
     ini_set "$GLANCE_CONF" DEFAULT bind_port        "$GLANCE_PORT"   && changed=1
     ini_set "$GLANCE_CONF" DEFAULT enabled_backends "file:file"      && changed=1
@@ -1459,23 +1595,21 @@ served by glance-api.service (its own unit; Glance has no Apache vhost)"
     ks_ensure_endpoint glance admin    "$url"
 
     # --- run it --------------------------------------------------------------
-    if [ "$HAS_SYSTEMD" -eq 1 ] && service_active glance-api; then
-        $SUDO systemctl restart glance-api || die "glance-api failed to restart"
-        log_ok "glance-api restarted"
-    else
-        service_start_enable glance-api
-    fi
+    # glance-api is started by its own package at install time, i.e. before the
+    # configuration above existed; service_apply restarts it only when the file
+    # it reads is newer than the running process.
+    service_apply glance-api "$GLANCE_CONF"
     if ! service_active glance-api; then
         note_skip glance "glance-api is not running, so the image API is not being served.
      The schema, configuration and identity registration ARE in place.
      Startup under systemd is a GCE acceptance item (B0a/B0b)."
         return 0
     fi
-    if ! glance_serving; then
+    if ! wait_for 90 "the image API" glance_serving; then
         note_skip glance "glance-api is active but http://${MGMT_IP}:${GLANCE_PORT}/ did not answer."
         return 0
     fi
-    if ! openstack_admin image list >/dev/null 2>&1; then
+    if ! wait_for 60 "an authenticated image list" openstack_admin image list >/dev/null 2>&1; then
         note_skip glance "the image endpoint answers but 'openstack image list' failed as admin."
         return 0
     fi
@@ -1542,6 +1676,7 @@ served by apache2 + mod_wsgi on :${PLACEMENT_PORT} (no placement systemd unit ex
     local changed=0
     ini_set "$PLACEMENT_CONF" placement_database connection \
         "mysql+pymysql://placement:${PLACEMENT_DB_PASS}@127.0.0.1/placement?charset=utf8mb4" && changed=1
+    write_db_pool "$PLACEMENT_CONF" placement_database
     ini_set "$PLACEMENT_CONF" api auth_strategy keystone && changed=1
     write_authtoken "$PLACEMENT_CONF" placement "$PLACEMENT_SERVICE_PASS"
     if [ "$changed" -eq 1 ]; then
@@ -1598,11 +1733,11 @@ served by apache2 + mod_wsgi on :${PLACEMENT_PORT} (no placement systemd unit ex
      Startup under systemd is a GCE acceptance item (B0a/B0b)."
         return 0
     fi
-    if ! placement_serving; then
+    if ! wait_for 60 "the placement endpoint" placement_serving; then
         note_skip placement "apache2 is active but http://${MGMT_IP}:${PLACEMENT_PORT}/ did not answer."
         return 0
     fi
-    if ! placement_api_authenticated; then
+    if ! wait_for 60 "an authenticated placement request" placement_api_authenticated; then
         note_skip placement "the placement endpoint answers but an authenticated request failed."
         return 0
     fi
@@ -1657,6 +1792,20 @@ placement_api_authenticated() {
 # ---------------------------------------------------------------------------
 OVN_NB_PORT=6641
 OVN_SB_PORT=6642
+# The local Open vSwitch database. Ubuntu's openvswitch-switch listens only on
+# this unix socket, which is srwxr-x--- root:root — the `nova` user cannot open
+# it. os_vif, which plugs each instance's tap device, defaults to
+# tcp:127.0.0.1:6640, and nothing listens there either. Both measured on a GCE
+# host, where every guest build failed with
+#   ERROR os_vif Exception: Could not retrieve schema from tcp:127.0.0.1:6640
+# and, after pointing it at the socket instead,
+#   ERROR ovsdbapp ... Unable to open stream to unix:/var/run/openvswitch/db.sock
+# So the OVN phase asks ovsdb-server for a LOOPBACK-ONLY manager and os_vif is
+# pointed at that. No port becomes reachable off the host, and the setting lives
+# in the OVSDB, so it survives a restart of the daemon.
+OVS_DB_SOCK="/var/run/openvswitch/db.sock"
+OVS_MANAGER="ptcp:6640:127.0.0.1"
+OVS_DB_TCP="tcp:127.0.0.1:6640"
 
 ovs_vsctl() { _probe ovs-vsctl "$@"; }
 ovn_nbctl()  { _probe ovn-nbctl "$@"; }
@@ -1741,6 +1890,17 @@ ovn $(dpkg-query -W -f='${Version}' ovn-central 2>/dev/null || echo '?')"
     else
         ovn_sbctl set-connection "$want_sb" || die "could not set the OVN southbound listener"
         log_ok "OVN southbound listener set to $want_sb (reachable by future compute nodes)"
+    fi
+
+    # --- local ovsdb manager, for os_vif ------------------------------------
+    local have_mgr
+    have_mgr="$(ovs_vsctl --bare --columns=target list manager 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ "$have_mgr" = "$OVS_MANAGER" ]; then
+        log_ok "Open vSwitch manager already $OVS_MANAGER"
+    else
+        ovs_vsctl set-manager "$OVS_MANAGER" \
+            || die "could not set the Open vSwitch manager to $OVS_MANAGER"
+        log_ok "Open vSwitch manager set to $OVS_MANAGER (loopback only; os_vif needs it)"
     fi
 
     # --- provider bridge: created, but deliberately left empty -------------
@@ -1874,7 +2034,21 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
         "rabbit://openstack:${RABBIT_PASS}@${MGMT_IP}:5672/"                && changed=1
     ini_set "$NEUTRON_CONF" database connection \
         "mysql+pymysql://neutron:${NEUTRON_DB_PASS}@127.0.0.1/neutron?charset=utf8mb4" && changed=1
+    write_db_pool "$NEUTRON_CONF"
     write_authtoken "$NEUTRON_CONF" neutron "$NEUTRON_SERVICE_PASS"
+    # Neutron has to call Nova back. When a port becomes ACTIVE it posts
+    # os-server-external-events (network-vif-plugged) to the compute API, and
+    # Nova blocks the instance in BUILD until that arrives.
+    #
+    # The packaged neutron.conf ships an EMPTY [nova] section — comments only —
+    # so without this Neutron has no credentials to make that call, Nova waits
+    # out [DEFAULT] vif_plugging_timeout (300s by default) and the build dies:
+    #   nova.exception.VirtualInterfaceCreateException: Virtual Interface
+    #   creation failed
+    # Measured on a GCE host: the domain was created and paused, ovn-controller
+    # claimed the logical port and set it up in the southbound database, and the
+    # instance still went to ERROR after 252 seconds because nobody told Nova.
+    write_service_auth "$NEUTRON_CONF" nova nova "$NOVA_SERVICE_PASS"
 
     # --- ml2_conf.ini --------------------------------------------------------
     # geneve for tenant networks; flat AND vlan offered on the provider physnet
@@ -1898,7 +2072,7 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
     ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$MGMT_IP"          && changed=1
     ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret \
         "$METADATA_PROXY_SECRET"                                            && changed=1
-    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:/var/run/openvswitch/db.sock" && changed=1
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:$OVS_DB_SOCK" && changed=1
     ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${MGMT_IP}:${OVN_SB_PORT}" && changed=1
 
     if [ "$changed" -eq 1 ]; then
@@ -1956,7 +2130,10 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
             service_start_enable apache2
         fi
         local u
-        for u in $NEUTRON_UNITS; do service_start_enable "$u"; done
+        # Same trap as glance: these three are started by their packages before
+        # neutron.conf and ml2_conf.ini exist, so they would otherwise keep
+        # running on the stock sqlite configuration.
+        for u in $NEUTRON_UNITS; do service_apply "$u" "$NEUTRON_CONF" "$ML2_CONF" "$OVN_META_CONF"; done
     else
         log_warn "systemd is not running here; the neutron units cannot be started"
         for u in $NEUTRON_UNITS; do SERVICE_START_METHOD[$u]="not-started-no-systemd"; done
@@ -1968,11 +2145,11 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
      Startup under systemd is a GCE acceptance item (B0a/B0b)."
         return 0
     fi
-    if ! neutron_serving; then
+    if ! wait_for 60 "the networking API" neutron_serving; then
         note_skip neutron "apache2 is active but http://${MGMT_IP}:${NEUTRON_PORT}/ did not answer."
         return 0
     fi
-    if ! openstack_admin network list >/dev/null 2>&1; then
+    if ! wait_for 60 "an authenticated network list" openstack_admin network list >/dev/null 2>&1; then
         note_skip neutron "the networking endpoint answers but 'openstack network list' failed as admin."
         return 0
     fi
@@ -2120,6 +2297,8 @@ API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nov
         "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova_api?charset=utf8mb4" && changed=1
     ini_set "$NOVA_CONF" database connection \
         "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova?charset=utf8mb4"     && changed=1
+    write_db_pool "$NOVA_CONF"
+    write_db_pool "$NOVA_CONF" api_database
     write_authtoken "$NOVA_CONF" nova "$NOVA_SERVICE_PASS"
     # nova's own service token, used when it calls glance/neutron/placement
     write_service_auth "$NOVA_CONF" service_user nova "$NOVA_SERVICE_PASS"
@@ -2136,6 +2315,11 @@ API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nov
     ini_set "$NOVA_CONF" vnc server_listen "$MGMT_IP"                        && changed=1
     ini_set "$NOVA_CONF" vnc server_proxyclient_address "$MGMT_IP"           && changed=1
     ini_set "$NOVA_CONF" oslo_concurrency lock_path /var/lib/nova/tmp        && changed=1
+    # A compute node that joins later still has to be mapped into a cell. Doing
+    # it on a timer means `compute-add` does not depend on someone remembering
+    # to run `discover-hosts` by hand — that command stays, because waiting five
+    # minutes to find out whether a node joined is not a diagnosis.
+    ini_set "$NOVA_CONF" scheduler discover_hosts_in_cells_interval 300       && changed=1
     if [ "$changed" -eq 1 ]; then
         log_ok "nova.conf configured (credentials not shown)"
     else
@@ -2182,9 +2366,11 @@ API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nov
 
     # cell1 is created only when it is absent: create_cell would otherwise add a
     # second mapping, and an existing cell is never deleted or rewritten.
+    local cell_created=0
     if nova_cell_exists cell1; then
         log_ok "cell 'cell1' already mapped — left untouched"
     else
+        cell_created=1
         if ! _nova_manage_or_skip "cell_v2 create_cell" cell_v2 create_cell --name cell1; then
             rm -f "$nerr"; note_skip nova "cell1 could not be created."; return 0
         fi
@@ -2214,7 +2400,26 @@ API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nov
             service_start_enable apache2
         fi
         local u
-        for u in $NOVA_UNITS; do service_start_enable "$u"; done
+        for u in $NOVA_UNITS; do service_apply "$u" "$NOVA_CONF"; done
+        # nova-scheduler reads the list of cells ONCE, at startup, and caches it.
+        # Creating a cell is not a change to any file, so service_apply above has
+        # nothing to notice and leaves the process running with the cell list it
+        # had. Measured on a GCE host: the scheduler started at 21:21:31 and
+        # cell1 was created at 21:21:44 — thirteen seconds later — after which
+        # every boot failed with
+        #   WARNING nova.scheduler.host_manager ... No cells were found
+        #   INFO nova.filters ... Filter ComputeFilter returned 0 hosts
+        #   NoValidHost: There are not enough hosts available.
+        # on a cloud where the hypervisor was up, registered, and reporting a
+        # full inventory to Placement. So the restart is driven by the cell
+        # having changed, not by a file mtime.
+        if [ "$cell_created" -eq 1 ]; then
+            log_info "a cell mapping was created in this run; restarting the scheduler so it sees it"
+            for u in $NOVA_UNITS; do
+                $SUDO systemctl restart "$u" || die "$u failed to restart after a cell was created"
+            done
+            log_ok "scheduler and conductor restarted with the new cell list"
+        fi
     else
         log_warn "systemd is not running here; the nova units cannot be started"
         for u in $NOVA_UNITS; do SERVICE_START_METHOD[$u]="not-started-no-systemd"; done
@@ -2226,11 +2431,11 @@ API via apache2 on :${NOVA_API_PORT}, metadata on :${NOVA_METADATA_PORT} (no nov
      Startup under systemd is a GCE acceptance item (B0a/B0b)."
         return 0
     fi
-    if ! nova_api_serving; then
+    if ! wait_for 60 "the compute API" nova_api_serving; then
         note_skip nova "apache2 is active but http://${MGMT_IP}:${NOVA_API_PORT}/ did not answer."
         return 0
     fi
-    if ! openstack_admin compute service list >/dev/null 2>&1; then
+    if ! wait_for 90 "an authenticated compute service list" openstack_admin compute service list >/dev/null 2>&1; then
         note_skip nova "the compute endpoint answers but 'openstack compute service list' failed.
      conductor and scheduler need RabbitMQ and the cell databases to be reachable."
         return 0
@@ -2267,6 +2472,16 @@ phase_nova_compute() {
     # It goes into nova-compute.conf, which is the file the packaged init script
     # passes with --config-file in addition to nova.conf.
     local changed=0
+    # os_vif plugs the instance's tap device into Open vSwitch, and it looks for
+    # the LOCAL ovsdb at its own default, tcp:127.0.0.1:6640. Ubuntu's
+    # openvswitch-switch does not listen on TCP at all — only on the unix socket
+    # — so every guest build died in os_vif with
+    #   Exception: Could not retrieve schema from tcp:127.0.0.1:6640
+    # and Nova reported "Exhausted all hosts available for retrying build
+    # failures". Measured on a GCE host; a container never gets this far.
+    # Pointing os_vif at the socket is better than opening a TCP listener: it
+    # adds no reachable port.
+    ini_set "$NOVA_CONF" os_vif_ovs ovsdb_connection "$OVS_DB_TCP"            && changed=1
     ini_set "$NOVA_COMPUTE_CONF" DEFAULT compute_driver libvirt.LibvirtDriver && changed=1
     ini_set "$NOVA_COMPUTE_CONF" libvirt virt_type "$VIRT_TYPE"               && changed=1
     if [ "$VIRT_TYPE" = "qemu" ]; then
@@ -2287,7 +2502,9 @@ phase_nova_compute() {
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         service_start_enable libvirtd
         local u
-        for u in $NOVA_COMPUTE_UNITS; do service_start_enable "$u"; done
+        for u in $NOVA_COMPUTE_UNITS; do
+            service_apply "$u" "$NOVA_CONF" "$NOVA_COMPUTE_CONF"
+        done
     else
         log_warn "systemd is not running here; libvirtd and nova-compute cannot be started"
         log_warn "  -> a hypervisor cannot be registered, and no guest can be booted"
@@ -2400,6 +2617,38 @@ except Exception as exc:                      # noqa: BLE001 - reported, not rai
 PYEOF
 }
 
+# Rebuild the dashboard's static assets and its OFFLINE compression manifest.
+#
+# The packaged settings set COMPRESS_OFFLINE = True, and the package's postinst
+# generated that manifest BEFORE hagistack's settings snippet existed. Any
+# settings change that reaches a template invalidates it, and Horizon then
+# answers every request with HTTP 500 and
+#   OfflineGenerationError: You have offline compression enabled but key
+#   ... is missing from offline manifest
+# — measured on a GCE host. A full $HORIZON_STATIC is therefore no evidence of
+# anything: it can be full of assets built for someone else's settings.
+horizon_build_assets() {
+    log_info "regenerating static assets (collectstatic + compress --force; takes a few minutes)"
+    local aerr; aerr="$(mktemp)"; chmod 0600 "$aerr"
+    if ! $SUDO python3 "$HORIZON_MANAGE" collectstatic --noinput >"$aerr" 2>&1; then
+        log_error "collectstatic failed:"; tail -8 "$aerr" | sed 's/^/     /' >&2
+        rm -f "$aerr"; return 1
+    fi
+    if ! $SUDO python3 "$HORIZON_MANAGE" compress --force >"$aerr" 2>&1; then
+        log_error "compress --force failed:"; tail -8 "$aerr" | sed 's/^/     /' >&2
+        rm -f "$aerr"; return 1
+    fi
+    rm -f "$aerr"
+    # Match what the package's postinst does, so apache — running as the horizon
+    # user — can still read what root just wrote.
+    $SUDO find "$HORIZON_STATIC" -type f -exec chmod 0644 {} + 2>/dev/null || true
+    $SUDO find "$HORIZON_STATIC" -type d -exec chmod 0755 {} + 2>/dev/null || true
+    $SUDO chown -R horizon:horizon "$HORIZON_STATIC" 2>/dev/null || true
+    $SUDO chmod 0755 /var/lib/openstack-dashboard 2>/dev/null || true
+    log_ok "static assets and offline manifest regenerated"
+    return 0
+}
+
 phase_horizon() {
     log_step "dashboard (Horizon)"
 
@@ -2474,6 +2723,7 @@ SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 # host does not know about (a cloud external IP, an SSH tunnel). Narrow it
 # yourself in /etc/openstack-dashboard/local_settings.py if that suits you.
 SNIPEOF
+    local snippet_changed=0
     if $SUDO cmp -s "$tmp" "$HORIZON_SNIPPET" 2>/dev/null; then
         log_ok "dashboard settings snippet already current (unchanged)"
         rm -f "$tmp"
@@ -2481,6 +2731,7 @@ SNIPEOF
         $SUDO cp "$tmp" "$HORIZON_SNIPPET"
         rm -f "$tmp"
         $SUDO chmod 0644 "$HORIZON_SNIPPET"
+        snippet_changed=1
         log_ok "dashboard settings written to $HORIZON_SNIPPET (the conffile is left alone)"
     fi
 
@@ -2505,19 +2756,20 @@ SNIPEOF
     log_ok "effective settings confirmed from Django: keystone ${MGMT_IP}:5000/v3, cache ${MGMT_IP}:11211"
 
     # --- static assets --------------------------------------------------------
-    # The postinst already ran collectstatic + compress. Re-running them costs
-    # minutes, so it happens only when the output is actually missing.
-    local nstatic
-    nstatic="$($SUDO find "$HORIZON_STATIC" -type f 2>/dev/null | head -1 || true)"
-    if [ -n "$nstatic" ]; then
-        log_ok "static assets present in $HORIZON_STATIC (not regenerated)"
-    else
-        log_info "static assets missing; running collectstatic and compress (slow, once)"
-        $SUDO python3 "$HORIZON_MANAGE" collectstatic --noinput >/dev/null 2>&1 \
-            || note_skip horizon "collectstatic failed; the dashboard would render without CSS."
-        $SUDO python3 "$HORIZON_MANAGE" compress --force >/dev/null 2>&1 \
-            || log_warn "compress failed; COMPRESS_OFFLINE is on, so pages may 500"
-        log_ok "static assets generated"
+    # Built here when this run changed the settings or the output is missing.
+    # That is NOT sufficient on its own — a manifest can be stale from a run
+    # that predates this code — so the outcome is checked below and rebuilt
+    # once more if the dashboard does not actually serve.
+    local need_assets=0
+    [ "$snippet_changed" -eq 1 ] && need_assets=1
+    $SUDO test -d "$HORIZON_STATIC" || need_assets=1
+    [ -n "$($SUDO find "$HORIZON_STATIC" -type f -print -quit 2>/dev/null || true)" ] || need_assets=1
+    if [ "$need_assets" -eq 0 ]; then
+        log_ok "static assets present (whether they match these settings is checked below)"
+    elif ! horizon_build_assets; then
+        note_skip horizon "the static assets could not be built; with COMPRESS_OFFLINE on,
+     every page would answer 500. Nothing is served in that state."
+        return 0
     fi
 
     # The secret key protects every session cookie.
@@ -2541,12 +2793,31 @@ SNIPEOF
         return 0
     fi
 
-    local code; code="$(horizon_login_page_code || true)"
-    if [ "$code" != "200" ]; then
-        note_skip horizon "http://${MGMT_IP}${HORIZON_PATH}/auth/login/ answered '$code', not 200.
-     A 500 usually means COMPRESS_OFFLINE assets are missing; a 404 means the
-     packaged conf-available fragment is not enabled on the port-80 vhost."
-        return 0
+    _horizon_200() { [ "$(horizon_login_page_code || true)" = "200" ]; }
+    local code
+    if ! wait_for 60 "the dashboard login page" _horizon_200; then
+        code="$(horizon_login_page_code || true)"
+        # One bounded recovery attempt. A stale offline manifest is by far the
+        # most common cause of a 500 here, and it can be left behind by a run
+        # that changed the settings without rebuilding — so "the settings did
+        # not change this time" is not a reason to leave it broken.
+        log_warn "the dashboard answered '$code'; rebuilding the offline assets once and retrying"
+        if ! horizon_build_assets; then
+            note_skip horizon "http://${MGMT_IP}${HORIZON_PATH}/auth/login/ answered '$code' and the
+     assets could not be rebuilt."
+            return 0
+        fi
+        if [ "$HAS_SYSTEMD" -eq 1 ] && service_active apache2; then
+            $SUDO systemctl reload-or-restart apache2 || true
+        fi
+        if ! wait_for 90 "the dashboard login page" _horizon_200; then
+            code="$(horizon_login_page_code || true)"
+            note_skip horizon "http://${MGMT_IP}${HORIZON_PATH}/auth/login/ still answered '$code'
+     after rebuilding the assets. A 500 is an application error — read
+     /var/log/apache2/error.log; a 404 means the packaged conf-available
+     fragment is not enabled on the port-80 vhost."
+            return 0
+        fi
     fi
     log_ok "dashboard login page served (HTTP 200) at http://${MGMT_IP}${HORIZON_PATH}/"
     log_warn "a login PAGE is not a login. Signing in as admin has never been tested"
@@ -2597,6 +2868,37 @@ if val is None and isinstance(doc.get("properties"), dict):
     val = doc["properties"].get(key)
 print("" if val is None else val)
 ' "$1"
+}
+
+# Does <router> already have a port on <subnet-id>?
+#
+# Asked as a question about STATE, because the error Neutron returns when the
+# interface is already there does not say so. Measured on a GCE host, re-running
+# `router add subnet` on an attached subnet gives:
+#   BadRequestException: 400 ... Bad router request: Cidr 10.10.10.0/24 of
+#   subnet 6c6758c5-... overlaps with cidr 10.10.10.0/24 of subnet 6c6758c5-...
+# — the subnet reported as overlapping with itself. Matching on "already exists"
+# or 409 never fires for it, so a perfectly good deployment was reported as a
+# failed phase on its second run.
+router_has_subnet() {   # router_has_subnet <router> <subnet-id>
+    openstack_admin port list --router "$1" -f json 2>/dev/null | python3 -c '
+import json, sys
+want = sys.argv[1]
+try:
+    ports = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for port in ports:
+    fixed = port.get("Fixed IP Addresses") or port.get("fixed_ips") or []
+    if isinstance(fixed, dict):
+        fixed = [fixed]
+    for entry in fixed:
+        if isinstance(entry, dict) and entry.get("subnet_id") == want:
+            raise SystemExit(0)
+        if isinstance(entry, str) and want in entry:
+            raise SystemExit(0)
+raise SystemExit(1)
+' "$2"
 }
 
 image_field() {     # image_field <image-name> <key>
@@ -2797,10 +3099,13 @@ phase_bootstrap_resources() {
             log_ok "router '$BS_ROUTER' gateway set to '$BS_PROVIDER_NET'" ;;
         *)  log_ok "router '$BS_ROUTER' already has an external gateway — left unchanged" ;;
     esac
-    local addout
-    if addout="$(openstack_admin router add subnet "$BS_ROUTER" "$BS_TENANT_SUBNET" 2>&1)"; then
+    local addout tsub_id
+    tsub_id="$(openstack_admin subnet show "$BS_TENANT_SUBNET" -f value -c id 2>/dev/null || true)"
+    if [ -n "$tsub_id" ] && router_has_subnet "$BS_ROUTER" "$tsub_id"; then
+        log_ok "tenant subnet already attached to '$BS_ROUTER' (checked by port, not by error text)"
+    elif addout="$(openstack_admin router add subnet "$BS_ROUTER" "$BS_TENANT_SUBNET" 2>&1)"; then
         log_ok "tenant subnet attached to '$BS_ROUTER'"
-    elif grep -qiE 'already has a port|already exist|conflict|409' <<<"$addout"; then
+    elif grep -qiE 'already has a port|already exist|conflict|409|overlaps with cidr' <<<"$addout"; then
         log_ok "tenant subnet already attached to '$BS_ROUTER'"
     else
         log_error "could not attach the tenant subnet to the router:"
@@ -2947,6 +3252,20 @@ phase_compute_secrets() {
     [ "$perm" = "600" ] || die "$SECRETS_FILE has mode $perm; expected 600.
      Fix it with: sudo chmod 600 $SECRETS_FILE"
 
+    # The file is checked before it is sourced. This shell refuses to execute a
+    # config file for exactly this reason, and a credentials file deserves the
+    # same treatment: a stray diagnostic line at the top of it used to surface
+    # as an opaque `syntax error near unexpected token` from /dev/fd/63 instead
+    # of naming the problem.
+    local bad
+    bad="$($SUDO cat "$SECRETS_FILE" | grep -nvE '^[[:space:]]*(#|$)|^[A-Z][A-Z0-9_]*=[A-Za-z0-9._:/@+=-]*$' | head -3 || true)"
+    if [ -n "$bad" ]; then
+        log_error "$SECRETS_FILE contains lines that are not comments or KEY=VALUE:"
+        printf '     %s\n' "$(cut -d: -f1 <<<"$bad" | tr '\n' ' ')" >&2
+        die "refusing to source it. Re-create it on the controller with
+     'sudo ${SELF##*/} compute-secrets > compute-secrets.env' and copy it again;
+     do not edit it by hand and do not let anything else write to that stream."
+    fi
     # shellcheck disable=SC1090
     . <($SUDO cat "$SECRETS_FILE")
     local k lacking=""
@@ -3007,6 +3326,15 @@ phase_compute_ovn() {
         ovs_vsctl set open_vswitch . "external_ids:$1=$2"
         return 0
     }
+    local have_mgr
+    have_mgr="$(ovs_vsctl --bare --columns=target list manager 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ "$have_mgr" = "$OVS_MANAGER" ]; then
+        log_ok "Open vSwitch manager already $OVS_MANAGER"
+    else
+        ovs_vsctl set-manager "$OVS_MANAGER" || die "could not set the Open vSwitch manager"
+        log_ok "Open vSwitch manager set to $OVS_MANAGER (loopback only; os_vif needs it here too)"
+    fi
+
     local changed=0
     _ovs_extid_c ovn-remote     "tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" && changed=1
     _ovs_extid_c ovn-encap-type geneve                                && changed=1
@@ -3064,6 +3392,10 @@ phase_compute_nova() {
     ini_set "$NOVA_CONF" vnc server_listen "$MGMT_IP"                              && changed=1
     ini_set "$NOVA_CONF" vnc server_proxyclient_address "$MGMT_IP"                 && changed=1
     ini_set "$NOVA_CONF" oslo_concurrency lock_path /var/lib/nova/tmp              && changed=1
+    # See phase_nova_compute: os_vif's default tcp:127.0.0.1:6640 does not exist
+    # on Ubuntu, and without this every guest build on this node fails to plug
+    # its VIF.
+    ini_set "$NOVA_CONF" os_vif_ovs ovsdb_connection "$OVS_DB_TCP"                && changed=1
     if [ "$changed" -eq 1 ]; then
         log_ok "nova.conf configured for a compute-only node (credentials not shown)"
     else
@@ -3093,12 +3425,7 @@ phase_compute_nova() {
         service_start_enable libvirtd
         local u
         for u in $NOVA_COMPUTE_UNITS; do
-            if service_active "$u"; then
-                $SUDO systemctl restart "$u" || die "$u failed to restart"
-                log_ok "$u restarted"
-            else
-                service_start_enable "$u"
-            fi
+            service_apply "$u" "$NOVA_CONF" "$NOVA_COMPUTE_CONF"
         done
     else
         note_skip compute_nova "no systemd: nova-compute was configured but not started."
@@ -3119,7 +3446,7 @@ phase_compute_metadata() {
     local changed=0
     ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$CONTROLLER_IP"              && changed=1
     ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
-    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:/var/run/openvswitch/db.sock" && changed=1
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "unix:$OVS_DB_SOCK" && changed=1
     ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" && changed=1
     [ "$changed" -eq 1 ] && log_ok "metadata agent configured (shared secret not shown)" \
                          || log_ok "metadata agent already correct (unchanged)"
@@ -3131,13 +3458,7 @@ phase_compute_metadata() {
     log_info "neutron.conf is left untouched: this agent needs no message-queue credential"
 
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
-        if service_active neutron-ovn-metadata-agent; then
-            $SUDO systemctl restart neutron-ovn-metadata-agent \
-                || die "neutron-ovn-metadata-agent failed to restart"
-            log_ok "neutron-ovn-metadata-agent restarted"
-        else
-            service_start_enable neutron-ovn-metadata-agent
-        fi
+        service_apply neutron-ovn-metadata-agent "$OVN_META_CONF"
     else
         note_skip compute_metadata "no systemd: the metadata agent was configured but not started."
         return 0
@@ -3688,9 +4009,20 @@ main() {
     # Collect the three tiers, then resolve once. No tier overwrites another
     # by side effect; precedence lives entirely in resolve_config().
     local saved=("$@")
-    parse_args "${saved[@]+"${saved[@]}"}"
-    load_env_file
-    resolve_config
+    # `compute-secrets` writes a FILE to stdout. log_info and friends print to
+    # stdout too, so the config-file line landed as the first line of the
+    # credentials file — and because it reads
+    #     config file: ./hagistack.env (parsed, not executed)
+    # sourcing it on the compute node is a bash syntax error. Measured on GCE:
+    #     /dev/fd/63: line 1: syntax error near unexpected token `('
+    # For that one command every diagnostic goes to stderr instead.
+    if [ "$cmd" = "compute-secrets" ]; then
+        { parse_args "${saved[@]+"${saved[@]}"}"; load_env_file; resolve_config; } >&2
+    else
+        parse_args "${saved[@]+"${saved[@]}"}"
+        load_env_file
+        resolve_config
+    fi
 
     case "$cmd" in
         all-in-one)      cmd_all_in_one ;;

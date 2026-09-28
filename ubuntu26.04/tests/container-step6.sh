@@ -56,15 +56,28 @@ hl="$("$H" --help 2>&1 | tr '\n' ' ')"
 if grep -qiE 'implemented' <<<"$stn" && grep -qiE 'verified on hardware' <<<"$stn"; then
   rec S0d-two-claims PASS "status separates implemented from verified"
 else rec S0d-two-claims FAIL "status does not separate the two claims"; fi
-grep -qiE 'verified on hardware *: *none' <<<"$stn" \
-  && rec S0e-verified-none PASS "status says nothing is verified on hardware" \
-  || rec S0e-verified-none FAIL "status does not say hardware verification is none"
+# Up to the 2026-09-28 GCE run this asserted "verified on hardware: none".
+# That is no longer true, and replacing it with nothing would be worse than
+# having no test. What must hold now is that the line never claims a blanket
+# pass: whatever it says it verified, it must also name what FAILED there.
+if grep -qiE 'verified on hardware *: *none' <<<"$stn"; then
+  rec S0e-verified-honest PASS "status says nothing is verified on hardware"
+elif grep -qiE 'verified on hardware[^|]*(FAIL|failed)' <<<"$stn"; then
+  rec S0e-verified-honest PASS "status reports hardware verification AND names what failed"
+else
+  rec S0e-verified-honest FAIL "status claims hardware verification without naming any failure"
+fi
+grep -qiE 'still unverified[^|]*guest boot' <<<"$stn" \
+  && rec S0e2-guest-boot-named PASS "status still names guest boot as not working" \
+  || rec S0e2-guest-boot-named FAIL "status no longer names guest boot"
 grep -qiE 'no guest VM has been booted' <<<"$stn" \
   && rec S0f-status-guest PASS "status says no guest was booted" || rec S0f-status-guest FAIL "overclaims"
 grep -qiE 'login tested +NO' <<<"$stn" \
   && rec S0g-status-login PASS "status says the dashboard login is untested" || rec S0g-status-login FAIL "overclaims"
-grep -qiE 'verified *: *none' <<<"$hl" \
-  && rec S0h-help-verified PASS "--help states nothing is verified" || rec S0h-help-verified FAIL "--help overclaims"
+if grep -qiE 'verified *: *none' <<<"$hl" \
+   || grep -qiE 'verified[^|]*(FAIL|failed)' <<<"$hl"; then
+  rec S0h-help-verified PASS "--help reports verification without claiming a blanket pass"
+else rec S0h-help-verified FAIL "--help overclaims"; fi
 # the step 1 wording must be gone from the file header
 head -40 "$H" | grep -qiE 'STEP 1 of the rebuild|Keystone.*are NOT implemented' \
   && rec S0i-stale-header FAIL "the stale STEP 1 header comment is still there" \
