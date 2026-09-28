@@ -1,0 +1,2447 @@
+#!/usr/bin/env bash
+# hagistack — OpenStack 2026.1 Gazpacho on Rocky Linux 10.2 (x86_64)
+#
+# A plain Bash installer. No Ansible, no Kolla, no Packstack, no DevStack: the
+# point of this repository is that you can read the whole thing and see exactly
+# what it does to your machine.
+#
+# WHERE THE PACKAGES COME FROM, which is the whole story on Rocky.
+#
+# Rocky does not ship OpenStack, and neither RDO nor the CentOS Cloud SIG
+# publishes 2026.1 for EL10 — there is no `gazpacho-rdo` distgit branch and no
+# `centos10-gazpacho` repository. So the RPMs are built from the released 2026.1
+# tarballs against RDO's `rpm-master` specs, with every input pinned by commit
+# id and sha256, by ../rocky10.2/build-rpms.sh. That build is a prerequisite for
+# this shell, not a part of it: point --repo-url at its output.
+#
+# This shell deliberately does NOT enable RDO's `delorean-component-*`
+# repositories. Those carry trunk snapshots of the OpenStack libraries and would
+# silently replace a 2026.1 library with a 2025-era build. It does use RDO's
+# dependency repository, which carries third-party Python libraries (eventlet,
+# httplib2, pysaml2 and friends) that neither Rocky nor EPEL package. That is a
+# different tree and mixes no OpenStack releases.
+#
+# HOW THE APIs ARE STARTED, which is the other half of the story.
+#
+# OpenStack 2026.1 removed the generated WSGI scripts across the board and
+# replaced them with importable modules. On Rocky that leaves the packaging with
+# nothing usable for four of the five APIs — `openstack-nova-api.service` and
+# friends still name `/usr/bin/nova-api`, which 33.0.2 does not build. Measured
+# on a real install, not assumed:
+#
+#   keystone    no unit, no vhost          -> this shell writes the vhost
+#   placement   vhost ships and works      -> used as shipped
+#   glance      openstack-glance-api.service works (glance kept its daemon)
+#   neutron     API has no unit and no vhost -> this shell writes the vhost
+#   nova API    three units, all dead      -> this shell writes the vhosts
+#
+# So every vhost below points mod_wsgi at a module path, and the dead units are
+# left disabled rather than "fixed" by inventing an ExecStart.
+set -euo pipefail
+
+HAGISTACK_VERSION="0.1.0-rocky"
+HAGISTACK_STAGE="rocky step1: all-in-one and compute-add implemented; verification in progress"
+TARGET_OS="Rocky Linux 10.2 (x86_64)"
+TARGET_RELEASE="OpenStack 2026.1 Gazpacho"
+VERIFIED_ON_HARDWARE="see rocky10.2/README.md; nothing here is claimed until it is measured"
+UNVERIFIED_ITEMS="Horizon (its XStatic/qrcode dependencies are unresolved on EL10); SELinux in enforcing mode; any physical-LAN path"
+
+C_RESET=''; C_RED=''; C_GRN=''; C_YEL=''; C_BLU=''; C_DIM=''
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GRN=$'\033[32m'
+    C_YEL=$'\033[33m';  C_BLU=$'\033[34m'; C_DIM=$'\033[2m'
+fi
+log_step()  { printf '%s==>%s %s\n'      "$C_BLU" "$C_RESET" "$*"; }
+log_info()  { printf '    %s\n'                                "$*"; }
+log_ok()    { printf '    %sok%s   %s\n' "$C_GRN" "$C_RESET" "$*"; }
+log_warn()  { printf '%swarn:%s %s\n'    "$C_YEL" "$C_RESET" "$*" >&2; }
+log_error() { printf '%serror:%s %s\n'   "$C_RED" "$C_RESET" "$*" >&2; }
+log_skip()  { printf '    %sskip%s %s\n' "$C_DIM" "$C_RESET" "$*"; }
+die() { log_error "$*"; exit 1; }
+
+_on_err() {
+    local rc=$? line=${1:-?}
+    log_error "aborted at line $line (exit $rc). Nothing is rolled back: this shell"
+    log_error "  only ever adds or edits, so a re-run continues from where it stopped."
+    exit "$rc"
+}
+trap '_on_err $LINENO' ERR
+
+SUDO=""
+_need_privilege() {
+    if [ "$(id -u)" -ne 0 ]; then
+        command -v sudo >/dev/null 2>&1 || die "not root and sudo is not installed"
+        sudo -n true 2>/dev/null || sudo true || die "sudo authentication failed"
+        SUDO="sudo"
+    fi
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------------------
+# paths — the EL layout, which is not the Debian one
+# ---------------------------------------------------------------------------
+HAGISTACK_ETC="${HAGISTACK_ETC:-/etc/hagistack}"
+HAGISTACK_STATE="${HAGISTACK_STATE:-/var/lib/hagistack}"
+SECRETS_FILE="$HAGISTACK_ETC/secrets.env"
+ADMIN_OPENRC="$HAGISTACK_ETC/admin-openrc"
+IMAGE_CACHE_DIR="$HAGISTACK_STATE/images"
+# A config file is parsed, never sourced. Only these characters are allowed in a
+# value, so shell metacharacters cannot arrive through it.
+ENVFILE_VALUE_RE='^[A-Za-z0-9._:/@+=-]*$'
+HAS_SYSTEMD=0
+STATE_DIR="$HAGISTACK_STATE/state"
+
+HTTPD_CONF_D="/etc/httpd/conf.d"
+SITELIB="/usr/lib/python3.12/site-packages"
+KEYSTONE_CONF="/etc/keystone/keystone.conf"
+GLANCE_CONF="/etc/glance/glance-api.conf"
+PLACEMENT_CONF="/etc/placement/placement.conf"
+NEUTRON_CONF="/etc/neutron/neutron.conf"
+ML2_CONF="/etc/neutron/plugins/ml2/ml2_conf.ini"
+OVN_META_CONF="/etc/neutron/neutron_ovn_metadata_agent.ini"
+NOVA_CONF="/etc/nova/nova.conf"
+OVS_DB_SOCK="/var/run/openvswitch/db.sock"
+OVS_DB_TCP="tcp:127.0.0.1:6640"
+
+KEYSTONE_PORT=5000
+GLANCE_PORT=9292
+PLACEMENT_PORT=8778
+NEUTRON_PORT=9696
+NOVA_API_PORT=8774
+NOVA_METADATA_PORT=8775
+OVN_NB_PORT=6641
+OVN_SB_PORT=6642
+
+# Units that really exist and really work on 2026.1. The nova API units are
+# deliberately absent: see the header.
+GLANCE_UNITS="openstack-glance-api"
+NEUTRON_UNITS="neutron-rpc-server neutron-ovn-metadata-agent"
+NOVA_UNITS="openstack-nova-conductor openstack-nova-scheduler"
+NOVA_COMPUTE_UNITS="openstack-nova-compute"
+OVN_CENTRAL_UNITS="ovn-northd"
+OVN_HOST_UNITS="ovn-controller"
+
+MYSQL_MAX_CONNECTIONS="${MYSQL_MAX_CONNECTIONS:-1024}"
+
+# The name nova and OVN must agree on, pinned once and written to both sides.
+#
+# Neutron's OVN driver binds a port by looking up a Chassis whose HOSTNAME
+# equals nova's binding:host_id. Left alone they disagree on Rocky: nova's
+# CONF.host defaults to socket.gethostname() (short) while ovn-controller
+# records the FQDN, and the only symptom is
+#   Refusing to bind port ... due to no OVN chassis for host: <short name>
+# with a chassis plainly visible in ovn-sbctl show. So both are set explicitly
+# rather than left to two different defaults that happen to match on Ubuntu.
+OS_HOSTNAME="$(hostname -s 2>/dev/null || hostname)"
+
+# oslo.db defaults to max_pool_size=5 with max_overflow=50, PER PROCESS. On an
+# all-in-one every service validates its tokens against Keystone, so Keystone
+# runs out first and the whole cloud starts answering 500 after about forty
+# minutes of use — which looks like "Neutron is broken", then "Nova is broken".
+# Measured on Ubuntu with 53 GB free and MariaDB at 338 of 1024 connections:
+# the server had room, the per-process pool did not.
+DB_MAX_POOL_SIZE="${DB_MAX_POOL_SIZE:-25}"
+DB_MAX_OVERFLOW="${DB_MAX_OVERFLOW:-50}"
+DB_POOL_TIMEOUT="${DB_POOL_TIMEOUT:-30}"
+
+SELF="${BASH_SOURCE[0]}"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# Deterministic, URL-safe secret. No fixed passwords anywhere in this file.
+# A consumer-side `head` closes the pipe while the producer is still writing;
+# the producer takes SIGPIPE and the pipeline reports 141 under `set -o pipefail`.
+# `tr -dc … < /dev/urandom | head -c N` does that deterministically (measured:
+# 141 on 200/200 runs). Bound the *producer* instead and trim with a shell
+# substring, so no pipe is ever broken.
+gen_secret() {
+    local n="${1:-32}" out="" chunk tries=0
+    while [ "${#out}" -lt "$n" ]; do
+        tries=$((tries + 1))
+        [ "$tries" -le 12 ] \
+            || die "could not gather $n characters of randomness after $tries attempts"
+        if have openssl; then
+            chunk="$(openssl rand -base64 256 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' || true)"
+        else
+            chunk="$(head -c 4096 /dev/urandom 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' || true)"
+        fi
+        [ -n "$chunk" ] \
+            || die "no usable entropy source (tried openssl and /dev/urandom)"
+        out="$out$chunk"
+    done
+    printf '%s\n' "${out:0:n}"
+}
+
+# ---------------------------------------------------------------------------
+# idempotent INI editing
+#
+# Replaces the old shells' `tee -a` / blanket `sed -i`, which appended a new
+# copy on every run. Setting the same key twice must leave the file unchanged.
+# ---------------------------------------------------------------------------
+ini_set() {
+    local file="$1" section="$2" key="$3" value="$4"
+    [ -n "$file" ] && [ -n "$section" ] && [ -n "$key" ] \
+        || die "ini_set: file, section and key are required"
+
+    local dir; dir="$(dirname "$file")"
+    [ -d "$dir" ] || $SUDO mkdir -p "$dir"
+    [ -f "$file" ] || $SUDO touch "$file"
+
+    local tmp; tmp="$(mktemp)"
+    # Read through $SUDO: /etc/keystone/keystone.conf is 0640 keystone:keystone,
+    # so a plain awk cannot open it when the shell runs unprivileged with sudo.
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" VALUE="$value" \
+        awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; value=ENVIRON["VALUE"]
+                in_section=0; done=0; last_content=0 }
+        {
+            line=$0
+            if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+                name=line; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+                if (in_section && !done) { buf[++n]=key" = "value; done=1 }
+                in_section = (name == section)
+                buf[++n]=line
+                if (in_section) last_content=n
+                next
+            }
+            if (in_section && !done) {
+                k=line
+                sub(/^[[:space:]]*/,"",k)
+                if (k ~ /^[#;]/) { buf[++n]=line; next }
+                split(k, parts, "=")
+                kk=parts[1]; gsub(/[[:space:]]+$/,"",kk)
+                if (kk == key) { buf[++n]=key" = "value; done=1; last_content=n; next }
+            }
+            buf[++n]=line
+            if (line !~ /^[[:space:]]*$/) last_content=n
+        }
+        END {
+            if (!done) {
+                if (!in_section) {
+                    if (n > 0 && buf[n] != "") buf[++n]=""
+                    buf[++n]="["section"]"
+                }
+                buf[++n]=key" = "value
+            }
+            for (i=1; i<=n; i++) print buf[i]
+        }' > "$tmp"
+
+    # Only touch the file when the content actually changes: re-running must
+    # produce a byte-identical file and must not bump the mtime.
+    if $SUDO cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1   # unchanged
+    fi
+    $SUDO cp "$tmp" "$file"
+    rm -f "$tmp"
+    return 0       # changed
+}
+
+# Stop a key taking effect, without losing what it said.
+#
+# hagistack never deletes an operator's configuration, and that rule is right
+# almost everywhere. It is wrong for exactly one case: a key whose mere presence
+# makes a service do something harmful. A compute node that carries a
+# [database] connection really does open it — nova-compute logs
+#     WARNING oslo_db.sqlalchemy.engines SQL connection failed. 7 attempts left.
+#     WARNING nova.context Timed out waiting for response from cell ...
+# on every start, because oslo.db reads the key regardless of role.
+#
+# So the key is commented out rather than deleted: it stops taking effect, the
+# value stays on the line so it can be put back, and a comment says who did it
+# and why. Only the named key in the named section is touched — nothing else in
+# the file is rewritten.
+#
+# Returns 0 when the file changed, 1 when it did not (key absent, or already
+# commented out by an earlier run). That makes a second run a no-op, so
+# service_apply sees no new mtime and restarts nothing.
+ini_comment_out() {   # ini_comment_out <file> <section> <key> <why>
+    local file="$1" section="$2" key="$3" why="${4:-}"
+    [ -n "$file" ] && [ -n "$section" ] && [ -n "$key" ] \
+        || die "ini_comment_out: file, section and key are required"
+    $SUDO test -f "$file" || return 1
+
+    local tmp; tmp="$(mktemp)"
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" WHY="$why" \
+        awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; why=ENVIRON["WHY"]
+                in_section=0 }
+        {
+            line=$0
+            if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+                name=line; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+                in_section = (name == section)
+                print line; next
+            }
+            if (in_section) {
+                k=line
+                sub(/^[[:space:]]*/,"",k)
+                # an already-commented line is left exactly as it is
+                if (k ~ /^[#;]/) { print line; next }
+                eq=index(k,"=")
+                if (eq > 0) {
+                    kk=substr(k,1,eq-1); gsub(/[[:space:]]+$/,"",kk)
+                    if (kk == key) {
+                        print "# commented out by hagistack: " why
+                        print "#" line
+                        next
+                    }
+                }
+            }
+            print line
+        }' > "$tmp"
+
+    if $SUDO cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1   # unchanged
+    fi
+    $SUDO cp "$tmp" "$file"
+    rm -f "$tmp"
+    return 0       # changed
+}
+
+ini_get() {
+    local file="$1" section="$2" key="$3"
+    $SUDO test -f "$file" || return 1
+    $SUDO cat "$file" | SECTION="$section" KEY="$key" awk '
+        BEGIN { section=ENVIRON["SECTION"]; key=ENVIRON["KEY"]; in_section=0 }
+        /^[[:space:]]*\[.*\][[:space:]]*$/ {
+            name=$0; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+            in_section=(name==section); next
+        }
+        in_section {
+            k=$0; sub(/^[[:space:]]*/,"",k)
+            if (k ~ /^[#;]/) next
+            eq=index(k,"="); if (eq==0) next
+            kk=substr(k,1,eq-1); vv=substr(k,eq+1)
+            gsub(/[[:space:]]+$/,"",kk); gsub(/^[[:space:]]+/,"",vv); gsub(/[[:space:]]+$/,"",vv)
+            if (kk==key) { print vv; exit }
+        }'
+}
+
+load_env_file() {
+    local f="${ENV_FILE:-}"
+    if [ -z "$f" ]; then
+        if   [ -f "./hagistack.env" ];             then f="./hagistack.env"
+        elif [ -f "$SELF_DIR/hagistack.env" ];     then f="$SELF_DIR/hagistack.env"
+        elif [ -f "$HAGISTACK_ETC/hagistack.env" ];then f="$HAGISTACK_ETC/hagistack.env"
+        fi
+    fi
+    [ -n "$f" ] || return 0
+    # Any readable path, not just a regular file, so --env-file /dev/null works.
+    [ -r "$f" ] || die "env file not readable: $f"
+
+    local -A seen=()
+    local lineno=0 line key val
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        line="${line%$'\r'}"                       # tolerate CRLF
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+
+        if [[ ! "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+            die "$f line $lineno: not a KEY=VALUE assignment.
+     Only blank lines, '#' comments and KEY=VALUE are allowed."
+        fi
+        key="${BASH_REMATCH[1]}"
+        val="${BASH_REMATCH[2]}"
+        val="${val%"${val##*[![:space:]]}"}"        # trim trailing blanks
+        # strip one matching quote pair, if present
+        if   [[ "$val" =~ ^\"(.*)\"$ ]]; then val="${BASH_REMATCH[1]}"
+        elif [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"
+        fi
+
+        # CONFIG_KEYS is written over several lines, so a key that happens to sit
+        # at the end of one is followed by a NEWLINE, not a space. Matching
+        # against " $CONFIG_KEYS " therefore missed those keys and reported them
+        # as unknown — which is how FLOATING_START and REGION_NAME were refused
+        # from a config file while working perfectly on the command line. The
+        # list is normalised to single spaces before it is searched.
+        case "$CONFIG_KEYS_FLAT" in
+            *" $key "*) ;;
+            *) die "$f line $lineno: unknown key '$key'.
+     Allowed keys:${CONFIG_KEYS_FLAT%?}" ;;
+        esac
+        [ -z "${seen[$key]:-}" ] || die "$f line $lineno: duplicate key '$key'"
+        seen[$key]=1
+
+        # The value is deliberately NOT echoed back on failure.
+        if [[ ! "$val" =~ $ENVFILE_VALUE_RE ]]; then
+            die "$f line $lineno: the value of '$key' contains characters that are
+     not allowed. Permitted: letters, digits and . _ - : / @ + =
+     (the value itself is not shown). Shell metacharacters such as \$ \` ( ) ; & |
+     are refused because this file is configuration, not a script."
+        fi
+        FILE_VAL[$key]="$val"
+        FILE_SET[$key]=1
+    done < "$f"
+    log_info "config file: $f (parsed, not executed)"
+}
+
+# Precedence: command line > environment > config file > default.
+# A tier that sets a key to the empty string is an error rather than a silent
+# fall-through, so "explicitly blank" can never be mistaken for "not given".
+resolve_config() {
+    local k val src
+    for k in $CONFIG_KEYS; do
+        if   [ -n "${CLI_SET[$k]:-}" ];  then val="${CLI_VAL[$k]}";  src="command line"
+        elif [ -n "${ENV_SET[$k]:-}" ];  then val="${ENV_VAL[$k]}";  src="environment"
+        elif [ -n "${FILE_SET[$k]:-}" ]; then val="${FILE_VAL[$k]}"; src="config file"
+        else                          val="${DEFAULT_VAL[$k]:-}"; src="default"
+        fi
+        if [ "$src" != "default" ] && [ -z "$val" ]; then
+            die "$k was given an empty value on the $src.
+     Remove it to fall back to the default, or give it a real value."
+        fi
+        CONFIG_SOURCE[$k]="$src"
+        printf -v "$k" '%s' "$val"
+    done
+}
+
+print_resolved_config() {
+    local k
+    echo
+    log_step "resolved configuration"
+    for k in $CONFIG_KEYS; do
+        printf '    %-18s %-22s [%s]\n' "$k" "${!k:-<unset>}" "${CONFIG_SOURCE[$k]:-default}"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# input validation
+# ---------------------------------------------------------------------------
+valid_ipv4() {
+    local ip="$1" o
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[@]:1:4}"; do
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+        # reject 01, 007 and friends
+        [ "${#o}" -eq 1 ] || [ "${o#0}" = "$o" ] || return 1
+    done
+    return 0
+}
+
+valid_cidr() {
+    local cidr="$1" ip prefix
+    case "$cidr" in */*) ;; *) return 1 ;; esac
+    ip="${cidr%%/*}"; prefix="${cidr#*/}"
+    valid_ipv4 "$ip" || return 1
+    [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
+    [ "$prefix" -ge 8 ] && [ "$prefix" -le 30 ] || return 1
+    return 0
+}
+
+ip_to_int() {
+    local IFS=. ; read -r a b c d <<< "$1"
+    echo $(( (a<<24) + (b<<16) + (c<<8) + d ))
+}
+
+ip_in_cidr() {
+    local ip="$1" cidr="$2" net prefix mask ipi neti
+    net="${cidr%%/*}"; prefix="${cidr#*/}"
+    mask=$(( 0xFFFFFFFF ^ ((1 << (32-prefix)) - 1) ))
+    ipi=$(ip_to_int "$ip"); neti=$(ip_to_int "$net")
+    [ $(( ipi & mask )) -eq $(( neti & mask )) ]
+}
+
+valid_nic_name() {
+    local n="$1"
+    [ -n "$n" ] || return 1
+    [ "${#n}" -le 15 ] || return 1
+    [[ "$n" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    case "$n" in .|..) return 1 ;; esac
+    return 0
+}
+
+nic_exists() { [ -e "/sys/class/net/$1" ]; }
+
+valid_region_name() {
+    [ -n "$1" ] || return 1
+    [ "${#1}" -le 64 ] || return 1
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+# A name hagistack gives to something it creates in OpenStack (image, network,
+# router, flavor, keypair). Deliberately narrow: these values end up in
+# `openstack ... create` arguments, so no whitespace and no shell metacharacter
+# is allowed through, even though the client is exec'd without a shell.
+valid_resource_name() {
+    [ -n "$1" ] || return 1
+    [ "${#1}" -le 64 ] || return 1
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+valid_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
+
+# An absolute path with no traversal and no shell metacharacter. Used for
+# IMAGE_FILE, which is read by root.
+valid_abs_path() {
+    local p="$1"
+    case "$p" in /*) ;; *) return 1 ;; esac
+    case "$p" in *..*) return 1 ;; esac
+    [[ "$p" =~ ^[A-Za-z0-9._/-]+$ ]]
+}
+
+# http(s) URL restricted to the characters the config-file parser already
+# allows, so a URL that survives the file cannot smuggle anything new in.
+valid_http_url() {
+    local u="$1"
+    [[ "$u" =~ ^https?://[A-Za-z0-9._~:/@+=-]+$ ]] || return 1
+    [ "${#u}" -le 512 ]
+}
+
+# An address that is supposed to belong to ANOTHER machine. Rejects the values
+# that are never a peer: this catches "--controller-ip 127.0.0.1" and
+# "--controller-ip 0.0.0.0", which otherwise fail much later with an opaque
+# connection error. Caller must still compare it against MGMT_IP.
+valid_peer_ipv4() {
+    local ip="$1" a
+    valid_ipv4 "$ip" || return 1
+    a="${ip%%.*}"
+    case "$ip" in
+        0.*|127.*|255.255.255.255|169.254.*) return 1 ;;
+    esac
+    [ "$a" -lt 224 ] || return 1      # multicast / reserved
+    return 0
+}
+
+
+# Start a unit, or RESTART it when the configuration it reads is newer than the
+# running process.
+#
+# Measured on a GCE Ubuntu 26.04 host, and invisible in a container because a
+# container has no systemd: every one of these packages starts its unit at
+# install time, which is BEFORE hagistack writes any configuration —
+#   memcached, glance-api, neutron-rpc-server, neutron-periodic-workers,
+#   neutron-ovn-metadata-agent, nova-conductor, nova-scheduler, nova-compute.
+# `systemctl enable --now` is a no-op on an already-active unit, so the daemon
+# keeps running on the stock configuration (sqlite, 127.0.0.1) while the file on
+# disk says otherwise, and `systemctl is-active` cheerfully reports success.
+#
+# Comparing the unit's start time with the mtime of the files it reads is what
+# makes this self-correcting: ini_set only rewrites a file when its content
+# actually changes, so an unchanged re-run restarts nothing.
+_unit_started_epoch() {
+    local t; t="$($SUDO systemctl show -p ExecMainStartTimestamp --value "$1" 2>/dev/null || true)"
+    [ -n "$t" ] || return 1
+    date -d "$t" +%s 2>/dev/null || return 1
+}
+
+_newest_mtime() {
+    local f newest=0 m
+    for f in "$@"; do
+        $SUDO test -f "$f" || continue
+        m="$($SUDO stat -c %Y "$f" 2>/dev/null || echo 0)"
+        [ "$m" -gt "$newest" ] && newest="$m"
+    done
+    printf '%s\n' "$newest"
+}
+
+# Wait, bounded, for something to become true.
+#
+# `systemctl restart` returns as soon as the unit is active, which is seconds
+# before the socket is listening. Probing immediately after a restart is a race,
+# and on GCE it lost: memcached, glance-api and the Apache vhosts were each
+# reported as "active but not answering" while they were simply still starting.
+# Nothing here waits forever — that is the point of the bound.
+wait_for() {   # wait_for <seconds> <what> <command...>
+    local limit="$1" what="$2"; shift 2
+    local waited=0
+    while : ; do
+        if "$@"; then
+            [ "$waited" -gt 0 ] && log_info "$what became ready after ${waited}s"
+            return 0
+        fi
+        [ "$waited" -lt "$limit" ] || return 1
+        sleep 2; waited=$((waited + 2))
+    done
+}
+
+note_skip() {
+    SKIPPED_PHASES="${SKIPPED_PHASES}${SKIPPED_PHASES:+ }$1"
+    log_warn "phase '$1' SKIPPED: $2"
+    log_warn "  -> this run will NOT be reported as complete"
+}
+
+# Apply the pool settings to a service configuration file.
+write_db_pool() {   # write_db_pool <conf> [section]
+    local conf="$1" sec="${2:-database}"
+    ini_set "$conf" "$sec" max_pool_size "$DB_MAX_POOL_SIZE"    >/dev/null || true
+    ini_set "$conf" "$sec" max_overflow  "$DB_MAX_OVERFLOW"     >/dev/null || true
+    ini_set "$conf" "$sec" pool_timeout  30                     >/dev/null || true
+    return 0
+}
+
+_probe() {
+    # -k: escalate to SIGKILL. `rabbitmqctl` does not die on SIGTERM, so a
+    # plain `timeout` waits forever on it — measured in a container where the
+    # node never became ready.
+    if have timeout; then $SUDO timeout -k 5 "$PROBE_TIMEOUT" "$@"
+    else                  $SUDO "$@"
+    fi
+}
+
+# One field out of `openstack ... -f json`, via python3 (always present on
+# Ubuntu) so that jq is not a dependency. Custom image properties live either at
+# the top level or under "properties", depending on the client version.
+os_json_field() {   # os_json_field <key> < json
+    python3 -c '
+import json, sys
+key = sys.argv[1]
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+val = doc.get(key)
+if val is None and isinstance(doc.get("properties"), dict):
+    val = doc["properties"].get(key)
+print("" if val is None else val)
+' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
+CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
+             FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME
+             PROVIDER_PHYSNET PROVIDER_BRIDGE IMAGE_NAME IMAGE_URL IMAGE_SHA256
+             IMAGE_FILE CONTROLLER_IP REPO_URL"
+declare -A CLI_VAL CLI_SET ENV_VAL ENV_SET FILE_VAL FILE_SET CONFIG_SOURCE DEFAULT_VAL
+
+# The defaults are whatever the variables hold before any tier is applied, so
+# they live in one place (the assignments below) instead of being repeated
+# inside resolve_config.
+_capture_defaults() {
+    local k
+    for k in $CONFIG_KEYS; do DEFAULT_VAL[$k]="${!k:-}"; done
+}
+
+# Environment variables are a tier too, but only for keys this shell knows.
+_capture_env() {
+    local k
+    for k in $CONFIG_KEYS; do
+        if [ -n "${!k+set}" ] && [ -n "${!k}" ] && [ -z "${DEFAULT_VAL[$k]:-}" ]; then
+            ENV_VAL[$k]="${!k}"; ENV_SET[$k]=1
+        fi
+    done
+}
+
+MGMT_IP=""; EXT_NIC=""; PROVIDER_CIDR=""; PROVIDER_GATEWAY=""
+FLOATING_START=""; FLOATING_END=""; DNS_SERVER=""; TENANT_CIDR="10.10.10.0/24"
+VIRT_TYPE=""; REGION_NAME="RegionOne"; PROVIDER_PHYSNET="physnet1"
+PROVIDER_BRIDGE="br-ex"; CONTROLLER_IP=""; REPO_URL=""
+# The defaults are the initial values, because _capture_defaults snapshots them
+# before any tier is applied. Keeping them here rather than in a separate
+# *_DEFAULT variable is what makes --check print the value that will be used.
+IMAGE_NAME="cirros-0.6.3-x86_64"
+IMAGE_URL="https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img"
+IMAGE_SHA256="7d6355852aeb6dbcd191bcda7cd74f1536cfe5cbf8a10495a7283a8396e4b75b"
+IMAGE_FILE=""
+ENV_FILE="./hagistack.env"; CHECK_ONLY=0; SUBCOMMAND=""
+
+
+phase_done()      { [ -f "$STATE_DIR/$1.done" ]; }
+phase_mark_done() { $SUDO mkdir -p "$STATE_DIR"; $SUDO touch "$STATE_DIR/$1.done"; }
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+detect_os() {
+    [ -r /etc/os-release ] || die "cannot read /etc/os-release; unsupported system"
+    # shellcheck disable=SC1091
+    OS_ID="$(. /etc/os-release; echo "${ID:-}")"
+    OS_VERSION_ID="$(. /etc/os-release; echo "${VERSION_ID:-}")"
+    OS_PRETTY="$(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
+}
+
+detect_init() {
+    HAS_SYSTEMD=0
+    [ -d /run/systemd/system ] && HAS_SYSTEMD=1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# SELinux
+#
+# Rocky enforces SELinux, and RDO ships `openstack-selinux` precisely because
+# the stock policy does not cover OpenStack. That package lives in RDO's
+# OpenStack component repositories — the ones this shell deliberately does not
+# enable, because they would drag trunk libraries in with it.
+#
+# So this is an honest gap, not a decision made for convenience. The shell turns
+# on the one boolean it can (httpd talking to the network, which every vhost
+# here needs), and if `openstack-selinux` is genuinely unavailable it puts
+# SELinux in permissive mode and says so in the loudest terms it has. It never
+# does that silently, and `hagistack status` keeps reporting it.
+# ---------------------------------------------------------------------------
+SELINUX_ACTION="not-examined"
+
+phase_selinux() {
+    log_step "SELinux"
+    if ! have getenforce; then
+        SELINUX_ACTION="absent"; log_ok "SELinux tools are not installed; nothing to do"
+        return 0
+    fi
+    local mode; mode="$(getenforce 2>/dev/null || echo Disabled)"
+    log_info "current mode: $mode"
+    if [ "$mode" = "Disabled" ]; then
+        SELINUX_ACTION="disabled-already"; log_ok "SELinux is disabled on this host"
+        return 0
+    fi
+
+    if $SUDO dnf -q list --available openstack-selinux >/dev/null 2>&1; then
+        log_info "openstack-selinux is available; installing the policy rather than relaxing enforcement"
+        $SUDO dnf -y install -q openstack-selinux >/dev/null 2>&1 \
+            && { SELINUX_ACTION="policy-installed"; log_ok "openstack-selinux installed; SELinux left enforcing"; return 0; }
+    fi
+
+    have setsebool && $SUDO setsebool -P httpd_can_network_connect on 2>/dev/null \
+        && log_ok "httpd_can_network_connect=on (every API vhost needs it)"
+
+    if [ "$mode" = "Enforcing" ]; then
+        $SUDO setenforce 0 2>/dev/null || true
+        $SUDO sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+        SELINUX_ACTION="permissive"
+        log_warn "SELinux has been set to PERMISSIVE, and this is a real gap."
+        log_warn "  openstack-selinux — the policy RDO ships for exactly this — is only"
+        log_warn "  published in RDO's OpenStack component repositories, which this shell"
+        log_warn "  does not enable because they carry trunk libraries. Until that policy"
+        log_warn "  is built from source too, this host runs OpenStack unconfined."
+        log_warn "  Recorded as an open item, not as a supported configuration."
+    else
+        SELINUX_ACTION="permissive-already"; log_ok "SELinux was already permissive"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# service helpers
+# ---------------------------------------------------------------------------
+declare -A SERVICE_START_METHOD
+SKIPPED_PHASES=""
+
+service_active() { $SUDO systemctl is-active --quiet "$1" 2>/dev/null; }
+
+service_start_enable() {
+    local unit="$1"
+    if [ "$HAS_SYSTEMD" -ne 1 ]; then
+        SERVICE_START_METHOD[$unit]="not-started-no-systemd"; return 0
+    fi
+    if service_active "$unit"; then
+        SERVICE_START_METHOD[$unit]="already-active"; log_ok "$unit already running"
+    else
+        $SUDO systemctl enable --now "$unit" >/dev/null 2>&1 \
+            || die "$unit failed to start; see 'journalctl -u $unit'"
+        SERVICE_START_METHOD[$unit]="started"; log_ok "$unit started and enabled"
+    fi
+}
+
+# Restart a unit when the configuration it reads is newer than the running
+# process. ini_set only rewrites a file when the content changes, so an
+# unchanged re-run restarts nothing. Carried over from the Ubuntu shell, where
+# it was written because packages start their units before any configuration
+# exists — EL packages do not do that, but the mtime rule is right either way.
+service_apply() {   # service_apply <unit> <config-file>...
+    local unit="$1"; shift
+    if [ "$HAS_SYSTEMD" -ne 1 ]; then
+        SERVICE_START_METHOD[$unit]="not-started-no-systemd"; return 0
+    fi
+    $SUDO systemctl enable "$unit" >/dev/null 2>&1 || true
+    if ! service_active "$unit"; then
+        $SUDO systemctl start "$unit" >/dev/null 2>&1 \
+            || { log_warn "$unit failed to start; see 'journalctl -u $unit'"; return 1; }
+        SERVICE_START_METHOD[$unit]="started"; log_ok "$unit started"
+        return 0
+    fi
+    local started newest
+    started="$(_unit_started_epoch "$unit" || echo 0)"
+    newest="$(_newest_mtime "$@")"
+    if [ "${newest:-0}" -gt "${started:-0}" ]; then
+        $SUDO systemctl restart "$unit" \
+            || { log_warn "$unit failed to restart"; return 1; }
+        SERVICE_START_METHOD[$unit]="restarted"
+        log_ok "$unit restarted (its configuration is newer than the running process)"
+    else
+        SERVICE_START_METHOD[$unit]="already-current"
+        log_ok "$unit already running with the current configuration"
+    fi
+    return 0
+}
+
+httpd_grant_wsgi_dir() {   # httpd_grant_wsgi_dir <directory>
+    local d="$1"
+    local f="$HTTPD_CONF_D/01-hagistack-grant-$(basename "$(dirname "$d")").conf"
+    local want
+    want="$(printf '# WSGI scripts live outside DocumentRoot, so Apache needs an explicit grant.\n# Without it the answer is a plain Apache 403 that looks nothing like an\n# OpenStack error.\n<Directory %s>\n  Require all granted\n</Directory>' "$d")"
+    local cur=""; [ -f "$f" ] && cur="$($SUDO cat "$f")"
+    [ "$cur" = "$want" ] && return 1
+    printf '%s\n' "$want" | $SUDO tee "$f" >/dev/null
+    $SUDO chmod 0644 "$f"
+    log_ok "httpd grant written for $d"
+    return 0
+}
+
+httpd_servername() {
+    local f="$HTTPD_CONF_D/00-hagistack-servername.conf"
+    local want="ServerName ${MGMT_IP}"
+    $SUDO grep -qxF "$want" "$f" 2>/dev/null && return 1
+    printf '%s\n' "$want" | $SUDO tee "$f" >/dev/null
+    $SUDO chmod 0644 "$f"
+    log_ok "httpd ServerName set to $MGMT_IP"
+    return 0
+}
+
+httpd_reload() {
+    if service_active httpd; then
+        $SUDO systemctl reload-or-restart httpd || die "httpd failed to reload"
+        log_ok "httpd reloaded"
+    else
+        service_start_enable httpd
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# The vhost writer — the piece that exists because 2026.1 deleted the scripts.
+#
+# Every API here is an importable module, so a vhost is WSGIScriptAlias at a
+# .py file under site-packages. The file is written only when its content
+# changes, so a re-run reloads nothing.
+# ---------------------------------------------------------------------------
+write_vhost() {   # write_vhost <name> <port> <user> <module-path> [extra-alias]
+    local name="$1" port="$2" user="$3" module="$4"
+    local dest="$HTTPD_CONF_D/10-hagistack-$name.conf"
+    [ -f "$module" ] || die "the WSGI module for $name does not exist: $module
+     The package that should provide it is not installed, or 2026.1 moved it."
+    local body
+    body="$(cat <<EOF
+# Written by hagistack. OpenStack 2026.1 removed the generated WSGI scripts
+# (upstream release note: remove-wsgi-scripts), so there is nothing in
+# /usr/bin to point at any more and the packaged unit for this service, where
+# one exists at all, names a binary that is no longer built. mod_wsgi is
+# pointed at the module instead.
+Listen $port
+
+<VirtualHost *:$port>
+  WSGIDaemonProcess $name processes=3 threads=1 user=$user group=$user display-name=%{GROUP}
+  WSGIProcessGroup $name
+  WSGIScriptAlias / $module
+  WSGIApplicationGroup %{GLOBAL}
+  WSGIPassAuthorization On
+  LimitRequestBody 114688
+  <Directory $(dirname "$module")>
+    Require all granted
+  </Directory>
+  ErrorLog /var/log/httpd/${name}_error.log
+  CustomLog /var/log/httpd/${name}_access.log combined
+</VirtualHost>
+EOF
+)"
+    local cur=""
+    [ -f "$dest" ] && cur="$($SUDO cat "$dest" 2>/dev/null)"
+    if [ "$cur" = "$body" ]; then
+        log_ok "vhost $name already correct (unchanged)"
+        return 1
+    fi
+    printf '%s\n' "$body" | $SUDO tee "$dest" >/dev/null
+    $SUDO chmod 0644 "$dest"
+    log_ok "vhost $name written: :$port -> $module"
+    return 0
+}
+
+_probe_http() { curl -s -o /dev/null -m 10 "$1" 2>/dev/null; }
+
+mysql_root() { $SUDO mariadb -uroot "$@"; }
+mariadb_reachable() { mysql_root -e "SELECT 1" >/dev/null 2>&1; }
+rabbitmq_reachable() { $SUDO rabbitmqctl status >/dev/null 2>&1; }
+memcached_reachable() {
+    printf 'version\r\nquit\r\n' | timeout 5 bash -c "exec 3<>/dev/tcp/${MGMT_IP}/11211; cat >&3; head -1 <&3" 2>/dev/null | grep -q VERSION
+}
+# Run a command as the keystone system user so that logs and key files do not
+# end up owned by root.
+as_keystone() {
+    if have runuser; then $SUDO runuser -u keystone -- "$@"
+    else                  $SUDO su -s /bin/sh -c "$(printf '%q ' "$@")" keystone
+    fi
+}
+
+# The admin credentials live outside the repository, 0600, and are rewritten
+# only when their content would actually change.
+write_admin_openrc() {
+    local tmp; tmp="$(mktemp)"; chmod 0600 "$tmp"
+    cat > "$tmp" <<RCEOF
+# hagistack admin credentials — generated, do not commit.
+export OS_AUTH_URL=http://${MGMT_IP}:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=${ADMIN_PASSWORD}
+export OS_REGION_NAME=${REGION_NAME}
+RCEOF
+    if $SUDO cmp -s "$tmp" "$ADMIN_OPENRC" 2>/dev/null; then
+        log_ok "$ADMIN_OPENRC already current (unchanged)"
+    else
+        $SUDO cp "$tmp" "$ADMIN_OPENRC"
+        log_ok "admin credentials written to $ADMIN_OPENRC"
+    fi
+    rm -f "$tmp"
+    $SUDO chmod 0600 "$ADMIN_OPENRC"
+    local perm; perm="$($SUDO stat -c '%a' "$ADMIN_OPENRC")"
+    [ "$perm" = "600" ] || die "$ADMIN_OPENRC has mode $perm; expected 600"
+}
+
+# Run the openstack client as admin. Credentials go through the environment so
+# that they never appear in argv or in any log line.
+openstack_admin() {
+    $SUDO env \
+        OS_AUTH_URL="http://${MGMT_IP}:5000/v3" \
+        OS_IDENTITY_API_VERSION=3 \
+        OS_PROJECT_DOMAIN_NAME=Default \
+        OS_USER_DOMAIN_NAME=Default \
+        OS_PROJECT_NAME=admin \
+        OS_USERNAME=admin \
+        OS_PASSWORD="$ADMIN_PASSWORD" \
+        OS_REGION_NAME="$REGION_NAME" \
+        openstack "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Keystone registration helpers
+#
+# Every one is show-or-create: an existing user, service or endpoint is reused,
+# never deleted and never recreated. Passwords go through the environment.
+# ---------------------------------------------------------------------------
+ks_ensure_project() {
+    if openstack_admin project show "$1" >/dev/null 2>&1; then
+        log_ok "project '$1' already exists"
+    else
+        openstack_admin project create --domain default "$1" >/dev/null
+        log_ok "project '$1' created"
+    fi
+}
+
+# ks_ensure_user <name> <password-value>
+ks_ensure_user() {
+    local name="$1" pass="$2"
+    if openstack_admin user show "$name" >/dev/null 2>&1; then
+        log_ok "service user '$name' already exists — password left unchanged"
+    else
+        # --password-prompt would block; the value is passed as an argument to a
+        # function, which forks no process, and openstack reads it from stdin.
+        printf '%s\n' "$pass" | openstack_admin user create --domain default \
+            --password-prompt "$name" >/dev/null 2>&1 \
+            || openstack_admin user create --domain default --password "$pass" "$name" >/dev/null
+        log_ok "service user '$name' created"
+    fi
+}
+
+ks_ensure_role_assignment() {
+    local user="$1" project="$2" role="$3"
+    if openstack_admin role assignment list --user "$user" --project "$project" \
+         --role "$role" --names -f value 2>/dev/null | grep -q .; then
+        log_ok "role '$role' already granted to '$user' on '$project'"
+    else
+        openstack_admin role add --project "$project" --user "$user" "$role" >/dev/null
+        log_ok "role '$role' granted to '$user' on '$project'"
+    fi
+}
+
+# ks_ensure_service <name> <type> <description>
+ks_ensure_service() {
+    if openstack_admin service show "$1" >/dev/null 2>&1; then
+        log_ok "service '$1' already registered"
+    else
+        openstack_admin service create --name "$1" --description "$3" "$2" >/dev/null
+        log_ok "service '$1' (type $2) registered"
+    fi
+}
+
+# ks_ensure_endpoint <service> <interface> <url>
+ks_ensure_endpoint() {
+    local svc="$1" iface="$2" url="$3" existing
+    existing="$(openstack_admin endpoint list --service "$svc" --interface "$iface" \
+                  --region "$REGION_NAME" -f value -c URL 2>/dev/null | head -1)"
+    if [ -n "$existing" ]; then
+        if [ "$existing" = "$url" ]; then
+            log_ok "endpoint $svc/$iface already correct"
+        else
+            log_warn "endpoint $svc/$iface exists with a different URL and is left as-is:"
+            log_warn "  current: $existing"
+            log_warn "  wanted : $url"
+            log_warn "  hagistack does not delete endpoints; fix it by hand if that is wrong."
+        fi
+    else
+        openstack_admin endpoint create --region "$REGION_NAME" "$svc" "$iface" "$url" >/dev/null
+        log_ok "endpoint $svc/$iface created"
+    fi
+}
+
+# Common [keystone_authtoken] block for a service. The password is written into
+# a root-owned 0640 config file and is never echoed.
+write_authtoken() {
+    # The identity host is a parameter, not MGMT_IP. On a compute node Keystone
+    # lives on the CONTROLLER, and getting this wrong points the node at itself
+    # and fails at first boot rather than at configuration time.
+    local conf="$1" user="$2" pass="$3" ident="${4:-$MGMT_IP}"
+    ini_set "$conf" keystone_authtoken www_authenticate_uri "http://${ident}:5000" >/dev/null || true
+    ini_set "$conf" keystone_authtoken auth_url             "http://${ident}:5000" >/dev/null || true
+    # Always written, so the file is byte-identical on every run. The phases
+    # refuse to run at all unless memcached is actually listening, so this can
+    # never point at a dead cache (which would block every token validation).
+    ini_set "$conf" keystone_authtoken memcached_servers "${ident}:11211" >/dev/null || true
+    ini_set "$conf" keystone_authtoken auth_type            password                 >/dev/null || true
+    ini_set "$conf" keystone_authtoken project_domain_name  Default                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken user_domain_name     Default                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken project_name         service                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken username             "$user"                  >/dev/null || true
+    ini_set "$conf" keystone_authtoken password             "$pass"                  >/dev/null || true
+}
+
+# A keystoneauth adapter block (placement, neutron, service_user all use the
+# same shape). Values are written key-by-key so a re-run rewrites nothing.
+#
+# The identity host is a parameter rather than MGMT_IP, because the same block
+# is written on a compute node, where identity lives on the CONTROLLER. Getting
+# that wrong points a compute node at itself and fails at first boot, not at
+# configuration time.
+write_service_auth_at() {  # <conf> <section> <user> <pass> <interfaces> <identity-host>
+    local conf="$1" sec="$2" user="$3" pass="$4" ifaces="${5:-}" host="$6"
+    ini_set "$conf" "$sec" auth_url            "http://${host}:5000/v3" >/dev/null || true
+    ini_set "$conf" "$sec" auth_type           password                    >/dev/null || true
+    ini_set "$conf" "$sec" project_domain_name Default                     >/dev/null || true
+    ini_set "$conf" "$sec" user_domain_name    Default                     >/dev/null || true
+    ini_set "$conf" "$sec" project_name        service                     >/dev/null || true
+    ini_set "$conf" "$sec" region_name         "$REGION_NAME"              >/dev/null || true
+    ini_set "$conf" "$sec" username            "$user"                     >/dev/null || true
+    ini_set "$conf" "$sec" password            "$pass"                     >/dev/null || true
+    [ -n "$ifaces" ] && ini_set "$conf" "$sec" valid_interfaces "$ifaces"  >/dev/null || true
+    return 0
+}
+
+# Controller-side shorthand: identity is this machine.
+write_service_auth() {  # <conf> <section> <user> <pass> [interfaces]
+    write_service_auth_at "$1" "$2" "$3" "$4" "${5:-}" "$MGMT_IP"
+}
+
+# Does <router> already have a port on <subnet-id>?
+#
+# Asked as a question about STATE, because the error Neutron returns when the
+# interface is already there does not say so. Measured on a GCE host, re-running
+# `router add subnet` on an attached subnet gives:
+#   BadRequestException: 400 ... Bad router request: Cidr 10.10.10.0/24 of
+#   subnet 6c6758c5-... overlaps with cidr 10.10.10.0/24 of subnet 6c6758c5-...
+# — the subnet reported as overlapping with itself. Matching on "already exists"
+# or 409 never fires for it, so a perfectly good deployment was reported as a
+# failed phase on its second run.
+router_has_subnet() {   # router_has_subnet <router> <subnet-id>
+    openstack_admin port list --router "$1" -f json 2>/dev/null | python3 -c '
+import json, sys
+want = sys.argv[1]
+try:
+    ports = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for port in ports:
+    fixed = port.get("Fixed IP Addresses") or port.get("fixed_ips") or []
+    if isinstance(fixed, dict):
+        fixed = [fixed]
+    for entry in fixed:
+        if isinstance(entry, dict) and entry.get("subnet_id") == want:
+            raise SystemExit(0)
+        if isinstance(entry, str) and want in entry:
+            raise SystemExit(0)
+raise SystemExit(1)
+' "$2"
+}
+
+image_field() {     # image_field <image-name> <key>
+    openstack_admin image show "$1" -f json 2>/dev/null | os_json_field "$2"
+}
+
+# Create a security group rule, treating "it is already there" as success.
+# Neutron answers a duplicate with 409 Conflict rather than silently accepting
+# it, which is exactly the idempotence signal wanted here.
+bs_secgroup_rule() {   # bs_secgroup_rule <label> <args...>
+    local label="$1"; shift
+    local out rc=0
+    # The assignment's own status is the command's, so under `set -e` a rule that
+    # already exists would kill the run before the branch below could recognise
+    # it. Capture the status instead of letting the shell act on it.
+    out="$(openstack_admin security group rule create "$@" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        log_ok "security group rule '$label' created"
+    elif grep -qiE 'already exist|conflict|409' <<<"$out"; then
+        log_ok "security group rule '$label' already present — left unchanged"
+    else
+        log_error "could not create the security group rule '$label':"
+        printf '     %s\n' "$(head -3 <<<"$out")" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Fetch the image once into $IMAGE_CACHE_DIR and verify it against the pinned
+# digest BEFORE it is ever handed to Glance. A cached file that already matches
+# is not downloaded again; a file that does not match is refused, not replaced.
+bs_fetch_image() {   # prints the path of a verified local file on stdout
+    local dest have
+    if [ -n "$IMAGE_FILE" ]; then
+        if [ -n "$IMAGE_SHA256" ]; then
+            have="$($SUDO sha256sum "$IMAGE_FILE" | cut -d' ' -f1)"
+            [ "$have" = "$IMAGE_SHA256" ] || {
+                log_error "IMAGE_FILE does not match IMAGE_SHA256; refusing to upload it."
+                return 1; }
+        else
+            # Adopt the file's own digest. Without this the uploaded image would
+            # carry an EMPTY hagistack_sha256 property, and the next run would
+            # read that back, decide the image was not hagistack's, and refuse
+            # its own work. The file is still not checked against anything —
+            # that is what supplying no digest means — and the run says so.
+            IMAGE_SHA256="$($SUDO sha256sum "$IMAGE_FILE" | cut -d' ' -f1)"
+            log_warn "IMAGE_FILE was given without IMAGE_SHA256, so nothing verifies its"
+            log_warn "  contents. Its own digest is recorded on the image so that re-runs"
+            log_warn "  recognise it: ${IMAGE_SHA256:0:16}..."
+        fi
+        printf '%s\n' "$IMAGE_FILE"
+        return 0
+    fi
+
+    $SUDO mkdir -p "$IMAGE_CACHE_DIR"
+    $SUDO chmod 0755 "$IMAGE_CACHE_DIR"
+    dest="$IMAGE_CACHE_DIR/${IMAGE_URL##*/}"
+    if $SUDO test -f "$dest"; then
+        have="$($SUDO sha256sum "$dest" | cut -d' ' -f1)"
+        if [ "$have" = "$IMAGE_SHA256" ]; then
+            log_ok "cached image $dest already matches the pinned digest — not re-downloaded" >&2
+            printf '%s\n' "$dest"
+            return 0
+        fi
+        log_warn "cached $dest does not match the pinned digest; downloading again" >&2
+    fi
+    log_info "downloading $IMAGE_URL" >&2
+    # -L is required: download.cirros-cloud.net answers 302 and without it the
+    # saved file is a 273-byte redirect page (measured).
+    if ! $SUDO curl -fsSL --retry 3 --retry-delay 2 -m 900 -o "$dest" "$IMAGE_URL"; then
+        log_error "could not download $IMAGE_URL"
+        return 1
+    fi
+    have="$($SUDO sha256sum "$dest" | cut -d' ' -f1)"
+    if [ "$have" != "$IMAGE_SHA256" ]; then
+        log_error "downloaded image digest mismatch — the file is NOT being uploaded."
+        log_error "  expected $IMAGE_SHA256"
+        log_error "  got      $have"
+        log_error "  the file is left at $dest for inspection; delete it to retry"
+        return 1
+    fi
+    log_ok "downloaded and verified against the pinned sha256" >&2
+    printf '%s\n' "$dest"
+}
+
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+_preflight_host() {
+    detect_os
+    case "$OS_ID:$OS_VERSION_ID" in
+        rocky:10*|rocky:10) log_ok "$OS_PRETTY" ;;
+        rhel:10*|almalinux:10*|centos:10*)
+            log_warn "$OS_PRETTY is not Rocky Linux 10, but it is EL10. Continuing." ;;
+        *) die "this shell targets $TARGET_OS. Detected: $OS_PRETTY
+     Refusing rather than installing an EL10 package set onto something else." ;;
+    esac
+    [ "$(uname -m)" = "x86_64" ] || die "this shell targets x86_64. Detected: $(uname -m)
+     The RPMs are noarch, but nothing here has been verified on another architecture."
+    detect_init
+    [ "$HAS_SYSTEMD" -eq 1 ] || log_warn "systemd is not running; services cannot be started"
+}
+
+_preflight_virt() {
+    if [ -n "$VIRT_TYPE" ]; then
+        log_ok "virt_type=$VIRT_TYPE (given explicitly)"; return 0
+    fi
+    if [ -e /dev/kvm ] && [ -r /dev/kvm ]; then
+        VIRT_TYPE=kvm; log_ok "virt_type=kvm (/dev/kvm is present and readable)"
+    else
+        VIRT_TYPE=qemu
+        log_warn "no usable /dev/kvm; falling back to virt_type=qemu (10-50x slower)"
+    fi
+}
+
+phase_preflight() {
+    log_step "preflight"
+    _need_privilege
+    _preflight_host
+
+    if [ -z "$MGMT_IP" ]; then
+        MGMT_IP="$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)"
+        [ -n "$MGMT_IP" ] || die "could not autodetect MGMT_IP; pass --mgmt-ip"
+        log_ok "MGMT_IP autodetected: $MGMT_IP"
+    else
+        valid_ipv4 "$MGMT_IP" || die "MGMT_IP '$MGMT_IP' is not a valid IPv4 address"
+        log_ok "MGMT_IP $MGMT_IP"
+    fi
+
+    if [ "$SUBCOMMAND" = "compute-add" ]; then
+        [ -n "$CONTROLLER_IP" ] || die "compute-add needs --controller-ip"
+        valid_ipv4 "$CONTROLLER_IP" || die "CONTROLLER_IP '$CONTROLLER_IP' is not a valid IPv4 address"
+        log_ok "CONTROLLER_IP $CONTROLLER_IP"
+    else
+        [ -n "$EXT_NIC" ]          || die "--ext-nic is required"
+        nic_exists "$EXT_NIC"      || die "EXT_NIC '$EXT_NIC' does not exist (present: $(ls /sys/class/net | tr '\n' ' '))"
+        valid_cidr "$PROVIDER_CIDR"     || die "PROVIDER_CIDR '$PROVIDER_CIDR' is not a valid IPv4 CIDR"
+        valid_ipv4 "$PROVIDER_GATEWAY"  || die "PROVIDER_GATEWAY is not a valid IPv4 address"
+        valid_ipv4 "$FLOATING_START"    || die "FLOATING_START is not a valid IPv4 address"
+        valid_ipv4 "$FLOATING_END"      || die "FLOATING_END is not a valid IPv4 address"
+        ip_in_cidr "$PROVIDER_GATEWAY" "$PROVIDER_CIDR" || die "PROVIDER_GATEWAY is outside PROVIDER_CIDR"
+        ip_in_cidr "$FLOATING_START"   "$PROVIDER_CIDR" || die "FLOATING_START is outside PROVIDER_CIDR"
+        ip_in_cidr "$FLOATING_END"     "$PROVIDER_CIDR" || die "FLOATING_END is outside PROVIDER_CIDR"
+        valid_cidr "$TENANT_CIDR"       || die "TENANT_CIDR is not a valid IPv4 CIDR"
+        valid_region_name "$REGION_NAME" || die "REGION_NAME is not a valid region name"
+        [ -n "$DNS_SERVER" ] || DNS_SERVER="$PROVIDER_GATEWAY"
+        valid_ipv4 "$DNS_SERVER" || die "DNS_SERVER is not a valid IPv4 address"
+        log_ok "provider network $PROVIDER_CIDR via $PROVIDER_GATEWAY, floating $FLOATING_START-$FLOATING_END"
+    fi
+    _preflight_virt
+
+    local free_mb free_gb
+    free_gb="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
+    [ -n "$free_gb" ] && [ "$free_gb" -lt 20 ] \
+        && log_warn "only ${free_gb}G free on /; an all-in-one wants 20G or more"
+    free_mb="$(free -m | awk '/^Mem:/{print $2}')"
+    [ -n "$free_mb" ] && [ "$free_mb" -lt 7000 ] \
+        && log_warn "only ${free_mb}MB of RAM; an all-in-one wants 8GB or more"
+    log_ok "preflight complete"
+}
+
+# ---------------------------------------------------------------------------
+# repositories
+#
+# The one place where Rocky differs from Ubuntu in kind rather than in naming:
+# there is no distribution OpenStack to apt-get. Four repositories are needed
+# and each is there for a different reason, so each is added deliberately.
+# ---------------------------------------------------------------------------
+phase_repos() {
+    log_step "repositories"
+    local changed=0
+
+    if ! $SUDO dnf -q repolist 2>/dev/null | grep -q '^epel'; then
+        $SUDO dnf -y install -q epel-release >/dev/null 2>&1 \
+            || die "could not install epel-release; EPEL 10 carries several 2026.1 libraries verbatim"
+        changed=1; log_ok "EPEL 10 enabled"
+    else
+        log_ok "EPEL 10 already enabled"
+    fi
+    if $SUDO dnf config-manager --set-enabled crb >/dev/null 2>&1 \
+       || $SUDO dnf config-manager --enable crb >/dev/null 2>&1; then
+        log_ok "CRB enabled"
+    fi
+
+    # OVS and OVN. The NFV SIG mirror is a RELEASED CentOS Stream repository, and
+    # it is pointed at $basearch on purpose: RDO's own repo file hardcodes
+    # x86_64, which silently yields nothing on any other builder.
+    local nfv="/etc/yum.repos.d/hagistack-nfv-ovs.repo"
+    if [ ! -f "$nfv" ]; then
+        $SUDO tee "$nfv" >/dev/null <<'EOF'
+# Open vSwitch and OVN for EL10. Rocky does not ship them; this is the released
+# CentOS Stream 10 NFV SIG mirror, addressed by $basearch rather than by the
+# hardcoded x86_64 that RDO's own repo file uses.
+[hagistack-nfv-ovs]
+name=NFV SIG OpenvSwitch ($basearch)
+baseurl=https://mirror.stream.centos.org/SIGs/10-stream/nfv/$basearch/openvswitch-2/
+enabled=1
+gpgcheck=0
+module_hotfixes=1
+EOF
+        changed=1; log_ok "NFV SIG OVS/OVN repository added"
+    else
+        log_ok "NFV SIG OVS/OVN repository already present"
+    fi
+
+    # Third-party Python libraries (eventlet, httplib2, pysaml2, retrying ...).
+    # This is RDO's DEPENDENCY tree. It is not the OpenStack component tree and
+    # it mixes no OpenStack releases — that distinction is the whole reason this
+    # shell can claim a single release at all.
+    local deps="/etc/yum.repos.d/hagistack-rdo-deps.repo"
+    if [ ! -f "$deps" ]; then
+        $SUDO tee "$deps" >/dev/null <<'EOF'
+# RDO's third-party dependency tree ONLY. Neither Rocky nor EPEL packages
+# eventlet, httplib2, flask-restful, pysaml2, retrying and about thirty others.
+#
+# RDO's OpenStack component repositories (delorean-component-*) are deliberately
+# NOT here: they carry trunk snapshots that would replace a 2026.1 library with
+# a 2025-era build, and nothing would say so.
+[hagistack-rdo-deps]
+name=RDO EL10 third-party python dependencies
+baseurl=https://trunk.rdoproject.org/centos10-master/deps/latest/
+enabled=1
+gpgcheck=0
+module_hotfixes=1
+
+[hagistack-rdo-build-deps]
+name=RDO EL10 third-party build dependencies
+baseurl=https://trunk.rdoproject.org/centos10-master/build-deps/latest/
+enabled=1
+gpgcheck=0
+module_hotfixes=1
+
+[hagistack-rabbitmq]
+name=RabbitMQ and Erlang for EL10
+baseurl=https://trunk.rdoproject.org/centos10-master/rabbitmq/
+enabled=1
+gpgcheck=0
+module_hotfixes=1
+EOF
+        changed=1; log_ok "RDO dependency repositories added (no OpenStack component repo)"
+    else
+        log_ok "RDO dependency repositories already present"
+    fi
+
+    # The 2026.1 RPMs themselves, built by ../rocky10.2/build-rpms.sh.
+    [ -n "$REPO_URL" ] || die "--repo-url is required on Rocky.
+     There is no distribution OpenStack here and no published 2026.1 for EL10.
+     Point it at the output of build-rpms.sh, e.g.
+       --repo-url file:///opt/hagistack-repo
+       --repo-url https://your.host/hagistack-gazpacho/"
+    local ours="/etc/yum.repos.d/hagistack-gazpacho.repo"
+    local want
+    want="$(cat <<EOF
+# OpenStack 2026.1 Gazpacho, built from the released tarballs by
+# rocky10.2/build-rpms.sh with every input pinned by commit id and sha256.
+# priority=1 so nothing else can shadow it.
+[hagistack-gazpacho]
+name=OpenStack 2026.1 Gazpacho (self-built, Rocky 10)
+baseurl=$REPO_URL
+enabled=1
+gpgcheck=0
+priority=1
+EOF
+)"
+    local cur=""; [ -f "$ours" ] && cur="$($SUDO cat "$ours")"
+    if [ "$cur" != "$want" ]; then
+        printf '%s\n' "$want" | $SUDO tee "$ours" >/dev/null
+        changed=1; log_ok "2026.1 repository configured: $REPO_URL"
+    else
+        log_ok "2026.1 repository already configured (unchanged)"
+    fi
+
+    # Refuse to continue if an OpenStack component repo is enabled: it would
+    # make every claim about a single release untrue, quietly.
+    local bad
+    bad="$($SUDO dnf -q repolist 2>/dev/null | awk '{print $1}' | grep -E 'delorean-component' || true)"
+    if [ -n "$bad" ]; then
+        log_warn "RDO OpenStack component repositories are enabled on this host:"
+        printf '       %s\n' $bad >&2
+        log_warn "  They carry trunk snapshots of the OpenStack libraries. With them enabled"
+        log_warn "  this is NOT a single-release install, whatever the versions look like."
+        log_warn "  Disable them (dnf config-manager --set-disabled 'delorean-component-*')."
+    fi
+
+    [ "$changed" -eq 1 ] && $SUDO dnf -q makecache >/dev/null 2>&1
+    # Prove the repository actually answers before anything depends on it.
+    local kver
+    kver="$($SUDO dnf -q repoquery --repo hagistack-gazpacho --qf '%{version}' openstack-keystone 2>/dev/null | tail -1)"
+    [ -n "$kver" ] || die "the 2026.1 repository at $REPO_URL does not offer openstack-keystone.
+     Check the URL, and that build-rpms.sh ran createrepo_c over its output."
+    log_ok "2026.1 repository answers: openstack-keystone $kver"
+    phase_mark_done repos
+}
+
+# ---------------------------------------------------------------------------
+# secrets
+# ---------------------------------------------------------------------------
+# One line each, deliberately. These are matched with `case " $LIST " in *" $k "*`
+# and a newline inside the list is not a space, so a wrapped list silently fails
+# to match whichever key sits at the end of a line.
+SECRET_KEYS="MYSQL_ROOT_PASS KEYSTONE_DB_PASS GLANCE_DB_PASS PLACEMENT_DB_PASS NEUTRON_DB_PASS NOVA_DB_PASS RABBIT_PASS ADMIN_PASSWORD GLANCE_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS NOVA_SERVICE_PASS METADATA_PROXY_SECRET"
+COMPUTE_SECRET_KEYS="RABBIT_PASS NOVA_SERVICE_PASS PLACEMENT_SERVICE_PASS NEUTRON_SERVICE_PASS METADATA_PROXY_SECRET"
+
+phase_secrets() {
+    log_step "secrets"
+    $SUDO install -d -m 0700 "$HAGISTACK_ETC"
+    if [ -f "$SECRETS_FILE" ]; then
+        log_ok "$SECRETS_FILE exists; existing secrets are reused, never rotated"
+    else
+        if [ "$SUBCOMMAND" = "compute-add" ]; then
+            die "$SECRETS_FILE does not exist.
+     compute-add NEVER invents secrets: a compute node that made up its own
+     RabbitMQ password could not talk to anything. On the controller run
+       sudo hagistack compute-secrets > compute-secrets.env
+     copy it here, then
+       sudo install -o root -g root -m 0600 compute-secrets.env $SECRETS_FILE"
+        fi
+        log_info "generating $SECRETS_FILE"
+        local tmp; tmp="$(mktemp)"; chmod 0600 "$tmp"
+        { echo "# hagistack secrets — generated $(date -u +%FT%TZ). Never commit this file."
+          local k
+          for k in $SECRET_KEYS; do printf '%s=%s\n' "$k" "$(gen_secret 32)"; done
+        } > "$tmp"
+        $SUDO install -o root -g root -m 0600 "$tmp" "$SECRETS_FILE"
+        rm -f "$tmp"
+        log_ok "secrets created (mode 0600); values are never printed"
+    fi
+    local line k v
+    while IFS= read -r line; do
+        case "$line" in ''|\#*) continue ;; esac
+        k="${line%%=*}"; v="${line#*=}"
+        case " $SECRET_KEYS " in *" $k "*) printf -v "$k" '%s' "$v" ;; esac
+    done < <($SUDO cat "$SECRETS_FILE")
+    for k in $SECRET_KEYS; do
+        if [ "$SUBCOMMAND" = "compute-add" ]; then
+            case " $COMPUTE_SECRET_KEYS " in *" $k "*) ;; *) continue ;; esac
+        fi
+        [ -n "${!k:-}" ] || die "$SECRETS_FILE is missing $k"
+    done
+    log_ok "secrets loaded"
+}
+
+# ---------------------------------------------------------------------------
+# packages
+# ---------------------------------------------------------------------------
+CONTROLLER_PKGS="openstack-keystone openstack-glance openstack-placement-api
+                 openstack-neutron openstack-neutron-ml2
+                 openstack-neutron-rpc-server openstack-neutron-periodic-workers
+                 openstack-neutron-ovn-metadata-agent
+                 openstack-nova-api openstack-nova-conductor openstack-nova-scheduler
+                 openstack-nova-compute
+                 python3-openstackclient httpd python3-mod_wsgi
+                 mariadb-server rabbitmq-server memcached
+                 openvswitch3.5 ovn26.03 ovn26.03-central ovn26.03-host
+                 libvirt qemu-kvm crudini"
+COMPUTE_PKGS="openstack-nova-compute openstack-neutron-ovn-metadata-agent
+              openvswitch3.5 ovn26.03 ovn26.03-host libvirt qemu-kvm"
+
+dnf_install() {
+    local what="$1"; shift
+    log_info "installing $what"
+    # shellcheck disable=SC2086
+    $SUDO dnf -y --setopt=install_weak_deps=False install $* > /tmp/hagistack-dnf.$$ 2>&1 || {
+        log_error "dnf install failed. Last lines:"
+        tail -20 /tmp/hagistack-dnf.$$ | sed 's/^/     /' >&2
+        rm -f /tmp/hagistack-dnf.$$
+        die "package installation failed"
+    }
+    rm -f /tmp/hagistack-dnf.$$
+    log_ok "$what installed"
+}
+
+phase_packages() {
+    log_step "packages"
+    local pkgs="$CONTROLLER_PKGS"
+    [ "$SUBCOMMAND" = "compute-add" ] && pkgs="$COMPUTE_PKGS"
+    dnf_install "$([ "$SUBCOMMAND" = "compute-add" ] && echo 'compute-node packages' || echo 'the OpenStack 2026.1 package set')" $pkgs
+
+    # Say what was actually installed, from the RPM database, and prove that the
+    # OpenStack half came from the 2026.1 repository rather than from anywhere
+    # that might be carrying a trunk snapshot.
+    local p v
+    for p in openstack-keystone openstack-glance openstack-placement-api \
+             openstack-neutron-common openstack-nova-common; do
+        v="$(rpm -q --qf '%{VERSION}' "$p" 2>/dev/null || true)"
+        [ -n "$v" ] && log_info "  $p $v"
+    done
+    local trunk
+    trunk="$(rpm -qa --qf '%{NAME} %{RELEASE}\n' 2>/dev/null \
+             | awk '$2 ~ /^0\.20[0-9][0-9][0-9][0-9]/ {print $1}' \
+             | grep -E '^(openstack-|python3-(oslo|os-|osc|keystone|neutron|glance|nova|placement|cliff|tooz|taskflow|castellan|pycadf|futurist|automaton|stevedore))' || true)"
+    if [ -n "$trunk" ]; then
+        log_warn "these OpenStack packages are RDO trunk snapshots, not 2026.1 releases:"
+        printf '       %s\n' $trunk >&2
+        log_warn "  This host is NOT running a single release."
+    else
+        log_ok "no OpenStack package on this host is a trunk snapshot"
+    fi
+    phase_mark_done packages
+}
+
+# ---------------------------------------------------------------------------
+# base layer
+# ---------------------------------------------------------------------------
+phase_database() {
+    log_step "database (MariaDB)"
+    local dbconf="/etc/my.cnf.d/99-hagistack.cnf" changed=0
+    # Loopback only, on purpose. Nothing outside this host is supposed to open
+    # the database: a compute node reaches the cell through nova-conductor, and
+    # compute-secrets deliberately carries no database password. Binding to the
+    # management address as well would only widen the blast radius of a mistake.
+    ini_set "$dbconf" mysqld bind-address "127.0.0.1"              && changed=1
+    ini_set "$dbconf" mysqld default-storage-engine innodb          && changed=1
+    ini_set "$dbconf" mysqld innodb_file_per_table on               && changed=1
+    ini_set "$dbconf" mysqld max_connections "$MYSQL_MAX_CONNECTIONS" && changed=1
+    ini_set "$dbconf" mysqld collation-server utf8mb4_general_ci    && changed=1
+    ini_set "$dbconf" mysqld character-set-server utf8mb4           && changed=1
+    [ "$changed" -eq 1 ] && log_ok "$dbconf written" || log_ok "$dbconf already correct (unchanged)"
+    $SUDO chmod 0644 "$dbconf"
+
+    service_start_enable mariadb
+    service_apply mariadb "$dbconf"
+    wait_for 60 "MariaDB" mariadb_reachable || die "MariaDB is not answering"
+    log_ok "MariaDB reachable on 127.0.0.1 (loopback only, by design)"
+
+    local db user passvar
+    for db in keystone glance placement neutron nova nova_api nova_cell0; do
+        case "$db" in
+            keystone)  passvar=KEYSTONE_DB_PASS;  user=keystone  ;;
+            glance)    passvar=GLANCE_DB_PASS;    user=glance    ;;
+            placement) passvar=PLACEMENT_DB_PASS; user=placement ;;
+            neutron)   passvar=NEUTRON_DB_PASS;   user=neutron   ;;
+            *)         passvar=NOVA_DB_PASS;      user=nova      ;;
+        esac
+        if mysql_root -e "USE \`$db\`" >/dev/null 2>&1; then
+            log_ok "database '$db' already exists — left untouched"
+        else
+            mysql_root -e "CREATE DATABASE \`$db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
+            log_ok "database '$db' created"
+        fi
+        mysql_root -e "CREATE USER IF NOT EXISTS '$user'@'localhost' IDENTIFIED BY '${!passvar}'"
+        mysql_root -e "CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED BY '${!passvar}'"
+        mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$user'@'localhost'"
+        mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$user'@'%'"
+    done
+    mysql_root -e "FLUSH PRIVILEGES"
+    log_ok "database users and grants in place (passwords not shown)"
+    phase_mark_done database
+}
+
+phase_rabbitmq() {
+    log_step "message queue (RabbitMQ)"
+    service_start_enable rabbitmq-server
+    wait_for 90 "RabbitMQ" rabbitmq_reachable || die "RabbitMQ is not answering"
+    if $SUDO rabbitmqctl list_users 2>/dev/null | awk '{print $1}' | grep -qx openstack; then
+        log_ok "rabbit user 'openstack' already exists — password left as it is"
+    else
+        $SUDO rabbitmqctl add_user openstack "$RABBIT_PASS" >/dev/null
+        log_ok "rabbit user 'openstack' created"
+    fi
+    $SUDO rabbitmqctl set_permissions openstack ".*" ".*" ".*" >/dev/null
+    log_ok "rabbit permissions set"
+    phase_mark_done rabbitmq
+}
+
+phase_memcached() {
+    log_step "cache (memcached)"
+    local f="/etc/sysconfig/memcached" changed=0
+    # EL's memcached reads OPTIONS from /etc/sysconfig/memcached, not a conf
+    # file with repeated -l lines. Bind it to the management address so the
+    # other nodes' services can reach it.
+    local want="OPTIONS=\"-l ${MGMT_IP},127.0.0.1\""
+    if ! $SUDO grep -qxF "$want" "$f" 2>/dev/null; then
+        $SUDO sed -i '/^OPTIONS=/d' "$f" 2>/dev/null || true
+        printf '%s\n' "$want" | $SUDO tee -a "$f" >/dev/null
+        changed=1; log_ok "memcached bound to ${MGMT_IP},127.0.0.1"
+    else
+        log_ok "memcached options already correct (unchanged)"
+    fi
+    service_start_enable memcached
+    service_apply memcached "$f"
+    # Measure that the cache answers, rather than trusting is-active: this is
+    # the defect the Ubuntu shell was bitten by and it costs one probe.
+    wait_for 60 "memcached on ${MGMT_IP}:11211" memcached_reachable \
+        || die "memcached is active but not answering on ${MGMT_IP}:11211"
+    log_ok "memcached answering on ${MGMT_IP}:11211"
+    phase_mark_done memcached
+}
+
+# ---------------------------------------------------------------------------
+# Keystone
+#
+# The EL packaging ships no /etc/keystone/keystone.conf at all — only
+# /usr/share/keystone/keystone-dist.conf — and no unit and no vhost. So this
+# phase creates the configuration file as well as filling it.
+# ---------------------------------------------------------------------------
+keystone_serving() { _probe_http "http://${MGMT_IP}:${KEYSTONE_PORT}/v3"; }
+
+phase_keystone() {
+    log_step "identity (Keystone)"
+    mariadb_reachable || { note_skip keystone "MariaDB is not reachable"; return 0; }
+
+    $SUDO install -d -o root -g keystone -m 0750 /etc/keystone
+    [ -f "$KEYSTONE_CONF" ] || { $SUDO touch "$KEYSTONE_CONF"; log_info "created $KEYSTONE_CONF (the RPM ships none)"; }
+
+    local changed=0
+    ini_set "$KEYSTONE_CONF" database connection \
+        "mysql+pymysql://keystone:${KEYSTONE_DB_PASS}@127.0.0.1/keystone?charset=utf8mb4" && changed=1
+    write_db_pool "$KEYSTONE_CONF"
+    ini_set "$KEYSTONE_CONF" token provider fernet && changed=1
+    ini_set "$KEYSTONE_CONF" cache backend oslo_cache.memcache_pool && changed=1
+    ini_set "$KEYSTONE_CONF" cache enabled true && changed=1
+    ini_set "$KEYSTONE_CONF" cache memcache_servers "${MGMT_IP}:11211" && changed=1
+    [ "$changed" -eq 1 ] && log_ok "keystone.conf configured (credentials not shown)" \
+                         || log_ok "keystone.conf already correct (unchanged)"
+    $SUDO chown root:keystone "$KEYSTONE_CONF"; $SUDO chmod 0640 "$KEYSTONE_CONF"
+
+    local before after
+    before="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keystone'" 2>/dev/null || echo 0)"
+    $SUDO runuser -u keystone -- keystone-manage db_sync \
+        || die "keystone-manage db_sync failed"
+    after="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keystone'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "identity schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "identity schema already current ($after tables, unchanged)"
+    else log_ok "identity schema migrated ($before -> $after tables)"; fi
+
+    if $SUDO test -s /etc/keystone/fernet-keys/0; then
+        log_ok "fernet keys already present — not rotated"
+    else
+        $SUDO keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+        log_ok "fernet keys created"
+    fi
+    if $SUDO test -s /etc/keystone/credential-keys/0; then
+        log_ok "credential keys already present — not rotated"
+    else
+        $SUDO keystone-manage credential_setup --keystone-user keystone --keystone-group keystone
+        log_ok "credential keys created"
+    fi
+
+    httpd_servername || true
+    write_vhost keystone "$KEYSTONE_PORT" keystone "$SITELIB/keystone/wsgi/api.py" && changed=1
+    service_start_enable httpd
+    httpd_reload
+    wait_for 90 "the identity API" keystone_serving \
+        || { note_skip keystone "httpd is running but http://${MGMT_IP}:${KEYSTONE_PORT}/v3 does not answer"; return 0; }
+    log_ok "identity API answering on :${KEYSTONE_PORT}"
+
+    $SUDO keystone-manage bootstrap \
+        --bootstrap-password "$ADMIN_PASSWORD" \
+        --bootstrap-admin-url "http://${MGMT_IP}:${KEYSTONE_PORT}/v3/" \
+        --bootstrap-internal-url "http://${MGMT_IP}:${KEYSTONE_PORT}/v3/" \
+        --bootstrap-public-url "http://${MGMT_IP}:${KEYSTONE_PORT}/v3/" \
+        --bootstrap-region-id "$REGION_NAME" >/dev/null \
+        || die "keystone-manage bootstrap failed"
+    log_ok "keystone bootstrapped (admin project, user, role and endpoints)"
+
+    write_admin_openrc
+    # An authenticated token, not a 200 on an unauthenticated page.
+    wait_for 60 "an authenticated token" bash -c '
+        set -a; . /etc/hagistack/admin-openrc; set +a; openstack token issue >/dev/null 2>&1' \
+        || { note_skip keystone "the identity API answers but 'openstack token issue' failed"; return 0; }
+    log_ok "authenticated identity verified (openstack token issue succeeded)"
+    phase_mark_done keystone
+}
+
+keystone_ready_for_registration() {
+    keystone_serving && openstack_admin token issue >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Glance — the one service whose packaged unit still works on 2026.1
+# ---------------------------------------------------------------------------
+glance_serving() { _probe_http "http://${MGMT_IP}:${GLANCE_PORT}/"; }
+
+phase_glance() {
+    log_step "image service (Glance)"
+    mariadb_reachable || { note_skip glance "MariaDB is not reachable"; return 0; }
+    keystone_ready_for_registration || { note_skip glance "Keystone is not answering"; return 0; }
+    memcached_reachable || { note_skip glance "memcached is not answering on ${MGMT_IP}:11211"; return 0; }
+
+    local changed=0
+    ini_set "$GLANCE_CONF" database connection \
+        "mysql+pymysql://glance:${GLANCE_DB_PASS}@127.0.0.1/glance?charset=utf8mb4" && changed=1
+    write_db_pool "$GLANCE_CONF"
+    ini_set "$GLANCE_CONF" DEFAULT bind_host "$MGMT_IP" && changed=1
+    ini_set "$GLANCE_CONF" DEFAULT bind_port "$GLANCE_PORT" && changed=1
+    ini_set "$GLANCE_CONF" glance_store stores file && changed=1
+    ini_set "$GLANCE_CONF" glance_store default_store file && changed=1
+    ini_set "$GLANCE_CONF" glance_store filesystem_store_datadir /var/lib/glance/images/ && changed=1
+    ini_set "$GLANCE_CONF" paste_deploy flavor keystone && changed=1
+    write_authtoken "$GLANCE_CONF" glance "$GLANCE_SERVICE_PASS"
+    [ "$changed" -eq 1 ] && log_ok "glance-api.conf configured (credentials not shown)" \
+                         || log_ok "glance-api.conf already correct (unchanged)"
+    $SUDO chown root:glance "$GLANCE_CONF"; $SUDO chmod 0640 "$GLANCE_CONF"
+    $SUDO install -d -o glance -g glance -m 0750 /var/lib/glance/images
+
+    local before after
+    before="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glance'" 2>/dev/null || echo 0)"
+    $SUDO runuser -u glance -- glance-manage db_sync >/dev/null 2>&1 \
+        || die "glance-manage db_sync failed"
+    after="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glance'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "image schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "image schema already current ($after tables, unchanged)"
+    else log_ok "image schema migrated ($before -> $after tables)"; fi
+
+    ks_ensure_project service
+    ks_ensure_user glance "$GLANCE_SERVICE_PASS"
+    ks_ensure_role_assignment glance service admin
+    ks_ensure_service glance image "OpenStack Image"
+    local url="http://${MGMT_IP}:${GLANCE_PORT}"
+    ks_ensure_endpoint glance public "$url"; ks_ensure_endpoint glance internal "$url"; ks_ensure_endpoint glance admin "$url"
+
+    local u
+    for u in $GLANCE_UNITS; do service_apply "$u" "$GLANCE_CONF"; done
+    wait_for 90 "the image API" glance_serving \
+        || { note_skip glance "openstack-glance-api is running but :${GLANCE_PORT} does not answer"; return 0; }
+    wait_for 60 "an authenticated image list" openstack_admin image list >/dev/null 2>&1 \
+        || { note_skip glance "the image endpoint answers but 'openstack image list' failed"; return 0; }
+    log_ok "image API verified (openstack image list succeeded)"
+    phase_mark_done glance
+}
+
+# ---------------------------------------------------------------------------
+# Placement — the one service whose packaged vhost works, once our spec patch
+# has retargeted it from the deleted /usr/bin/placement-api to the module.
+# ---------------------------------------------------------------------------
+placement_serving() { _probe_http "http://${MGMT_IP}:${PLACEMENT_PORT}/"; }
+
+phase_placement() {
+    log_step "placement"
+    mariadb_reachable || { note_skip placement "MariaDB is not reachable"; return 0; }
+    keystone_ready_for_registration || { note_skip placement "Keystone is not answering"; return 0; }
+
+    local changed=0
+    ini_set "$PLACEMENT_CONF" placement_database connection \
+        "mysql+pymysql://placement:${PLACEMENT_DB_PASS}@127.0.0.1/placement?charset=utf8mb4" && changed=1
+    write_db_pool "$PLACEMENT_CONF" placement_database
+    ini_set "$PLACEMENT_CONF" api auth_strategy keystone && changed=1
+    write_authtoken "$PLACEMENT_CONF" placement "$PLACEMENT_SERVICE_PASS"
+    [ "$changed" -eq 1 ] && log_ok "placement.conf configured (credentials not shown)" \
+                         || log_ok "placement.conf already correct (unchanged)"
+    $SUDO chown root:placement "$PLACEMENT_CONF"; $SUDO chmod 0640 "$PLACEMENT_CONF"
+
+    # The vhost the RPM ships. Verified on a real install to point at
+    # site-packages/placement/wsgi/api.py, because spec-patches/placement.patch
+    # retargets it; without that patch it names a binary 15.0.0 does not build.
+    local vhost="$HTTPD_CONF_D/00-placement-api.conf"
+    if $SUDO grep -q "placement/wsgi/api.py" "$vhost" 2>/dev/null; then
+        log_ok "packaged placement vhost points at the WSGI module — used as shipped"
+        # ... but it carries no <Directory> grant, and Apache answers 403.
+        httpd_grant_wsgi_dir "$SITELIB/placement/wsgi" && changed=1
+    else
+        log_warn "the packaged placement vhost does not reference placement/wsgi/api.py;"
+        log_warn "  writing our own, because the shipped one names a removed binary"
+        write_vhost placement "$PLACEMENT_PORT" placement "$SITELIB/placement/wsgi/api.py" && changed=1
+    fi
+
+    local before after
+    before="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='placement'" 2>/dev/null || echo 0)"
+    $SUDO runuser -u placement -- placement-manage db sync >/dev/null 2>&1 \
+        || die "placement-manage db sync failed"
+    after="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='placement'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "placement schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "placement schema already current ($after tables, unchanged)"
+    else log_ok "placement schema migrated ($before -> $after tables)"; fi
+
+    ks_ensure_project service
+    ks_ensure_user placement "$PLACEMENT_SERVICE_PASS"
+    ks_ensure_role_assignment placement service admin
+    ks_ensure_service placement placement "Placement API"
+    local url="http://${MGMT_IP}:${PLACEMENT_PORT}"
+    ks_ensure_endpoint placement public "$url"; ks_ensure_endpoint placement internal "$url"; ks_ensure_endpoint placement admin "$url"
+
+    httpd_reload
+    wait_for 90 "the placement API" placement_serving \
+        || { note_skip placement "httpd is running but :${PLACEMENT_PORT} does not answer"; return 0; }
+    # Authenticated, over the REST API, with a real token.
+    wait_for 60 "an authenticated placement query" bash -c '
+        set -a; . /etc/hagistack/admin-openrc; set +a
+        t=$(openstack token issue -f value -c id 2>/dev/null) || exit 1
+        curl -sf -H "X-Auth-Token: $t" -H "OpenStack-API-Version: placement 1.39" \
+             "http://'"$MGMT_IP"':'"$PLACEMENT_PORT"'/resource_providers" >/dev/null' \
+        || { note_skip placement "the placement endpoint answers but an authenticated query failed"; return 0; }
+    log_ok "placement API verified with a token (GET /resource_providers succeeded)"
+    phase_mark_done placement
+}
+
+# ---------------------------------------------------------------------------
+# OVS / OVN
+#
+# EL has no ovn-central / ovn-host wrapper units: ovn-northd and ovn-controller
+# are real units, and openvswitch.service is a oneshot that pulls in
+# ovsdb-server and ovs-vswitchd.
+# ---------------------------------------------------------------------------
+ovs_vsctl()  { $SUDO ovs-vsctl "$@"; }
+ovn_nbctl()  { $SUDO ovn-nbctl "$@"; }
+ovn_sbctl()  { $SUDO ovn-sbctl "$@"; }
+ovs_ready()  { ovs_vsctl --timeout=10 show >/dev/null 2>&1; }
+ovn_nb_ready() { ovn_nbctl --timeout=10 show >/dev/null 2>&1; }
+ovn_sb_ready() { ovn_sbctl --timeout=10 show >/dev/null 2>&1; }
+
+phase_ovn() {
+    log_step "data plane (Open vSwitch and OVN)"
+    service_start_enable openvswitch
+    wait_for 60 "Open vSwitch" ovs_ready || die "ovs-vsctl does not answer"
+    log_ok "Open vSwitch $(ovs_vsctl --version 2>/dev/null | head -1 | awk '{print $NF}') running"
+
+    if [ "$SUBCOMMAND" != "compute-add" ]; then
+        service_start_enable ovn-northd
+        wait_for 60 "the OVN northbound database" ovn_nb_ready || die "ovn-nbctl does not answer"
+        wait_for 60 "the OVN southbound database" ovn_sb_ready || die "ovn-sbctl does not answer"
+        # The southbound database has to be reachable by the other nodes; the
+        # northbound one does not, so it stays on loopback.
+        $SUDO ovn-sbctl --timeout=10 set-connection "ptcp:${OVN_SB_PORT}:${MGMT_IP}" >/dev/null 2>&1 || true
+        $SUDO ovn-nbctl --timeout=10 set-connection "ptcp:${OVN_NB_PORT}:127.0.0.1" >/dev/null 2>&1 || true
+        log_ok "OVN northbound on 127.0.0.1:${OVN_NB_PORT}, southbound on ${MGMT_IP}:${OVN_SB_PORT}"
+    fi
+
+    local sb_remote="tcp:${MGMT_IP}:${OVN_SB_PORT}"
+    [ "$SUBCOMMAND" = "compute-add" ] && sb_remote="tcp:${CONTROLLER_IP}:${OVN_SB_PORT}"
+
+    ovs_vsctl set open . external-ids:ovn-remote="$sb_remote"
+    ovs_vsctl set open . external-ids:ovn-encap-type=geneve
+    ovs_vsctl set open . external-ids:ovn-encap-ip="$MGMT_IP"
+    ovs_vsctl set open . external-ids:system-id="$OS_HOSTNAME"
+    ovs_vsctl set open . external-ids:hostname="$OS_HOSTNAME"
+    if [ "$SUBCOMMAND" != "compute-add" ]; then
+        ovs_vsctl set open . external-ids:ovn-cms-options=enable-chassis-as-gw
+        ovs_vsctl --may-exist add-br "$PROVIDER_BRIDGE"
+        ovs_vsctl set open . external-ids:ovn-bridge-mappings="${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}"
+        log_ok "provider bridge $PROVIDER_BRIDGE created and mapped to $PROVIDER_PHYSNET"
+    fi
+    log_ok "chassis configured: system-id and hostname=$OS_HOSTNAME, encap geneve from $MGMT_IP to $sb_remote"
+
+    # os_vif reaches the local OVSDB over TCP on loopback. Its default is
+    # tcp:127.0.0.1:6640, which nothing listens on until asked; the unix socket
+    # is root-only and nova runs as nova. A loopback manager lives in the OVSDB
+    # and survives a restart. (Carried over from the Ubuntu shell, where this
+    # cost a day.)
+    if ! ovs_vsctl --timeout=10 get-manager 2>/dev/null | grep -q "ptcp:6640:127.0.0.1"; then
+        ovs_vsctl --timeout=10 set-manager "ptcp:6640:127.0.0.1"
+        log_ok "ovsdb-server now has a loopback-only manager on 6640 (for os_vif)"
+    else
+        log_ok "ovsdb-server already has the loopback manager (unchanged)"
+    fi
+
+    service_start_enable ovn-controller
+    phase_mark_done ovn
+}
+
+# ---------------------------------------------------------------------------
+# Neutron
+#
+# Two Rocky-specific facts, both measured rather than assumed:
+#   * neutron-rpc-server.service passes --config-file /etc/neutron/plugin.ini,
+#     and nothing creates that file. On EL it is conventionally a symlink to the
+#     ML2 configuration; without it the unit will not start at all.
+#   * there is no API unit and no vhost, because 2026.1 deleted neutron-api and
+#     neutron-server. The API is a module, so this shell writes the vhost.
+# ---------------------------------------------------------------------------
+neutron_serving() { _probe_http "http://${MGMT_IP}:${NEUTRON_PORT}/"; }
+
+phase_neutron() {
+    log_step "networking (Neutron, ML2/OVN)"
+    mariadb_reachable || { note_skip neutron "MariaDB is not reachable"; return 0; }
+    keystone_ready_for_registration || { note_skip neutron "Keystone is not answering"; return 0; }
+    phase_done ovn || { note_skip neutron "the OVN phase did not complete"; return 0; }
+
+    local changed=0
+    ini_set "$NEUTRON_CONF" DEFAULT core_plugin ml2 && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT service_plugins ovn-router && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT auth_strategy keystone && changed=1
+    ini_set "$NEUTRON_CONF" DEFAULT transport_url "rabbit://openstack:${RABBIT_PASS}@${MGMT_IP}:5672/" && changed=1
+    ini_set "$NEUTRON_CONF" database connection \
+        "mysql+pymysql://neutron:${NEUTRON_DB_PASS}@127.0.0.1/neutron?charset=utf8mb4" && changed=1
+    write_db_pool "$NEUTRON_CONF"
+    write_authtoken "$NEUTRON_CONF" neutron "$NEUTRON_SERVICE_PASS"
+    # Neutron has to call Nova back when a port becomes ACTIVE, or every guest
+    # dies at vif_plugging_timeout. The packaged [nova] section is comments only.
+    write_service_auth "$NEUTRON_CONF" nova nova "$NOVA_SERVICE_PASS"
+
+    ini_set "$ML2_CONF" ml2 type_drivers "flat,vlan,geneve" && changed=1
+    ini_set "$ML2_CONF" ml2 tenant_network_types geneve && changed=1
+    ini_set "$ML2_CONF" ml2 mechanism_drivers ovn && changed=1
+    ini_set "$ML2_CONF" ml2 extension_drivers port_security && changed=1
+    ini_set "$ML2_CONF" ml2 overlay_ip_version 4 && changed=1
+    ini_set "$ML2_CONF" ml2_type_geneve vni_ranges "1:65536" && changed=1
+    ini_set "$ML2_CONF" ml2_type_geneve max_header_size 38 && changed=1
+    ini_set "$ML2_CONF" ml2_type_flat flat_networks "$PROVIDER_PHYSNET" && changed=1
+    ini_set "$ML2_CONF" ml2_type_vlan network_vlan_ranges "$PROVIDER_PHYSNET" && changed=1
+    ini_set "$ML2_CONF" securitygroup enable_security_group true && changed=1
+    ini_set "$ML2_CONF" ovn ovn_nb_connection "tcp:127.0.0.1:${OVN_NB_PORT}" && changed=1
+    ini_set "$ML2_CONF" ovn ovn_sb_connection "tcp:${MGMT_IP}:${OVN_SB_PORT}" && changed=1
+    ini_set "$ML2_CONF" ovn ovn_l3_scheduler leastloaded && changed=1
+    ini_set "$ML2_CONF" ovn ovn_metadata_enabled true && changed=1
+
+    ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$MGMT_IP" && changed=1
+    ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
+    # The OVN metadata agent runs as `neutron` and /var/run/openvswitch/db.sock
+    # is srwxr-x--- root:root, so the unix socket gives
+    #   Exception: Could not retrieve schema from unix:/var/run/openvswitch/db.sock
+    # and the agent dies without ever creating an ovnmeta namespace — which
+    # surfaces only as a guest failing to reach 169.254.169.254. Use the same
+    # loopback-only manager the OVN phase asks ovsdb-server for.
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "$OVS_DB_TCP" && changed=1
+    ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${MGMT_IP}:${OVN_SB_PORT}" && changed=1
+
+    [ "$changed" -eq 1 ] && log_ok "neutron.conf, ml2_conf.ini and the metadata agent configured" \
+                         || log_ok "neutron configuration already correct (unchanged)"
+    local f
+    for f in "$NEUTRON_CONF" "$ML2_CONF" "$OVN_META_CONF"; do
+        $SUDO chown root:neutron "$f" 2>/dev/null || true; $SUDO chmod 0640 "$f"
+    done
+
+    # /etc/neutron/plugin.ini — required by neutron-rpc-server.service, created
+    # by nothing. Measured on a real install: the unit's ExecStart names it and
+    # the package does not ship it.
+    if [ ! -e /etc/neutron/plugin.ini ]; then
+        $SUDO ln -s "$ML2_CONF" /etc/neutron/plugin.ini
+        log_ok "/etc/neutron/plugin.ini symlinked to $ML2_CONF (neutron-rpc-server requires it)"
+    else
+        log_ok "/etc/neutron/plugin.ini already present (unchanged)"
+    fi
+
+    if $SUDO systemctl is-enabled neutron-server >/dev/null 2>&1; then
+        $SUDO systemctl disable --now neutron-server >/dev/null 2>&1 || true
+        log_warn "neutron-server.service was enabled; disabled — its ExecStart names /usr/bin/neutron-server,"
+        log_warn "  which 2026.1 does not build. The API runs under httpd from the module instead."
+    fi
+
+    local before after
+    before="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='neutron'" 2>/dev/null || echo 0)"
+    local nerr; nerr="$(mktemp)"; chmod 0600 "$nerr"
+    if ! $SUDO runuser -u neutron -- neutron-db-manage \
+            --config-file "$NEUTRON_CONF" --config-file "$ML2_CONF" upgrade head >"$nerr" 2>&1; then
+        log_error "neutron-db-manage failed. Diagnostics (credentials redacted):"
+        $SUDO sed "s/${NEUTRON_DB_PASS}/<redacted>/g; s/${RABBIT_PASS}/<redacted>/g" "$nerr" \
+            | grep -viE 'password|secret' | tail -12 | sed 's/^/     /' >&2
+        rm -f "$nerr"; die "neutron-db-manage upgrade head failed"
+    fi
+    rm -f "$nerr"
+    after="$(mysql_root -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='neutron'" 2>/dev/null || echo 0)"
+    if [ "$before" = "0" ]; then log_ok "networking schema created ($after tables)"
+    elif [ "$before" = "$after" ]; then log_ok "networking schema already current ($after tables, unchanged)"
+    else log_ok "networking schema migrated ($before -> $after tables)"; fi
+
+    ks_ensure_project service
+    ks_ensure_user neutron "$NEUTRON_SERVICE_PASS"
+    ks_ensure_role_assignment neutron service admin
+    ks_ensure_service neutron network "OpenStack Networking"
+    local url="http://${MGMT_IP}:${NEUTRON_PORT}"
+    ks_ensure_endpoint neutron public "$url"; ks_ensure_endpoint neutron internal "$url"; ks_ensure_endpoint neutron admin "$url"
+
+    write_vhost neutron "$NEUTRON_PORT" neutron "$SITELIB/neutron/wsgi/api.py" && changed=1
+    httpd_reload
+    local u
+    for u in $NEUTRON_UNITS; do service_apply "$u" "$NEUTRON_CONF" "$ML2_CONF" "$OVN_META_CONF"; done
+
+    wait_for 90 "the networking API" neutron_serving \
+        || { note_skip neutron "httpd is running but :${NEUTRON_PORT} does not answer"; return 0; }
+    wait_for 90 "an authenticated network list" openstack_admin network list >/dev/null 2>&1 \
+        || { note_skip neutron "the networking endpoint answers but 'openstack network list' failed"; return 0; }
+    log_ok "networking API verified (openstack network list succeeded)"
+    phase_mark_done neutron
+}
+
+# ---------------------------------------------------------------------------
+# Nova
+#
+# All three packaged API units name binaries 33.0.2 does not build, so they stay
+# disabled and the API runs under httpd against the modules.
+# ---------------------------------------------------------------------------
+nova_api_serving() { _probe_http "http://${MGMT_IP}:${NOVA_API_PORT}/"; }
+nova_manage() { $SUDO runuser -u nova -- nova-manage "$@"; }
+nova_cell_exists() { nova_manage cell_v2 list_cells 2>/dev/null | grep -qE "[| ]$1[ |]"; }
+
+_write_nova_common() {   # shared by all-in-one and compute-add
+    local ident="$1"
+    ini_set "$NOVA_CONF" DEFAULT host "$OS_HOSTNAME" && changed=1
+    ini_set "$NOVA_CONF" DEFAULT my_ip "$MGMT_IP" && changed=1
+    ini_set "$NOVA_CONF" DEFAULT transport_url "rabbit://openstack:${RABBIT_PASS}@${ident}:5672/" && changed=1
+    write_service_auth_at "$NOVA_CONF" service_user nova "$NOVA_SERVICE_PASS" "" "$ident"
+    ini_set "$NOVA_CONF" service_user send_service_user_token true && changed=1
+    write_service_auth_at "$NOVA_CONF" placement placement "$PLACEMENT_SERVICE_PASS" internal "$ident"
+    write_service_auth_at "$NOVA_CONF" neutron neutron "$NEUTRON_SERVICE_PASS" internal "$ident"
+    ini_set "$NOVA_CONF" glance valid_interfaces internal && changed=1
+    ini_set "$NOVA_CONF" neutron service_metadata_proxy true && changed=1
+    ini_set "$NOVA_CONF" neutron metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
+    ini_set "$NOVA_CONF" vnc enabled true && changed=1
+    ini_set "$NOVA_CONF" vnc server_listen "$MGMT_IP" && changed=1
+    ini_set "$NOVA_CONF" vnc server_proxyclient_address "$MGMT_IP" && changed=1
+    # Without this nova derives state_path from its own installation directory and
+    # tries to write the node identity into site-packages:
+    #   InvalidNodeConfiguration: Unable to write uuid to
+    #     /usr/lib/python3.12/site-packages/compute_id: [Errno 13] Permission denied
+    # nova-compute then exits, having logged "running" for long enough to look
+    # healthy. Ubuntu's packaging sets this; EL's does not.
+    ini_set "$NOVA_CONF" DEFAULT state_path /var/lib/nova && changed=1
+    ini_set "$NOVA_CONF" oslo_concurrency lock_path /var/lib/nova/tmp && changed=1
+    ini_set "$NOVA_CONF" os_vif_ovs ovsdb_connection "$OVS_DB_TCP" && changed=1
+    # Ubuntu gets this from nova-compute-kvm's own /etc/nova/nova-compute.conf.
+    # EL ships no such file and nova-dist.conf does not set it, so nova-compute
+    # exits immediately with "Compute driver option required, but not specified".
+    ini_set "$NOVA_CONF" DEFAULT compute_driver libvirt.LibvirtDriver && changed=1
+    ini_set "$NOVA_CONF" libvirt virt_type "$VIRT_TYPE" && changed=1
+    [ "$VIRT_TYPE" = "qemu" ] && ini_set "$NOVA_CONF" libvirt cpu_mode none && changed=1
+    $SUDO install -d -o nova -g nova -m 0750 /var/lib/nova/tmp 2>/dev/null || true
+}
+
+phase_nova() {
+    log_step "compute (Nova)"
+    mariadb_reachable || { note_skip nova "MariaDB is not reachable"; return 0; }
+    keystone_ready_for_registration || { note_skip nova "Keystone is not answering"; return 0; }
+
+    local changed=0
+    _write_nova_common "$MGMT_IP"
+    ini_set "$NOVA_CONF" api_database connection \
+        "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova_api?charset=utf8mb4" && changed=1
+    ini_set "$NOVA_CONF" database connection \
+        "mysql+pymysql://nova:${NOVA_DB_PASS}@127.0.0.1/nova?charset=utf8mb4" && changed=1
+    write_db_pool "$NOVA_CONF"; write_db_pool "$NOVA_CONF" api_database
+    write_authtoken "$NOVA_CONF" nova "$NOVA_SERVICE_PASS"
+    # A later compute node still has to be mapped into a cell; do it on a timer
+    # so compute-add does not depend on anyone remembering a command.
+    ini_set "$NOVA_CONF" scheduler discover_hosts_in_cells_interval 300 && changed=1
+    [ "$changed" -eq 1 ] && log_ok "nova.conf configured (credentials not shown)" \
+                         || log_ok "nova.conf already correct (unchanged)"
+    $SUDO chown root:nova "$NOVA_CONF"; $SUDO chmod 0640 "$NOVA_CONF"
+
+    nova_manage api_db sync >/dev/null 2>&1 || die "nova-manage api_db sync failed"
+    nova_manage cell_v2 map_cell0 >/dev/null 2>&1 || die "nova-manage cell_v2 map_cell0 failed"
+    nova_manage db sync >/dev/null 2>&1 || die "nova-manage db sync failed"
+    log_ok "compute schemas created or already current"
+
+    local cell_created=0
+    if nova_cell_exists cell1; then
+        log_ok "cell 'cell1' already mapped — left untouched"
+    else
+        nova_manage cell_v2 create_cell --name cell1 >/dev/null 2>&1 || die "cell_v2 create_cell failed"
+        cell_created=1; log_ok "cell 'cell1' created"
+    fi
+
+    ks_ensure_project service
+    ks_ensure_user nova "$NOVA_SERVICE_PASS"
+    ks_ensure_role_assignment nova service admin
+    ks_ensure_service nova compute "OpenStack Compute"
+    local url="http://${MGMT_IP}:${NOVA_API_PORT}/v2.1"
+    ks_ensure_endpoint nova public "$url"; ks_ensure_endpoint nova internal "$url"; ks_ensure_endpoint nova admin "$url"
+
+    write_vhost nova-api "$NOVA_API_PORT" nova "$SITELIB/nova/wsgi/osapi_compute.py" && changed=1
+    write_vhost nova-metadata "$NOVA_METADATA_PORT" nova "$SITELIB/nova/wsgi/metadata.py" && changed=1
+    # The packaged units name binaries that no longer exist. Leave them off, and
+    # say so, rather than letting a later operator enable a unit that cannot work.
+    local dead
+    for dead in openstack-nova-api openstack-nova-metadata-api openstack-nova-os-compute-api; do
+        if $SUDO systemctl is-enabled "$dead" >/dev/null 2>&1; then
+            $SUDO systemctl disable --now "$dead" >/dev/null 2>&1 || true
+            log_warn "$dead was enabled; disabled — its ExecStart names a binary 2026.1 does not build"
+        fi
+    done
+    log_ok "nova API served by httpd from the WSGI modules; the packaged API units stay disabled"
+    httpd_reload
+
+    local u
+    for u in $NOVA_UNITS; do service_apply "$u" "$NOVA_CONF"; done
+    # nova-scheduler reads the cell list once, at startup, and caches it.
+    if [ "$cell_created" -eq 1 ]; then
+        for u in $NOVA_UNITS; do $SUDO systemctl restart "$u" || die "$u failed to restart"; done
+        log_ok "scheduler and conductor restarted so they see the new cell"
+    fi
+
+    wait_for 90 "the compute API" nova_api_serving \
+        || { note_skip nova "httpd is running but :${NOVA_API_PORT} does not answer"; return 0; }
+    wait_for 120 "an authenticated compute service list" openstack_admin compute service list >/dev/null 2>&1 \
+        || { note_skip nova "the compute endpoint answers but 'openstack compute service list' failed"; return 0; }
+    log_ok "compute API verified (openstack compute service list succeeded)"
+    phase_mark_done nova
+}
+
+phase_nova_compute() {
+    log_step "hypervisor (nova-compute)"
+    service_start_enable libvirtd
+    local u
+    for u in $NOVA_COMPUTE_UNITS; do service_apply "$u" "$NOVA_CONF"; done
+    service_active openstack-nova-compute \
+        || { note_skip nova_compute "openstack-nova-compute is not running; see journalctl"; return 0; }
+    log_ok "nova-compute running (virt_type=$VIRT_TYPE)"
+
+    if [ "$SUBCOMMAND" != "compute-add" ]; then
+        wait_for 180 "this hypervisor to register" bash -c '
+            set -a; . /etc/hagistack/admin-openrc; set +a
+            openstack compute service list --service nova-compute -f value -c State 2>/dev/null | grep -q up' \
+            || { note_skip nova_compute "nova-compute is running but never registered"; return 0; }
+        nova_manage cell_v2 discover_hosts --verbose >/dev/null 2>&1 || true
+        log_ok "hypervisor registered and mapped into a cell"
+    fi
+    phase_mark_done nova_compute
+}
+
+# ---------------------------------------------------------------------------
+# initial resources
+# ---------------------------------------------------------------------------
+phase_bootstrap_resources() {
+    log_step "initial resources"
+    keystone_ready_for_registration || { note_skip bootstrap_resources "Keystone is not answering"; return 0; }
+    phase_done neutron || { note_skip bootstrap_resources "the neutron phase did not complete"; return 0; }
+
+    if openstack_admin flavor show m1.tiny >/dev/null 2>&1; then
+        log_ok "flavor m1.tiny already exists — left untouched"
+    else
+        openstack_admin flavor create --vcpus 1 --ram 256 --disk 1 m1.tiny >/dev/null
+        log_ok "flavor m1.tiny created"
+    fi
+
+    local img; img="${IMAGE_NAME}"
+    if openstack_admin image show "$img" >/dev/null 2>&1; then
+        log_ok "image $img already exists — left untouched"
+    else
+        local path; path="$(bs_fetch_image)" || { note_skip bootstrap_resources "the guest image could not be fetched"; return 0; }
+        openstack_admin image create --disk-format qcow2 --container-format bare \
+            --public --property hagistack_sha256="${IMAGE_SHA256}" \
+            --file "$path" "$img" >/dev/null
+        log_ok "image $img uploaded"
+    fi
+
+    if openstack_admin network show hagistack-provider >/dev/null 2>&1; then
+        log_ok "network hagistack-provider already exists — left untouched"
+    else
+        openstack_admin network create --share --external \
+            --provider-physical-network "$PROVIDER_PHYSNET" --provider-network-type flat \
+            hagistack-provider >/dev/null
+        openstack_admin subnet create --network hagistack-provider --no-dhcp \
+            --allocation-pool "start=${FLOATING_START},end=${FLOATING_END}" \
+            --gateway "$PROVIDER_GATEWAY" --subnet-range "$PROVIDER_CIDR" \
+            hagistack-provider-subnet >/dev/null
+        log_ok "provider network and subnet created"
+    fi
+    if openstack_admin network show hagistack-tenant >/dev/null 2>&1; then
+        log_ok "network hagistack-tenant already exists — left untouched"
+    else
+        openstack_admin network create hagistack-tenant >/dev/null
+        openstack_admin subnet create --network hagistack-tenant \
+            --dns-nameserver "$DNS_SERVER" --subnet-range "$TENANT_CIDR" \
+            hagistack-tenant-subnet >/dev/null
+        log_ok "tenant network and subnet created"
+    fi
+
+    if openstack_admin router show hagistack-router >/dev/null 2>&1; then
+        log_ok "router hagistack-router already exists — left untouched"
+    else
+        openstack_admin router create hagistack-router >/dev/null
+        log_ok "router created"
+    fi
+    # Ask about state rather than parsing an error string: Neutron reports "this
+    # subnet is already attached" as the subnet overlapping with itself.
+    local sid; sid="$(openstack_admin subnet show hagistack-tenant-subnet -f value -c id 2>/dev/null)"
+    if [ -n "$sid" ] && router_has_subnet hagistack-router "$sid"; then
+        log_ok "router already has the tenant subnet — left untouched"
+    else
+        openstack_admin router add subnet hagistack-router hagistack-tenant-subnet >/dev/null 2>&1 || true
+        log_ok "tenant subnet attached to the router"
+    fi
+    openstack_admin router set --external-gateway hagistack-provider hagistack-router >/dev/null 2>&1 || true
+
+    bs_secgroup_rule "ssh"  --proto tcp --dst-port 22 default
+    bs_secgroup_rule "icmp" --proto icmp default
+
+    if openstack_admin keypair show hagistack-key >/dev/null 2>&1; then
+        log_ok "keypair hagistack-key already exists — left untouched"
+    else
+        $SUDO install -d -m 0700 "$HAGISTACK_ETC"
+        openstack_admin keypair create hagistack-key 2>/dev/null | $SUDO tee "$HAGISTACK_ETC/hagistack-key" >/dev/null
+        $SUDO chmod 0600 "$HAGISTACK_ETC/hagistack-key"
+        log_ok "keypair hagistack-key created (private key in $HAGISTACK_ETC/hagistack-key, mode 0600)"
+    fi
+    phase_mark_done bootstrap_resources
+}
+
+# ---------------------------------------------------------------------------
+# compute-add
+# ---------------------------------------------------------------------------
+controller_port_open() {
+    timeout 5 bash -c "exec 3<>/dev/tcp/${CONTROLLER_IP}/$1" 2>/dev/null
+}
+
+phase_compute_preflight() {
+    log_step "compute preflight (reaching the controller)"
+    local p name ok=1
+    for p in "5000 identity" "9292 image" "8778 placement" "5672 message queue" "6642 OVN southbound" "11211 memcached"; do
+        set -- $p
+        if controller_port_open "$1"; then log_ok "tcp/$1 ($2) reachable on $CONTROLLER_IP"
+        else log_error "tcp/$1 ($2) NOT reachable on $CONTROLLER_IP"; ok=0; fi
+    done
+    [ "$ok" -eq 1 ] || die "the controller is not reachable on every port this node needs.
+     Nothing has been installed. Fix the network or the controller first."
+    phase_mark_done compute_preflight
+}
+
+phase_compute_nova() {
+    log_step "nova-compute on this node"
+    local changed=0
+    _write_nova_common "$CONTROLLER_IP"
+    write_authtoken "$NOVA_CONF" nova "$NOVA_SERVICE_PASS" "$CONTROLLER_IP"
+    [ "$changed" -eq 1 ] && log_ok "nova.conf configured for a compute-only node" \
+                         || log_ok "nova.conf already correct (unchanged)"
+
+    # A compute node must not open the cell database: nova-conductor does that
+    # for it. The key is commented out rather than deleted, so the value stays
+    # on the line and a re-run rewrites nothing.
+    local sec
+    for sec in database api_database; do
+        ini_comment_out "$NOVA_CONF" "$sec" connection \
+            "compute-only node; nova-compute reaches the cell through nova-conductor" \
+            && log_ok "[$sec] connection commented out in nova.conf (value kept on the line)"
+    done
+    local left
+    left="$(ini_get "$NOVA_CONF" database connection 2>/dev/null || true)$(ini_get "$NOVA_CONF" api_database connection 2>/dev/null || true)"
+    [ -z "$left" ] && log_ok "no active [database]/[api_database] connection: this node opens no database" \
+                   || log_warn "nova.conf STILL has an active database connection; remove it by hand"
+
+    $SUDO chown root:nova "$NOVA_CONF"; $SUDO chmod 0640 "$NOVA_CONF"
+    phase_nova_compute
+
+    # Evidence rather than assertion: read this node's own journal since the
+    # current start and count the lines that only appear when it opens a database.
+    local since dblines
+    since="$($SUDO systemctl show -p ActiveEnterTimestamp --value openstack-nova-compute 2>/dev/null || true)"
+    [ -n "$since" ] || since="-2min"
+    sleep 10
+    dblines="$($SUDO journalctl -u openstack-nova-compute --since "$since" --no-pager 2>/dev/null \
+        | grep -cE 'oslo_db\.sqlalchemy\.engines|SQL connection failed|Timed out waiting for response from cell' || true)"
+    [ "${dblines:-0}" -eq 0 ] && log_ok "nova-compute journal since start: 0 database lines" \
+                              || log_warn "nova-compute journal since start: $dblines database lines"
+    log_warn "this node cannot confirm its own registration: it holds no admin credential."
+    log_warn "  On the CONTROLLER run:  sudo hagistack discover-hosts"
+}
+
+phase_compute_metadata() {
+    log_step "OVN metadata agent on this node"
+    local changed=0
+    ini_set "$OVN_META_CONF" DEFAULT nova_metadata_host "$CONTROLLER_IP" && changed=1
+    ini_set "$OVN_META_CONF" DEFAULT metadata_proxy_shared_secret "$METADATA_PROXY_SECRET" && changed=1
+    # The OVN metadata agent runs as `neutron` and /var/run/openvswitch/db.sock
+    # is srwxr-x--- root:root, so the unix socket gives
+    #   Exception: Could not retrieve schema from unix:/var/run/openvswitch/db.sock
+    # and the agent dies without ever creating an ovnmeta namespace — which
+    # surfaces only as a guest failing to reach 169.254.169.254. Use the same
+    # loopback-only manager the OVN phase asks ovsdb-server for.
+    ini_set "$OVN_META_CONF" ovs ovsdb_connection "$OVS_DB_TCP" && changed=1
+    ini_set "$OVN_META_CONF" ovn ovn_sb_connection "tcp:${CONTROLLER_IP}:${OVN_SB_PORT}" && changed=1
+    [ "$changed" -eq 1 ] && log_ok "metadata agent configured" || log_ok "metadata agent already correct (unchanged)"
+    $SUDO chown root:neutron "$OVN_META_CONF" 2>/dev/null || true; $SUDO chmod 0640 "$OVN_META_CONF"
+    service_apply neutron-ovn-metadata-agent "$OVN_META_CONF"
+    service_active neutron-ovn-metadata-agent \
+        && log_ok "neutron-ovn-metadata-agent running" \
+        || note_skip compute_metadata "neutron-ovn-metadata-agent is not running"
+    phase_mark_done compute_metadata
+}
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+print_banner() {
+    local rule="────────────────────────────────────────────────────────────────"
+    echo; echo " $rule"
+    if [ -n "$SKIPPED_PHASES" ]; then
+        printf ' %sINCOMPLETE%s — these phases were skipped: %s\n' "$C_YEL" "$C_RESET" "$SKIPPED_PHASES"
+        echo " Nothing here is a working cloud. Fix the cause and re-run; it is safe."
+    else
+        printf ' %severy phase completed%s\n' "$C_GRN" "$C_RESET"
+    fi
+    echo
+    echo " $TARGET_RELEASE on $TARGET_OS"
+    [ "$SELINUX_ACTION" = "permissive" ] && \
+      printf ' %sSELinux is PERMISSIVE%s — openstack-selinux is not available in a\n single-release repository. Recorded as an open item.\n' "$C_YEL" "$C_RESET"
+    echo
+    if [ "$SUBCOMMAND" = "all-in-one" ]; then
+        echo " Credentials: $HAGISTACK_ETC/admin-openrc (mode 0600)"
+        echo
+        echo " Boot a guest to find out whether any of this actually works:"
+        echo "   . $HAGISTACK_ETC/admin-openrc"
+        echo "   openstack server create --flavor m1.tiny --image ${IMAGE_NAME} \\"
+        echo "       --network hagistack-tenant --key-name hagistack-key demo1"
+        echo
+        echo " Add a compute node:"
+        echo "   here      : sudo hagistack compute-secrets > compute-secrets.env"
+        echo "   on node2  : sudo hagistack compute-add --controller-ip $MGMT_IP --repo-url $REPO_URL"
+        echo "   back here : sudo hagistack discover-hosts"
+    fi
+    echo " $rule"
+    [ -n "$SKIPPED_PHASES" ] && return 4
+    return 0
+}
+
+cmd_all_in_one() {
+    SUBCOMMAND="all-in-one"
+    phase_preflight
+    [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+    phase_repos
+    phase_selinux
+    phase_secrets
+    phase_packages
+    phase_database
+    phase_rabbitmq
+    phase_memcached
+    phase_keystone
+    phase_glance
+    phase_placement
+    phase_ovn
+    phase_neutron
+    phase_nova
+    phase_nova_compute
+    phase_bootstrap_resources
+    print_banner
+}
+
+cmd_compute_add() {
+    SUBCOMMAND="compute-add"
+    phase_preflight
+    [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+    phase_repos
+    phase_selinux
+    phase_secrets
+    phase_compute_preflight
+    phase_packages
+    phase_ovn
+    phase_compute_nova
+    phase_compute_metadata
+    print_banner
+}
+
+cmd_compute_secrets() {
+    _need_privilege
+    [ -t 1 ] && die "refusing to print secrets to a terminal. Redirect to a file:
+       sudo hagistack compute-secrets > compute-secrets.env"
+    [ -f "$SECRETS_FILE" ] || die "$SECRETS_FILE does not exist; run all-in-one first"
+    # Diagnostics go to stderr, because stdout IS the credentials file.
+    log_info "reading $SECRETS_FILE" >&2
+    echo "# hagistack compute-node credentials — generated $(date -u +%FT%TZ)"
+    echo "# Install as $SECRETS_FILE, mode 0600, and delete this copy."
+    echo "# Deliberately NOT included: every database password and ADMIN_PASSWORD."
+    local line k v
+    while IFS= read -r line; do
+        case "$line" in ''|\#*) continue ;; esac
+        k="${line%%=*}"; v="${line#*=}"
+        case " $COMPUTE_SECRET_KEYS " in *" $k "*) printf '%s=%s\n' "$k" "$v" ;; esac
+    done < <($SUDO cat "$SECRETS_FILE")
+}
+
+cmd_discover_hosts() {
+    _need_privilege
+    log_step "mapping new compute hosts into a cell"
+    nova_manage cell_v2 discover_hosts --verbose 2>&1 | sed 's/^/    /'
+    set -a; . "$HAGISTACK_ETC/admin-openrc"; set +a
+    openstack hypervisor list 2>/dev/null | sed 's/^/    /'
+    log_warn "a mapped hypervisor is not a booted guest."
+}
+
+cmd_status() {
+    _need_privilege
+    echo "hagistack $HAGISTACK_VERSION"
+    echo "  stage        : $HAGISTACK_STAGE"
+    echo "  target       : $TARGET_RELEASE on $TARGET_OS"
+    echo "  unverified   : $UNVERIFIED_ITEMS"
+    echo "  selinux      : $(have getenforce && getenforce || echo n/a) (hagistack action: $SELINUX_ACTION)"
+    echo "  phases done  :"
+    $SUDO ls "$STATE_DIR" 2>/dev/null | sed 's/\.done$//; s/^/    /' || echo "    (none)"
+    echo "  services     :"
+    local u
+    for u in mariadb rabbitmq-server memcached httpd openstack-glance-api \
+             ovn-northd ovn-controller openvswitch neutron-rpc-server \
+             neutron-ovn-metadata-agent openstack-nova-conductor \
+             openstack-nova-scheduler openstack-nova-compute libvirtd; do
+        printf '    %-32s %s\n' "$u" "$($SUDO systemctl is-active "$u" 2>/dev/null || echo -)"
+    done
+}
+
+usage() {
+    cat <<EOF
+hagistack $HAGISTACK_VERSION — $TARGET_RELEASE on $TARGET_OS
+
+  STAGE: $HAGISTACK_STAGE
+
+  Rocky does not ship OpenStack and nobody publishes 2026.1 for EL10, so the
+  RPMs have to be built first, from the released tarballs with every input
+  pinned:
+
+      cd rocky10.2 && ./build-rpms.sh --manifest gazpacho.manifest
+
+  Then point this shell at that output with --repo-url.
+
+usage:
+  hagistack all-in-one   [options]   controller + compute on one host
+  hagistack compute-add  [options]   this host becomes an extra compute node
+  hagistack compute-secrets          (controller) emit only the credentials a
+                                     compute node needs; refuses a terminal
+  hagistack discover-hosts           (controller) map new compute hosts into a cell
+  hagistack status                   stage, phases, SELinux and service state
+
+required for both:
+  --repo-url URL           the 2026.1 repository built by build-rpms.sh
+                           e.g. file:///opt/hagistack-repo
+
+options for all-in-one:
+  --ext-nic NAME           provider/external interface            (required)
+  --provider-cidr CIDR     external network, e.g. 172.24.4.0/24   (required)
+  --provider-gateway IP    gateway on that network                (required)
+  --floating-start IP      first floating IP                      (required)
+  --floating-end IP        last floating IP                       (required)
+  --tenant-cidr CIDR       demo tenant subnet      (default: 10.10.10.0/24)
+  --dns-server IP          tenant DNS              (default: provider gateway)
+  --image-name/--image-url/--image-sha256/--image-file
+
+options for compute-add:
+  --controller-ip IP       the controller's management address    (required)
+
+options for both:
+  --mgmt-ip IP             management IP           (default: autodetected)
+  --virt-type kvm|qemu     hypervisor mode         (default: autodetected)
+  --region-name NAME       Keystone region         (default: RegionOne)
+  --env-file PATH          read settings from PATH (default: ./hagistack.env)
+  --check                  preflight only, change nothing
+  -h, --help               this text
+
+exit status:
+  0 success   1 configuration or preflight error   2 usage error
+  4 ran to the end but a phase was skipped, so the deployment is incomplete
+
+what this shell does NOT do:
+  Horizon. Its 2026.1 dependencies (XStatic-* and qrcode) are not packaged for
+  EL10 at the required versions and have no distgit to build from. Recorded as
+  incomplete, not quietly dropped.
+EOF
+}
+
+_cli_set() { [ $# -eq 2 ] || die "option $1 requires a value"; CLI_VAL[$1]="$2"; CLI_SET[$1]=1; }
+
+parse_args() {
+    [ $# -gt 0 ] || { usage; exit 2; }
+    SUBCOMMAND="$1"; shift
+    case "$SUBCOMMAND" in
+        all-in-one|compute-add|compute-secrets|discover-hosts|status) ;;
+        -h|--help) usage; exit 0 ;;
+        --version) echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
+        *) log_error "unknown command: $SUBCOMMAND"; usage; exit 2 ;;
+    esac
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --mgmt-ip)          _cli_set MGMT_IP "${2:-}"; shift 2 ;;
+            --ext-nic)          _cli_set EXT_NIC "${2:-}"; shift 2 ;;
+            --provider-cidr)    _cli_set PROVIDER_CIDR "${2:-}"; shift 2 ;;
+            --provider-gateway) _cli_set PROVIDER_GATEWAY "${2:-}"; shift 2 ;;
+            --floating-start)   _cli_set FLOATING_START "${2:-}"; shift 2 ;;
+            --floating-end)     _cli_set FLOATING_END "${2:-}"; shift 2 ;;
+            --tenant-cidr)      _cli_set TENANT_CIDR "${2:-}"; shift 2 ;;
+            --dns-server)       _cli_set DNS_SERVER "${2:-}"; shift 2 ;;
+            --virt-type)        _cli_set VIRT_TYPE "${2:-}"; shift 2 ;;
+            --region-name)      _cli_set REGION_NAME "${2:-}"; shift 2 ;;
+            --provider-physnet) _cli_set PROVIDER_PHYSNET "${2:-}"; shift 2 ;;
+            --provider-bridge)  _cli_set PROVIDER_BRIDGE "${2:-}"; shift 2 ;;
+            --controller-ip)    _cli_set CONTROLLER_IP "${2:-}"; shift 2 ;;
+            --repo-url)         _cli_set REPO_URL "${2:-}"; shift 2 ;;
+            --image-name)       _cli_set IMAGE_NAME "${2:-}"; shift 2 ;;
+            --image-url)        _cli_set IMAGE_URL "${2:-}"; shift 2 ;;
+            --image-sha256)     _cli_set IMAGE_SHA256 "${2:-}"; shift 2 ;;
+            --image-file)       _cli_set IMAGE_FILE "${2:-}"; shift 2 ;;
+            --env-file)         ENV_FILE="${2:-}"; shift 2 ;;
+            --check)            CHECK_ONLY=1; shift ;;
+            -h|--help)          usage; exit 0 ;;
+            *) log_error "unknown option: $1"; usage; exit 2 ;;
+        esac
+    done
+}
+
+main() {
+    parse_args "$@"
+    case "$SUBCOMMAND" in
+        compute-secrets) cmd_compute_secrets; exit 0 ;;
+        discover-hosts)  cmd_discover_hosts;  exit 0 ;;
+        status)          cmd_status;          exit 0 ;;
+    esac
+    _need_privilege
+    _capture_defaults
+    _capture_env
+    load_env_file
+    resolve_config
+    case "$SUBCOMMAND" in
+        all-in-one)  cmd_all_in_one ;;
+        compute-add) cmd_compute_add ;;
+    esac
+}
+
+main "$@"

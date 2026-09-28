@@ -313,12 +313,18 @@ publish_repo() {
     command -v createrepo_c >/dev/null || { bad "createrepo_c is not installed; cannot publish"; return 1; }
     createrepo_c --quiet "$repodir" >/dev/null || { bad "createrepo_c failed"; return 1; }
 
-    sudo tee /etc/yum.repos.d/hagistack-epoxy.repo >/dev/null <<EOF
-# Self-built OpenStack 2025.1 Epoxy for Rocky Linux 10, produced by
-# build-epoxy.sh from the pinned inputs in epoxy.manifest.
+    # The repository is named after the manifest, so a repo called
+    # hagistack-gazpacho cannot be mistaken for a 2025.1 build. The old name
+    # (hagistack-epoxy) is removed if present, so an upgraded builder does not
+    # end up serving the same RPMs twice under two ids.
+    local repoid="hagistack-$(basename "$MANIFEST" .manifest)"
+    sudo rm -f /etc/yum.repos.d/hagistack-epoxy.repo
+    sudo tee "/etc/yum.repos.d/$repoid.repo" >/dev/null <<EOF
+# Self-built OpenStack RPMs for Rocky Linux 10, produced by build-rpms.sh from
+# the pinned inputs in $(basename "$MANIFEST").
 # priority=1 so these win over RDO's centos10-master trunk builds.
-[hagistack-epoxy]
-name=hagistack self-built OpenStack (Rocky 10)
+[$repoid]
+name=hagistack self-built OpenStack from $(basename "$MANIFEST") (Rocky 10)
 baseurl=file://$repodir
 enabled=1
 gpgcheck=0
@@ -337,7 +343,7 @@ EOF
         sudo sed -i "s|^enabled=1$|enabled=1\nexclude=$excl # hagistack-epoxy|" "$f"
     done
     sudo dnf -q makecache >/dev/null 2>&1 || true
-    ok "published $repodir as [hagistack-epoxy] (priority=1)"
+    ok "published $repodir as [$repoid] (priority=1)"
     ok "excluded ${#names[@]} package names from the RDO trunk repositories"
     printf '      %s\n' "$excl" | fold -s -w 100 | sed 's/^/      /'
 }
