@@ -1,0 +1,56 @@
+# Build inputs for OpenStack 2026.1 Gazpacho on Rocky Linux 10.2 — every one pinned.
+#
+# This is the TARGET: the same OpenStack release the Ubuntu 26.04 shell gets
+# from its distribution archive. epoxy.manifest (2025.1) is kept beside it as a
+# research record and is NOT the deliverable.
+#
+# There is no `gazpacho-rdo` distgit branch and no centos10-gazpacho repository:
+# `epoxy-rdo` is the newest release branch RDO has, and `centos10-master` is the
+# only trunk tree. So the packaging here is RDO's `rpm-master` spec — the only
+# one that exists for anything newer than 2025.1 — pinned to an exact commit and
+# pointed at the released 2026.1 tarball.
+#
+# Two consequences, both handled by build-rpms.sh rather than by hand:
+#   * `rpm-master` specs ship `Version: XXX` / `Release: XXX` for DLRN to fill
+#     in, so this file carries the version and release.
+#   * A master spec does not always match a released tarball. Where it does not,
+#     the fix is a reviewable patch in ./spec-patches, not an inline sed.
+#
+# Versions are the FINAL 2026.1 releases, read from
+# openstack/releases deliverables/gazpacho/*.yaml on 2026-09-28; every one has a
+# stable/2026.1 branch upstream. Commits from `git ls-remote`, same day.
+#
+#
+# OpenStack release signing keys this manifest trusts, pinned by sha256. The
+# spec names the one it wants in %global sources_gpg_sign; a key the manifest
+# does not list stops the build.
+# 2026.1 is signed by TWO keys: glance and placement were released 2026-04,
+# keystone/neutron/nova/horizon are 2026-09 point releases made after OpenStack
+# rotated its cycle key. The fingerprints were read out of each .asc and matched
+# against the key files published at releases.openstack.org/_static/.
+KEY 0x30566c450e41d7c91e442dfb231f942f608ddeff 0f7901e358e78067604188563264589ee3a53f2369379a9b6310ab698af10fc9
+KEY 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff fcbacfaef9b9b915a417d02f78be95fbaaebcaefa58c32e279e73f2ee2ccbfe6
+#
+# fields: package  distgit-repo  distgit-commit  spec-file  version  release  tarball  tarball-sha256  url-project  signing-key
+#
+keystone  keystone-distgit  8019c0a8e95aa8ce0c741ac0d58d5bf217d3b103  openstack-keystone.spec     29.1.0  1  keystone-29.1.0.tar.gz             9090a34976c48b518dec21d73260d3af76029c05bd40bfe2cb097dfd7d343bc1  keystone  0x30566c450e41d7c91e442dfb231f942f608ddeff
+placement placement-distgit 967f1fba4c7842dfe3065b4aa3f904d4f3438e03  openstack-placement.spec    15.0.0  1  openstack_placement-15.0.0.tar.gz  b4825e2a37eef18d92a96aef089438327bce5e4580716a8478f0c1864b188800  placement  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+glance    glance-distgit    05968b35c77aaae4b3c5a535bb68052e36b91c89  openstack-glance.spec       32.0.0  1  glance-32.0.0.tar.gz               e92cce22edf09f573c7083cecb783f19b526a3be9bc34c4018e658962b9d98e5  glance  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutron   neutron-distgit   fa1f5135e66282364250f2f5630a48423f497099  openstack-neutron.spec      28.0.2  1  neutron-28.0.2.tar.gz              cdaf45a2100de5233e4c1cc7c01c9df2b634510a0f0436913f73f29d42d325ee  neutron  0x30566c450e41d7c91e442dfb231f942f608ddeff
+nova      nova-distgit      0b94abfd93c4935230ec4f2395f04197374eee4b  openstack-nova.spec         33.0.2  1  nova-33.0.2.tar.gz                 84ab864ced8867f2989f3ba65ead61a7e39891ee7ea693850331636ac9d360ea  nova  0x30566c450e41d7c91e442dfb231f942f608ddeff
+horizon   horizon-distgit   d5ba40128726567910302c43a42bc08493c4893c  python-django-horizon.spec  25.7.3  1  horizon-25.7.3.tar.gz              0a9a1d90475bc290d4af934ff53b9ed4c2cbe063150ca48a17c64c03447c5117  horizon  0x30566c450e41d7c91e442dfb231f942f608ddeff
+#
+# --- libraries -----------------------------------------------------------
+# The six services above cannot be built without these at their 2026.1
+# versions: RDO's EL10 trunk carries 2025-era builds that are older than what
+# 2026.1 requires. Versions are the exact pins from the 2026.1
+# upper-constraints file, which is what "one release" means for a library.
+# os-traits releases independently of the cycle; 3.6.0 is its 2026.1 pin.
+#
+oslo-service oslo-service-distgit 91da0bd81cbb93e513138670f05f384d785feb49 python-oslo-service.spec 4.5.1  1 oslo_service-4.5.1.tar.gz  959b0c088aa6c4aaea52e19a4583d49f905a505e83120f2f08c9b351ffe9a244 oslo.service 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-traits    os-traits-distgit    317ca0434096ba474fc2bcd4d461f511e8a4582e python-os-traits.spec    3.6.0  1 os_traits-3.6.0.tar.gz     0fef8ef5c17ca98388551bb6c0b2d2fe2dee305b1e1866e780c0e776df6fcb60 os-traits    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+ovsdbapp     ovsdbapp-distgit     e0b75a44c73bfc2d4199cdf6d17110c31c3a25e5 python-ovsdbapp.spec     2.16.1 1 ovsdbapp-2.16.1.tar.gz     8189d1e4089d288763f8666eecde2d260d5c1be11e8dcecc38b858d6d4bbe447 ovsdbapp     0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutron-lib  neutron-lib-distgit  986b1cf1f46b14a64e8578bae68f8a6863bafaea python-neutron-lib.spec  3.24.0 1 neutron_lib-3.24.0.tar.gz  96861925534f3c3a16b0e3de9e6fe3953f58b2b5f695386d8b71aa598bdc649b neutron-lib  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-ken       os-ken-distgit       d750b567e03de5143eeaead8718e73056e035e44 python-os-ken.spec       4.1.2  1 os_ken-4.1.2.tar.gz        0a335e02ea3de4842026dafde752b1dd4d99568f957b1f97c2c1d31f8e9d911f os-ken       0x30566c450e41d7c91e442dfb231f942f608ddeff
+stevedore    stevedore-distgit    de79d11f817d14e8562bee39155aa3e1b7fab1cd python-stevedore.spec    5.7.0  1 stevedore-5.7.0.tar.gz     31dd6fe6b3cbe921e21dcefabc9a5f1cf848cf538a1f27543721b8ca09948aa3 stevedore    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-config  oslo-config-distgit  772e9c4cd8e7b809e03fc964ba3db5f6fd35caed python-oslo-config.spec  10.3.0 1 oslo_config-10.3.0.tar.gz  c405a40a8b05aa97bb5c24bb0b849981a7a5b7d56304df40632722312c58eaca oslo.config  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff

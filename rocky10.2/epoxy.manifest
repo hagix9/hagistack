@@ -10,16 +10,25 @@
 # Recorded 2026-09-28 from `git ls-remote`. build-epoxy.sh refuses to build a
 # package whose checkout or digest does not match these values.
 #
-# fields: package  distgit-repo  distgit-commit  spec-file  tarball  tarball-sha256  url-project
+#
+# OpenStack release signing keys this manifest trusts, pinned by sha256. The
+# spec names the one it wants in %global sources_gpg_sign; a key the manifest
+# does not list stops the build.
+KEY 0x22284f69d9eccdf3df7819791c711af193ff8e54 56ae1e9ba54e609920e3c7e92740e2f3b0f93fe7e4cc4fa1b0e6440682229997
+#
+# fields: package  distgit-repo  distgit-commit  spec-file  version  release  tarball  tarball-sha256  url-project
+#
+# version/release are '-' here: the epoxy-rdo specs carry real values, unlike
+# the rpm-master specs used by gazpacho.manifest.
 #
 # url-project is the path segment under tarballs.openstack.org. It is usually
 # the package name, but the oslo libraries publish under a dotted name
 # (oslo.limit) while their distgit and tarball use an underscore.
 #
-keystone  keystone-distgit  967070efb58987e2d9f5bdf81def3cb32f061a4e  openstack-keystone.spec       keystone-27.0.0.tar.gz             8f9462fcbe98e3d51e37f7e1823183fc44b04c3c4085892342957251c9064252  keystone
-placement placement-distgit 45766cd06ac2205d41c7abbe06e5dbad70fc5ac7  openstack-placement.spec      openstack_placement-13.0.0.tar.gz  7a04779a3b2c03409d5fbe7ec1202dd030f816dc394b0e99708d66036cdbcaaf  placement
-glance    glance-distgit    6110108606fd6d927875699ba9dec6d1b57e4984  openstack-glance.spec         glance-30.0.0.tar.gz               e29df93474e2a1a34163ee159e72331941cc0b30b000922593f9540c01c68e5a  glance
-neutron   neutron-distgit   8ec48e57b963f0798cad147e7f14901b1b8a9ee4  openstack-neutron.spec        neutron-26.0.0.tar.gz              6cd5d7836c1905250dabebc7a8c0cc25501b88941ec9a38fc12d1b3b95febb82  neutron
-nova      nova-distgit      c4da8f3f133dcc8d9e1314aefa716e449afc98dc  openstack-nova.spec           nova-31.0.0.tar.gz                 4c13bfd6be60ed110c973a8bf94532740ba746bd4d0e1a415e9bf2b6fef5bc24  nova
-horizon   horizon-distgit   5aff204f8f3eb8dc5534175fc5282eeb10005723  python-django-horizon.spec    horizon-25.3.0.tar.gz              8ce6814c7ed97832279f9a80a13f206d3de61863637d00e1d0236591542d2b1b  horizon
-oslo-limit oslo-limit-distgit 7164a7b05f4d5c5e55c7111943cd99b27cbe0550  python-oslo-limit.spec  oslo_limit-2.6.1.tar.gz  92337d4534b8940d615e4434c0ae2e48fa733d9f6ec3ab84de4b3b33602968f4  oslo.limit
+keystone  keystone-distgit  967070efb58987e2d9f5bdf81def3cb32f061a4e  openstack-keystone.spec  -  -  keystone-27.0.0.tar.gz  8f9462fcbe98e3d51e37f7e1823183fc44b04c3c4085892342957251c9064252  keystone
+placement  placement-distgit  45766cd06ac2205d41c7abbe06e5dbad70fc5ac7  openstack-placement.spec  -  -  openstack_placement-13.0.0.tar.gz  7a04779a3b2c03409d5fbe7ec1202dd030f816dc394b0e99708d66036cdbcaaf  placement
+glance  glance-distgit  6110108606fd6d927875699ba9dec6d1b57e4984  openstack-glance.spec  -  -  glance-30.0.0.tar.gz  e29df93474e2a1a34163ee159e72331941cc0b30b000922593f9540c01c68e5a  glance
+neutron  neutron-distgit  8ec48e57b963f0798cad147e7f14901b1b8a9ee4  openstack-neutron.spec  -  -  neutron-26.0.0.tar.gz  6cd5d7836c1905250dabebc7a8c0cc25501b88941ec9a38fc12d1b3b95febb82  neutron
+nova  nova-distgit  c4da8f3f133dcc8d9e1314aefa716e449afc98dc  openstack-nova.spec  -  -  nova-31.0.0.tar.gz  4c13bfd6be60ed110c973a8bf94532740ba746bd4d0e1a415e9bf2b6fef5bc24  nova
+horizon  horizon-distgit  5aff204f8f3eb8dc5534175fc5282eeb10005723  python-django-horizon.spec  -  -  horizon-25.3.0.tar.gz  8ce6814c7ed97832279f9a80a13f206d3de61863637d00e1d0236591542d2b1b  horizon
+oslo-limit  oslo-limit-distgit  7164a7b05f4d5c5e55c7111943cd99b27cbe0550  python-oslo-limit.spec  -  -  oslo_limit-2.6.1.tar.gz  92337d4534b8940d615e4434c0ae2e48fa733d9f6ec3ab84de4b3b33602968f4  oslo.limit

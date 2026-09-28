@@ -1,0 +1,59 @@
+Adapt RDO's rpm-master openstack-placement.spec to the released 2026.1 tarball
+(placement 15.0.0).
+
+Same upstream change as keystone: release note remove-wsgi-scripts. placement
+15.0.0 no longer generates /usr/bin/placement-api and ships the importable
+placement/wsgi/api.py instead; pyproject.toml declares only placement-manage
+and placement-status. Without this the build dies at the end of %install:
+
+    error: File not found: .../usr/bin/placement-api
+
+Unlike keystone, placement's distgit also ships the httpd vhost
+(00-placement-api.conf), and that vhost pointed WSGIScriptAlias at the removed
+script — so an install would have produced a 500 rather than a build failure.
+It is retargeted at the module, with the site-packages path substituted at
+%install time because only the spec knows %{python3_sitelib}.
+
+diff -ur a/placement/openstack-placement.spec b/placement/openstack-placement.spec
+--- a/openstack-placement.spec	2026-09-28 21:43:15
++++ b/openstack-placement.spec	2026-09-28 22:05:26
+@@ -170,6 +170,10 @@
+ install -p -D -m 640 etc/placement/placement.conf.sample  %{buildroot}%{_sysconfdir}/placement/placement.conf
+ install -p -D -m 640 %{SOURCE1} %{buildroot}%{_datarootdir}/placement/placement-dist.conf
+ install -p -D -m 640 %{SOURCE3} %{buildroot}%{_sysconfdir}/httpd/conf.d/00-placement-api.conf
++# The vhost referred to /usr/bin/placement-api, which upstream removed in 15.0.0
++# (release note remove-wsgi-scripts). It now points at the importable module
++# placement/wsgi/api.py, whose path is only known here.
++sed -i "s|@SITELIB@|%{python3_sitelib}|g" %{buildroot}%{_sysconfdir}/httpd/conf.d/00-placement-api.conf
+ 
+ # Install logrotate
+ install -p -D -m 644 %{SOURCE2} %{buildroot}%{_sysconfdir}/logrotate.d/openstack-placement
+@@ -201,7 +205,6 @@
+ %files api
+ %license LICENSE
+ %config(noreplace) %{_sysconfdir}/httpd/conf.d/00-placement-api.conf
+-%{_bindir}/placement-api
+ 
+ %files -n python3-placement
+ %license LICENSE
+diff -ur a/placement/placement-api.conf b/placement/placement-api.conf
+--- a/placement-api.conf	2026-09-28 21:43:15
++++ b/placement-api.conf	2026-09-28 22:05:26
+@@ -5,7 +5,7 @@
+   WSGIApplicationGroup %{GLOBAL}
+   WSGIPassAuthorization On
+   WSGIDaemonProcess placement-api processes=3 threads=1 user=placement group=placement
+-  WSGIScriptAlias / /usr/bin/placement-api
++  WSGIScriptAlias / @SITELIB@/placement/wsgi/api.py
+   <IfVersion >= 2.4>
+     ErrorLogFormat "%M"
+   </IfVersion>
+@@ -15,7 +15,7 @@
+   #SSLCertificateKeyFile ...
+ </VirtualHost>
+ 
+-Alias /placement-api /usr/bin/placement-api
++Alias /placement-api @SITELIB@/placement/wsgi/api.py
+ <Location /placement-api>
+   SetHandler wsgi-script
+   Options +ExecCGI

@@ -1,0 +1,26 @@
+Adapt RDO's rpm-master python-os-ken.spec to the released 2026.1 tarball
+(os-ken 4.1.2, the version pinned by the 2026.1 upper-constraints).
+
+os-ken 4.1.2 declares no console scripts at all - there is no [project.scripts]
+in pyproject.toml and no console_scripts in setup.cfg - but the spec still
+packages two of them:
+
+    error: File not found: .../usr/bin/osken
+    error: File not found: .../usr/bin/osken-manager
+
+Neutron uses os-ken as a library (it is a BuildRequires and a runtime
+dependency of openstack-neutron), never through those binaries, so dropping
+them from %files costs nothing here.
+
+diff -ur a/os-ken/python-os-ken.spec b/os-ken/python-os-ken.spec
+--- a/python-os-ken.spec	2026-09-28 22:19:00
++++ b/python-os-ken.spec	2026-09-28 22:53:34
+@@ -113,8 +113,6 @@
+ %license LICENSE
+ %{python3_sitelib}/%{srcname}
+ %{python3_sitelib}/%{srcname}-*.dist-info
+-%{_bindir}/%{binname}
+-%{_bindir}/%{binname}-manager
+ %dir %{_sysconfdir}/%{srcname}
+ %config(noreplace) %attr(0644, root, neutron) %{_sysconfdir}/%{srcname}/%{srcname}.conf
+ 

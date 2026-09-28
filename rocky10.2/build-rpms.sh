@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Build OpenStack 2025.1 Epoxy RPMs on Rocky Linux 10.2 from pinned inputs.
+# Build OpenStack RPMs on Rocky Linux 10.2 from pinned inputs.
+#
+#   ./build-rpms.sh --manifest gazpacho.manifest [package ...]   <- 2026.1, the target
+#   ./build-rpms.sh --manifest epoxy.manifest    [package ...]   <- 2025.1, kept as a record
 #
 # This replaces build-keystone-epoxy.sh, which fetched raw files from the
 # `epoxy-rdo` BRANCH. A branch name proves nothing about what you got: RDO can
@@ -14,21 +17,45 @@
 #   * a fetch failure or a digest mismatch STOPS the build. Nothing falls back
 #     to "latest", and no unverified file is ever handed to rpmbuild.
 #
-# usage:  ./build-epoxy.sh [package ...]     (default: every row in the manifest)
-#         ./build-epoxy.sh --lock            (write a build-environment lock)
-#         ./build-epoxy.sh --publish         (re-publish the local repo only)
+# Two things differ between the two manifests, and both are handled here rather
+# than by hand:
+#
+#   * RDO's `rpm-master` specs — the only ones that exist for anything newer
+#     than 2025.1 — ship `Version: XXX` and `Release: XXX`, because DLRN fills
+#     them in at build time. The manifest therefore carries the version and
+#     release, and this script substitutes them, saying so in the log. The
+#     `epoxy-rdo` specs carry real values and are left alone.
+#   * A spec written against master does not always match a released tarball.
+#     Where it does not, the difference is a reviewable patch in ./spec-patches
+#     rather than an inline sed, and a patch that does not apply STOPS the
+#     build.
+#
+# usage:  ./build-rpms.sh [--manifest FILE] [package ...]
+#         ./build-rpms.sh [--manifest FILE] --lock      (build-environment lock)
+#         ./build-rpms.sh [--manifest FILE] --publish   (re-publish the repo only)
 #
 # Run it in a throwaway VM or container: it installs build dependencies as root.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-MANIFEST="$HERE/epoxy.manifest"
+MANIFEST="$HERE/gazpacho.manifest"
+PATCHDIR="$HERE/spec-patches"
+# --manifest has to be parsed before anything reads $MANIFEST
+if [ "${1:-}" = "--manifest" ]; then
+    [ -n "${2:-}" ] || { echo "--manifest needs a file" >&2; exit 2; }
+    case "$2" in /*) MANIFEST="$2" ;; *) MANIFEST="$HERE/$2" ;; esac
+    shift 2
+fi
 WORK="${WORK:-$HOME/epoxy-build}"
 RPMTOP="$HOME/rpmbuild"
 LOGDIR="$WORK/logs"
 DISTGIT_BASE="${DISTGIT_BASE:-https://github.com/rdo-packages}"
-KEY_URL=https://releases.openstack.org/_static/0x22284f69d9eccdf3df7819791c711af193ff8e54.txt
-KEY_SHA256=56ae1e9ba54e609920e3c7e92740e2f3b0f93fe7e4cc4fa1b0e6440682229997
+# The OpenStack release signing key is NOT a constant: 2025.1 specs verify
+# against 0x22284f69…, the rpm-master specs against 0x2426b928…. The spec names
+# the one it wants in `%global sources_gpg_sign`, so it is read from there and
+# looked up in the manifest's KEY table. An unknown key id stops the build —
+# fetching whatever key a spec asks for would make %gpgverify meaningless.
+KEY_BASE=https://releases.openstack.org/_static
 
 say(){ printf '\n######## %s ########\n' "$*"; }
 ok(){  printf '  ok    %s\n' "$*"; }
@@ -92,32 +119,99 @@ checkout_pinned() {   # checkout_pinned <repo> <commit> -> prints the checkout d
 # ---------------------------------------------------------------------------
 # one package
 # ---------------------------------------------------------------------------
-build_one() {   # build_one <pkg> <repo> <commit> <specfile> <tarball> <sha256> <urlproj>
-    local pkg="$1" repo="$2" commit="$3" specfile="$4" tarball="$5" tsha="$6" urlproj="$7"
+build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <tarball> <sha256> <urlproj> <signing-key>
+    local pkg="$1" repo="$2" commit="$3" specfile="$4" version="$5" release="$6"
+    local tarball="$7" tsha="$8" urlproj="$9" wantkey="${10:-}"
     say "$pkg — distgit $repo @ ${commit:0:12}"
 
-    local dir; dir="$(checkout_pinned "$repo" "$commit")" || exit 1
+    local gitdir; gitdir="$(checkout_pinned "$repo" "$commit")" || exit 1
     ok "distgit at $commit (verified)"
+
+    # Work on a copy, so the pinned git checkout stays pristine and the
+    # dirty-tree check above keeps meaning something on the next run.
+    local dir="$WORK/staged/$pkg"
+    rm -rf "$dir"; mkdir -p "$(dirname "$dir")"
+    cp -a "$gitdir" "$dir"; rm -rf "$dir/.git"
+
+    # A spec written against master is not always right for a released tarball,
+    # and neither is a vhost the distgit ships beside it. Keep every such
+    # difference visible and reviewable: one patch per package over the whole
+    # distgit tree, applied with --dry-run first, and a hard stop if it does not
+    # apply — a silently skipped patch means building something other than what
+    # was reviewed.
+    if [ -f "$PATCHDIR/$pkg.patch" ]; then
+        patch -p1 --dry-run -d "$dir" < "$PATCHDIR/$pkg.patch" >/dev/null 2>&1 \
+            || die "spec-patches/$pkg.patch does not apply to $repo at $commit"
+        patch -p1 -s -d "$dir" < "$PATCHDIR/$pkg.patch" \
+            || die "spec-patches/$pkg.patch failed to apply"
+        ok "applied spec-patches/$pkg.patch ($(grep -c '^@@' "$PATCHDIR/$pkg.patch") hunk(s))"
+    fi
 
     [ -f "$dir/$specfile" ] || die "$specfile is not in $repo at $commit"
     install -m 0644 "$dir/$specfile" "$SPECS/$specfile"
+
+    # RDO's rpm-master specs carry `Version: XXX` / `Release: XXX` for DLRN to
+    # fill in. Substitute from the manifest, and say so — an unsubstituted XXX
+    # would otherwise fail much later with a confusing message.
+    if grep -qE "^Version:[[:space:]]+XXX" "$SPECS/$specfile"; then
+        [ -n "$version" ] && [ "$version" != "-" ] \
+            || die "$specfile has 'Version: XXX' and the manifest gives no version"
+        sed -i -E "s/^Version:([[:space:]]+)XXX/Version:\\1$version/" "$SPECS/$specfile"
+        sed -i -E "s/^Release:([[:space:]]+)XXX/Release:\\1${release:-1}%{?dist}/" "$SPECS/$specfile"
+        ok "spec version set to $version-${release:-1} (the spec shipped 'XXX', as DLRN expects)"
+    fi
     # every other tracked file in the distgit is a Source/Patch
-    local f
+    local f n=0
     while IFS= read -r f; do
-        [ "$f" = "$specfile" ] && continue
         case "$f" in *.spec) continue ;; esac
-        install -D -m 0644 "$dir/$f" "$SRC/$(basename "$f")"
-    done < <(git -C "$dir" ls-files)
-    ok "spec + $(git -C "$dir" ls-files | grep -vc '\.spec$') distgit source files staged"
+        install -D -m 0644 "$f" "$SRC/$(basename "$f")"
+        n=$((n+1))
+    done < <(find "$dir" -type f -not -path '*/.git/*' | sort)
+    ok "spec + $n distgit source files staged"
 
     # tarballs.openstack.org groups by project name, which is the manifest's
     # last column: usually the package name, but oslo.limit publishes under a
     # dotted name while its tarball uses an underscore.
-    fetch_pinned "https://tarballs.openstack.org/$urlproj/$tarball" "$SRC/$tarball" "$tsha"
-    curl -sSfL -o "$SRC/$tarball.asc" "https://tarballs.openstack.org/$urlproj/$tarball.asc" \
+    # The name a spec expects is not always the name upstream publishes. PEP 625
+    # made sdists use underscores (os_traits-3.6.0.tar.gz) while several specs
+    # still build the old hyphenated filename from %{sname}. Rather than carry
+    # that drift in the manifest, ask the spec what it wants: rpmspec -P expands
+    # the macros, so Source0 comes back as a concrete filename.
+    local wantname wantasc
+    wantname="$(rpmspec -P "$SPECS/$specfile" 2>/dev/null \
+        | awk '/^Source0:/ {print $2; exit}' | xargs -r basename)"
+    [ -n "$wantname" ] || wantname="$tarball"
+    wantasc="$(rpmspec -P "$SPECS/$specfile" 2>/dev/null \
+        | awk '/^Source101:/ {print $2; exit}' | xargs -r basename)"
+    [ -n "$wantasc" ] || wantasc="$wantname.asc"
+    if [ "$wantname" != "$tarball" ]; then
+        ok "spec expects $wantname; upstream publishes $tarball (PEP 625 naming drift)"
+    fi
+
+    fetch_pinned "https://tarballs.openstack.org/$urlproj/$tarball" "$SRC/$wantname" "$tsha"
+    curl -sSfL -o "$SRC/$wantasc" "https://tarballs.openstack.org/$urlproj/$tarball.asc" \
         || die "the detached signature for $tarball could not be fetched"
-    ok "detached signature fetched (verified by %gpgverify in %prep)"
-    fetch_pinned "$KEY_URL" "$SRC/$(basename "$KEY_URL")" "$KEY_SHA256"
+    ok "detached signature fetched as $wantasc (verified by %gpgverify in %prep)"
+    # Which key actually signed this tarball is a property of the RELEASE, not
+    # of the spec. OpenStack rotates its release signing key every cycle, and a
+    # stable point release made after a rotation is signed with the newer key —
+    # 2026.1 needs two: glance and placement (released 2026-04) carry one,
+    # keystone/neutron/nova/horizon (point releases 2026-09) carry another.
+    # RDO's rpm-master spec pins a third key, which signed neither. So the
+    # manifest names the key per package, and it is checked by fingerprint.
+    local keyid keysha
+    keyid="$(grep -m1 -E '^%global[[:space:]]+sources_gpg_sign' "$SPECS/$specfile" | awk '{print $3}')"
+    [ -n "$keyid" ] || die "$specfile does not declare %global sources_gpg_sign"
+    if [ -n "$wantkey" ] && [ "$wantkey" != "-" ] && [ "$wantkey" != "$keyid" ]; then
+        sed -i -E "s|^(%global[[:space:]]+sources_gpg_sign[[:space:]]+).*|\\1$wantkey|" "$SPECS/$specfile"
+        ok "signing key retargeted: spec said ${keyid:0:14}…, this release was signed by ${wantkey:0:14}…"
+        keyid="$wantkey"
+    fi
+    keysha="$(awk -v k="$keyid" '$1=="KEY" && $2==k {print $3}' "$MANIFEST" | head -1)"
+    [ -n "$keysha" ] || die "the spec verifies against signing key $keyid, which the manifest does not pin.
+     Add a line:  KEY $keyid <sha256>
+     after checking the key yourself. Nothing unpinned is fetched."
+    fetch_pinned "$KEY_BASE/$keyid.txt" "$SRC/$keyid.txt" "$keysha"
 
     local spec="$SPECS/$specfile"
     say "$pkg — build dependencies"
@@ -179,7 +273,7 @@ publish_repo() {
 # build-epoxy.sh from the pinned inputs in epoxy.manifest.
 # priority=1 so these win over RDO's centos10-master trunk builds.
 [hagistack-epoxy]
-name=hagistack self-built OpenStack 2025.1 Epoxy (Rocky 10)
+name=hagistack self-built OpenStack (Rocky 10)
 baseurl=file://$repodir
 enabled=1
 gpgcheck=0
@@ -223,12 +317,13 @@ WANT=("$@")
 if [ "${1:-}" = "--lock" ]; then write_lock; exit 0; fi
 if [ "${1:-}" = "--publish" ]; then publish_repo; exit $?; fi
 
-while read -r pkg repo commit specfile tarball tsha urlproj _rest; do
-    case "$pkg" in ''|\#*) continue ;; esac
+while read -r pkg repo commit specfile version release tarball tsha urlproj signkey _rest; do
+    case "$pkg" in ''|\#*|KEY) continue ;; esac
     if [ ${#WANT[@]} -gt 0 ]; then
         printf '%s\n' "${WANT[@]}" | grep -qx "$pkg" || continue
     fi
-    build_one "$pkg" "$repo" "$commit" "$specfile" "$tarball" "$tsha" "${urlproj:-$pkg}"
+    build_one "$pkg" "$repo" "$commit" "$specfile" "$version" "$release" \
+              "$tarball" "$tsha" "${urlproj:-$pkg}" "${signkey:-}"
 done < "$MANIFEST"
 
 say "summary"
