@@ -30,7 +30,13 @@
 #     rather than an inline sed, and a patch that does not apply STOPS the
 #     build.
 #
-# usage:  ./build-rpms.sh [--manifest FILE] [package ...]
+# --nocheck skips %check. That is a deliberate, recorded choice, not a default:
+# the test suites here run to 121 166 tests (os-ken) and 21 189 (neutron), and
+# re-running them on a second architecture proves little about noarch Python
+# while costing hours. When it is used, the log says so for every package and
+# the result is written down as "%check not run" rather than as a pass.
+#
+# usage:  ./build-rpms.sh [--manifest FILE] [--nocheck] [package ...]
 #         ./build-rpms.sh [--manifest FILE] --lock      (build-environment lock)
 #         ./build-rpms.sh [--manifest FILE] --publish   (re-publish the repo only)
 #
@@ -40,12 +46,18 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="$HERE/gazpacho.manifest"
 PATCHDIR="$HERE/spec-patches"
-# --manifest has to be parsed before anything reads $MANIFEST
-if [ "${1:-}" = "--manifest" ]; then
-    [ -n "${2:-}" ] || { echo "--manifest needs a file" >&2; exit 2; }
-    case "$2" in /*) MANIFEST="$2" ;; *) MANIFEST="$HERE/$2" ;; esac
-    shift 2
-fi
+NOCHECK=0
+# these have to be parsed before anything reads $MANIFEST
+while :; do
+    case "${1:-}" in
+        --manifest)
+            [ -n "${2:-}" ] || { echo "--manifest needs a file" >&2; exit 2; }
+            case "$2" in /*) MANIFEST="$2" ;; *) MANIFEST="$HERE/$2" ;; esac
+            shift 2 ;;
+        --nocheck) NOCHECK=1; shift ;;
+        *) break ;;
+    esac
+done
 WORK="${WORK:-$HOME/epoxy-build}"
 RPMTOP="$HOME/rpmbuild"
 LOGDIR="$WORK/logs"
@@ -231,13 +243,26 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
     sudo dnf -y install python3-babel >/dev/null 2>&1
 
     say "$pkg — rpmbuild"
-    rpmbuild -bb "$spec" > "$LOGDIR/$pkg.rpmbuild.log" 2>&1
+    local checkflag=""
+    if [ "$NOCHECK" -eq 1 ]; then
+        checkflag="--nocheck"
+        log_nocheck="yes"
+        printf '  NOTE  building with --nocheck: the test suite is NOT run for %s\n' "$pkg"
+    fi
+    # shellcheck disable=SC2086
+    rpmbuild -bb $checkflag "$spec" > "$LOGDIR/$pkg.rpmbuild.log" 2>&1
     local rc=$?
     if [ "$rc" -eq 0 ]; then
         ok "rpmbuild exit=0"
         grep -aE "Good signature|gpgverify" "$LOGDIR/$pkg.rpmbuild.log" | head -3 | sed 's/^/      /'
         find "$RPMTOP/RPMS" -name "*.rpm" -newer "$spec" -printf '      %f\n' | sort
-        RESULTS+=("PASS $pkg")
+        if [ "$NOCHECK" -eq 1 ]; then
+            RESULTS+=("PASS $pkg (built; %check NOT run)")
+        else
+            local ran; ran="$(grep -aoE '^Ran: [0-9]+ tests' "$LOGDIR/$pkg.rpmbuild.log" | tail -1)"
+            if [ -n "$ran" ]; then RESULTS+=("PASS $pkg (${ran})")
+            else RESULTS+=("PASS $pkg (built; the spec ran no %check)"); fi
+        fi
     else
         bad "rpmbuild exit=$rc — see $LOGDIR/$pkg.rpmbuild.log"
         grep -aE "^error:|No matching package|is needed by|RPM build error|Bad exit status" \
