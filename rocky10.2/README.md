@@ -768,7 +768,8 @@ The shell writes one drop-in with `ReadWritePaths=/usr/share/openstack-dashboard
 | **existing services** | PASS — keystone, glance, placement, neutron and nova all still answer authenticated calls; a guest still reaches ACTIVE in 18 s |
 | **SELinux** | measured `Permissive`, on-boot `permissive` — the stated scope |
 
-**How the sign-in was checked** (`tests-horizon-login.sh`, exit code 0):
+**How the sign-in was checked.** On 2026-09-29 the acceptance was run on GCE
+with the first version of `tests-horizon-login.sh`, and it reported:
 
 ```
 GET  /dashboard/auth/login/        -> HTTP 200, form with csrfmiddlewaretoken
@@ -777,7 +778,6 @@ GET  /project/instances/           -> HTTP 200  login-form=0  admin-in-page=2
 GET  /identity/                    -> HTTP 200  login-form=0  admin-in-page=3
 GET  /project/networks/            -> HTTP 200  login-form=0  admin-in-page=2
 GET  /project/api_access/          -> HTTP 200  login-form=0  admin-in-page=2
-PASS: authenticated session; pages render with no login form
 ```
 
 Every hidden field is read back from the rendered form rather than guessed.
@@ -786,9 +786,56 @@ That is not fussiness: Horizon's `region` field is the literal string
 `Invalid region ''` **with HTTP 200** — a failure that looks like a success if
 you only check the status code.
 
+**The script was then hardened, and the hardened version has NOT been re-run on
+GCE.** Three things were wrong with the first version, and they matter for how
+much the block above is worth:
+
+* it passed the administrator password on a `curl` command line, where it was
+  visible in `ps`;
+* it *printed* the POST status and the username count but did not *assert*
+  either, and it followed redirects when fetching the protected pages — so a
+  session that had been rejected and bounced back to the login page would have
+  been recorded as four HTTP 200s;
+* its cleanup removed `/tmp/hz.*` by glob, which could take files it never
+  created.
+
+The current script fixes all three: the password reaches curl only through a
+`0600` config file inside a `0700` private directory, the POST must return
+302/303 *and* must not redirect to `/auth/login`, a sessionid must be present
+*with a value*, each protected page is fetched **without** following redirects
+and must be 200, must not render the login form and must contain the username —
+and it removes only its own `mktemp -d` directory.
+
+It also carries two negative cases, because a test that has never been seen to
+fail is not evidence: a wrong password must be rejected, and a protected page
+fetched with no session must redirect rather than render.
+
+**What has and has not been verified for the hardened script:**
+
+| | |
+|---|---|
+| `bash -n` | PASS |
+| ShellCheck | **not run** — not packaged for EL10, and not installed locally |
+| positive path | PASS against a local fixture that reproduces Horizon's flow, including returning **HTTP 200 with the form re-rendered** on a bad password |
+| negative: wrong password | PASS — rejected, exit 1 |
+| negative: POST redirects back to `/auth/login` with a sessionid set | PASS — rejected, exit 1. **This is the case the first version would have passed** |
+| negative: no session | PASS — redirect observed, not a rendered page |
+| password never in `argv` | PASS — measured by sampling `ps -Ao args=` throughout a run: zero occurrences, and no `curl` process carrying `password` |
+| file modes | PASS — work dir `drwx------`, curl config `-rw-------` |
+| cleanup scope | PASS — an unrelated `/tmp/hz.*` file left in place; no work directory survived any exit path |
+| **re-run on the GCE host** | **UNVERIFIED.** The node was deleted after the acceptance, and this change is to the test harness, not to Horizon or to the shell |
+
+The facts the first run measured — a 200 login page, a 302 POST, a sessionid,
+and four authenticated pages rendering `admin` — are exactly the facts the
+hardened script now asserts, so the evidence above is not withdrawn. But it was
+produced by the weaker script, and that is stated rather than glossed.
+
 ### 10.5 Not done
 
 * **`%check` was not run** for Horizon or any of its ten dependencies.
+* **The hardened `tests-horizon-login.sh` has not been run on a real Horizon.**
+  Its assertions are verified against a fixture; the GCE evidence above predates
+  the hardening.
 * **SELinux enforcing is out of scope**, here as elsewhere.
 * Only the admin user and the pages listed above were exercised. No instance was
   created *through* the dashboard, and no theme, quota or Cinder/Swift panel was
