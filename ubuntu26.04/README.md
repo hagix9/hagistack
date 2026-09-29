@@ -1,536 +1,495 @@
-# hagistack — Ubuntu Server 26.04 LTS
+# Hagistack for Ubuntu Server 26.04 LTS
 
-A plain-Bash OpenStack deployment shell. Not OpenStack-Ansible, not
-Kolla-Ansible, not Packstack, not DevStack.
+English | [日本語](README.ja.md)
 
-## Current status — two claims, kept apart
+[← Hagistack overview](../README.md)
 
-This README, `hagistack --help`, `hagistack status` and the closing banner all
-report **two different things**, and never merge them:
+## Overview
 
-| | |
+`hagistack` is a single Bash script. It installs OpenStack 2026.1 (Gazpacho) from
+the Ubuntu 26.04 archive. It has two modes:
+
+- **`all-in-one`** puts the whole control plane and a compute service on one host.
+- **`compute-add`** adds further compute nodes to that host.
+
+What gets installed:
+
+- **Services:** Keystone, Glance, Placement, Nova (cells v2), and Neutron with
+  ML2/OVN.
+- **Infrastructure:** Open vSwitch and OVN, MariaDB, RabbitMQ and memcached.
+- **Dashboard:** Horizon.
+- **Initial resources:** a small set a first guest can use (see
+  [What all-in-one creates](#what-all-in-one-creates)).
+
+## Requirements
+
+**Host**
+
+- **Operating system:** Ubuntu Server 26.04 LTS. Preflight refuses any other
+  OS or version.
+- **Architecture:**
+  - `amd64` is verified.
+  - `arm64` is accepted, and the matching QEMU package and CirrOS image are
+    selected, but this path has **not been verified**.
+- **Privileges:** root through `sudo`.
+- **Init system:** systemd.
+- **Memory:** 8 GiB or more for all-in-one. Preflight warns below 8 GiB.
+- **Disk:** 40 GiB or more free on `/` is recommended. Preflight warns below
+  20 GiB.
+- **Virtualisation:** a usable `/dev/kvm` gives `virt_type=kvm`. Without it,
+  Hagistack falls back to `qemu` software emulation. That emulation is 10–50×
+  slower and suitable only for a boot test.
+- **Internet access:**
+  - the Ubuntu archive, for packages;
+  - `download.cirros-cloud.net`, for the first guest image. You can use a local
+    file instead: see `--image-file`.
+
+**Network**
+
+- **Management IP.** This is the address the services and the other nodes use.
+  By default it is the source address of the route to `1.1.1.1`. Override it
+  with `--mgmt-ip`.
+- **A provider NIC (`--ext-nic`).**
+  - It must exist on the host.
+  - Hagistack **does not attach it to the provider bridge** (see
+    [Known limitations](#known-limitations)).
+  - On a single-NIC host you may name the management NIC. Preflight warns, and
+    Hagistack still never moves the management address.
+- **Provider network values:**
+  - a CIDR;
+  - a gateway inside that CIDR;
+  - a floating-IP range inside that CIDR, with the gateway outside the range.
+
+**For a second node**
+
+- Ubuntu Server 26.04 LTS.
+- A hostname different from the controller's.
+- The ability to reach the controller's management IP on these TCP ports:
+  - 5000 (Keystone)
+  - 9292 (Glance)
+  - 8778 (Placement)
+  - 5672 (RabbitMQ)
+  - 6642 (OVN southbound)
+
+  `compute-add` checks all five before it installs anything.
+- Geneve tunnels between the nodes use **UDP 6081**. This port is not checked.
+- Hagistack configures no host firewall. If you run one, you must open these
+  ports yourself. A host with an active firewall has not been verified.
+
+## Files
+
+| File | Purpose |
 |---|---|
-| **IMPLEMENTED** | the code exists here and runs |
-| **VERIFIED** | observed working on a real machine |
+| `hagistack` | The installer |
+| `hagistack.env.example` | A commented example configuration file. Copy it to `hagistack.env` |
+| `tests/` | Container-based regression suites for static checks, input validation, configuration generation and re-run safety, plus their fixture |
+| `STEP*_*.md`, `GCE_ACCEPTANCE_2026-09-28*.md` | Dated development and verification records. They describe the state **at the time they were written**, not the current state |
 
-| | |
-|---|---|
-| Version | `0.7.0-step7` |
-| Target OS | Ubuntu Server **26.04 LTS** only (`amd64`; `arm64` accepted but untested) |
-| Target OpenStack | 2026.1 Gazpacho, from the Ubuntu 26.04 archive |
-| Implemented | **everything below.** Neither `all-in-one` nor `compute-add` has a stub left |
-| **Verified on hardware** | **yes, including guest boot.** Two GCE VMs on 2026-09-28 — see `GCE_ACCEPTANCE_2026-09-28.md` (run 1) and `GCE_ACCEPTANCE_2026-09-28_RUN2.md` (run 2). Guests reach ACTIVE on both nodes, cloud-init completes, and two guests on different hosts ping each other over a captured Geneve tunnel. A physical-LAN path is still untested |
+## Configuration
 
-**Implemented**
+Each setting can come from four tiers. **Precedence:**
+command line > environment > config file > default.
 
-- `all-in-one` and `compute-add`, plus `compute-secrets`, `discover-hosts`,
-  `status`, `--help`, argument parsing and a parsed (never sourced) config file
-- preflight: OS gate, architecture → qemu package, KVM/QEMU detection, memory
-  and disk checks, full validation of every setting, single-NIC warning
-- secret generation into `/etc/hagistack/secrets.env` (mode `0600`)
-- base packages, **MariaDB**, **RabbitMQ**, **memcached**
-- **Keystone identity**: schema, fernet and credential keys, `bootstrap`,
-  Apache/mod_wsgi on port 5000, and an `admin-openrc` you can authenticate with
-- **Glance** on 9292 and **Placement** on 8778, registered and answering
-  authenticated requests
-- **Neutron** on 9696 with **ML2/OVN**, and the OVS/OVN control plane
-- **Nova**: compute API on 8774, metadata on 8775, conductor, scheduler,
-  cells v2 (`cell0` + `cell1`), and `nova-compute` with libvirt/KVM
-- **Horizon** at `http://<mgmt-ip>/horizon`
-- **initial resources**: `m1.tiny`, a digest-verified cirros image, a provider
-  network and a tenant network, a router joining them, ICMP and SSH rules, and
-  an SSH keypair
-- **`compute-add`**: a second compute node — packages, OVN chassis,
-  `nova-compute` and the OVN metadata agent, with the credentials delivered
-  explicitly and no database access at all
+- **Config file.** Hagistack uses the file named by `--env-file`. Without that
+  option, it takes the first of these that exists:
+  1. `./hagistack.env`
+  2. `hagistack.env` next to the script
+  3. `/etc/hagistack/hagistack.env`
+- **Ignore all config files:** pass `--env-file /dev/null`.
+- **Environment through `sudo`.** `sudo` normally drops environment variables,
+  so pass them explicitly:
+  `sudo env TENANT_CIDR=10.20.0.0/24 ./hagistack all-in-one …`
+- **Empty values.** An empty value on any tier is an error. It is not treated as
+  "not given".
 
-**Verified on two GCE VMs, 2026-09-28**
+| Option | Key | Required | Default |
+|---|---|---|---|
+| `--ext-nic NAME` | `EXT_NIC` | all-in-one | — |
+| `--provider-cidr CIDR` | `PROVIDER_CIDR` | all-in-one | — |
+| `--provider-gateway IP` | `PROVIDER_GATEWAY` | all-in-one | — |
+| `--floating-start IP` | `FLOATING_START` | all-in-one | — |
+| `--floating-end IP` | `FLOATING_END` | all-in-one | — |
+| `--tenant-cidr CIDR` | `TENANT_CIDR` | | `10.10.10.0/24` |
+| `--dns-server IP` | `DNS_SERVER` | | the provider gateway |
+| `--provider-physnet NAME` | `PROVIDER_PHYSNET` | | `physnet1` |
+| `--provider-bridge NAME` | `PROVIDER_BRIDGE` | | `br-ex` |
+| `--image-name NAME` | `IMAGE_NAME` | | `cirros-0.6.3-x86_64` (amd64) |
+| `--image-url URL` | `IMAGE_URL` | | the CirrOS 0.6.3 download URL |
+| `--image-sha256 HEX` | `IMAGE_SHA256` | set it whenever you change the URL | the published CirrOS digest. A download that does not match is refused |
+| `--image-file PATH` | `IMAGE_FILE` | | — (use a local file instead of downloading) |
+| `--controller-ip IP` | `CONTROLLER_IP` | compute-add | — |
+| `--mgmt-ip IP` | `MGMT_IP` | | autodetected |
+| `--virt-type kvm\|qemu` | `VIRT_TYPE` | | autodetected from `/dev/kvm` |
+| `--region-name NAME` | `REGION_NAME` | | `RegionOne` |
 
-Nested virtualisation and `virt_type=kvm`; 17 systemd units active; authenticated
-Keystone, Neutron and Nova APIs; cells v2; Placement resource providers with
-inventory on both nodes; every initial resource; **a real Horizon login** (302 →
-session cookie → authenticated pages rendering `admin`, not merely a 200 on the
-login form); `compute-add` on a second node with credentials delivered and no
-database or admin password; **two OVN chassis** and a **Geneve tunnel** between
-them; and re-run safety — a second `all-in-one` exited 0 changing nothing and
-restarting nothing.
+**The config file is parsed, never executed.** It may contain only:
 
-That run found **ten defects**, nine fixed here. Among them: memcached serving
-an address it had not been configured with, every packaged unit still running
-the stock configuration because the package started it first, Horizon 500ing on
-a stale offline manifest, `NoValidHost` because nova-scheduler caches the cell
-list thirteen seconds before the cell exists, os_vif unable to reach the local
-OVSDB, Neutron unable to tell Nova a VIF was plugged, and Keystone exhausting
-its SQLAlchemy pool — which the step 4 notes had blamed on disk pressure and
-which turned out to have nothing to do with disk.
+- blank lines;
+- `#` comments;
+- `KEY=VALUE` lines for the keys above.
 
-**Guest boot — solved in run 2**
+Values may contain only letters, digits and `. _ - : / @ + =`. Hagistack refuses
+unknown keys, duplicate keys and shell metacharacters. **Do not put passwords
+in it.** Hagistack generates its own (see
+[Sensitive and generated files](#sensitive-and-generated-files)).
 
-Run 1 left this failing and misattributed it. The 200 in the Nova access log was
-a **`network-changed`** event; `network-vif-plugged` was never sent at all. The
-cause was one systemd line: Ubuntu 26.04 ships `apache2.service` with
-**`ProcSubset=pid`**, which hides `/proc/meminfo`. Neutron's ML2/OVN driver runs
-inside the Apache workers (the networking API is a vhost, not a unit), and
-`psutil.virtual_memory()` raises inside `OvnIdlDistributedLock.notify()` — the
-single funnel for every northbound OVN event. So every event was dropped,
-`set_port_status_up()` never ran, the port stayed `DOWN` for ever, and Neutron
-only ever sent `network-changed`.
-
-`phase_neutron` now writes a `ProcSubset=all` drop-in, restarts apache2 when it
-changes, and **measures** that the workers can read `/proc/meminfo`. With that:
-
-* guest **ACTIVE in 18 s** on node1 and **12 s** on node2;
-* **cloud-init completes** — metadata fetched from `169.254.169.254`, key
-  injected, `login:` reached;
-* two guests on different hosts ping each other, **8/8, 0% loss**, and
-  `tcpdump` captured **17 Geneve packets** carrying the inner ICMP between
-  `10.146.0.26` and `10.146.0.29`.
-
-`GCE_ACCEPTANCE_2026-09-28_RUN2.md` has the correlated logs.
-
-**Still untested.** No path onto a physical LAN: `br-ex` has no NIC attached on
-GCE, so the provider network and its floating IPs were never routed off-host.
-Live migration, volumes and more than two nodes were not attempted either.
-
-### Horizon
-
-Served by **`apache2.service`** at **`/horizon` on port 80** — and the reason is
-packaging, not choice. `openstack-dashboard` ships exactly one file,
-`/etc/apache2/`**`conf-available`**`/openstack-dashboard.conf`. Note `conf-`, not
-`sites-`: it is a *server-wide fragment* with no `Listen` of its own, so the
-dashboard rides on whatever vhost exists (the packaged default site on port 80),
-and that alias is inherited by the API vhosts as well.
-
-Settings do **not** go into `/etc/openstack-dashboard/local_settings.py`, which
-is a dpkg conffile. They go into a snippet at
-`…/openstack_dashboard/local/local_settings.d/_99_hagistack.py`, which
-`settings.py` `exec`s *after* the conffile — so the packaged file is never
-touched and dpkg never prompts.
-
-That loader swallows exceptions, which means **a broken snippet is silent**: the
-dashboard would quietly keep the packaged `127.0.0.1` defaults. So hagistack does
-not trust the file it just wrote — it asks Django what the settings actually are
-and compares. Two values matter and both are wrong as shipped:
-
-| | shipped | set by hagistack |
-|---|---|---|
-| `OPENSTACK_KEYSTONE_URL` | `http://127.0.0.1/identity/v3` (a DevStack path) | `http://<mgmt-ip>:5000/v3` |
-| `CACHES … LOCATION` | `127.0.0.1:11211` | `<mgmt-ip>:11211` |
-
-The cache one is not cosmetic: `SESSION_ENGINE` is
-`django.contrib.sessions.backends.cache`, so Horizon keeps **sessions** in
-memcached, and hagistack binds memcached to the management address. A dashboard
-pointed at `127.0.0.1` is one nobody can log into. The phase refuses to run at
-all unless memcached is answering.
-
-Two more things worth knowing: installing the dashboard runs `invoke-rc.d
-memcached restart` in its postinst, i.e. it bounces the cache the other services
-use (the run warns first, and re-checks afterwards); and `nova-novncproxy` is
-**not** installed, so the console tab will not work.
-
-`ALLOWED_HOSTS` is left as the package ships it (`['*']`). Narrowing it would
-break reaching the dashboard through an address this host does not know about —
-a cloud external IP, or an SSH tunnel.
-
-What the run proves: the settings took effect, and `/horizon/auth/login/`
-answers **200**. What it does not prove: that a login works. Nobody has tried.
-
-### Initial resources
-
-The smallest set an instance needs. Every one is show-or-create **by name**;
-nothing is deleted and nothing is recreated.
-
-| | |
-|---|---|
-| flavor | `m1.tiny` — 1 vCPU / 512 MiB / 1 GiB |
-| image | `cirros-0.6.3-<arch>` |
-| external network | `hagistack-provider` (flat, `--external`), subnet with the floating pool and **no DHCP** |
-| tenant network | `hagistack-tenant` (geneve), subnet with `--dns-nameserver` |
-| router | `hagistack-router` — external gateway plus an interface on the tenant subnet |
-| rules | ICMP and TCP/22 on the admin project's `default` security group |
-| keypair | `hagistack-key`, RSA 3072, private key `0600` in `/etc/hagistack` |
-
-**The image is never fetched without a digest.** There is no cirros package in
-the Ubuntu archive, so it comes from a URL — and `--image-url` without
-`--image-sha256` is a preflight error. The default URL and digest were measured
-on 2026-09-27 by downloading the file and comparing it with the publisher's
-`SHA256SUMS`; the download 302-redirects, so `curl -L` is mandatory and a run
-without it saves a 273-byte HTML page. The file is verified *before* Glance sees
-it; a mismatch is refused and left on disk, never uploaded.
-
-**A test image is not an initial image.** An image hagistack uploads carries a
-`hagistack_sha256` property. On a re-run, an image with the right name but no
-such property — a leftover from a verification run, say — is *neither* accepted
-as the initial image *nor* deleted: the run stops and says to pick another
-`--image-name` or remove it by hand.
-
-### compute-add
-
-Run it **on the new machine**, with `--controller-ip <the controller's MGMT_IP>`.
-None of the provider-network settings apply.
-
-What the node deliberately does **not** get:
-
-| Not given | Why |
-|---|---|
-| any database credential | since Pike a compute node reaches the cell database only through `nova-conductor`, over RabbitMQ |
-| the admin password | nothing there authenticates as admin |
-| `ovn-bridge-mappings` | a mapping with no NIC behind it invites OVN to bind a provider port here and drop its traffic. Geneve tenant ports need no mapping |
-| `enable-chassis-as-gw` | the controller is the gateway chassis |
-
-**Secrets are delivered, never generated** — a node that invented its own
-RabbitMQ password could not talk to anything:
+A minimal `hagistack.env` for all-in-one (the values are placeholders):
 
 ```sh
-# on the controller
-sudo hagistack compute-secrets > compute-secrets.env     # refuses a terminal
-scp compute-secrets.env node2:/tmp/
-# on node2
+EXT_NIC=eth1
+PROVIDER_CIDR=192.0.2.0/24
+PROVIDER_GATEWAY=192.0.2.1
+FLOATING_START=192.0.2.100
+FLOATING_END=192.0.2.200
+```
+
+## Preflight check
+
+```sh
+git clone https://github.com/hagix9/hagistack.git
+cd hagistack/ubuntu26.04
+cp hagistack.env.example hagistack.env      # then edit it
+sudo ./hagistack all-in-one --check
+```
+
+`--check` runs preflight only and **changes nothing**. It checks the following:
+
+- the OS version and architecture;
+- whether KVM or QEMU will be used;
+- memory and disk;
+- that the provider NIC exists;
+- that every address and CIDR is valid and consistent (the gateway and the
+  floating range inside the CIDR, the gateway outside the range);
+- the management IP;
+- the image source. A download URL is refused unless it comes with a SHA-256
+  digest.
+
+It then prints every resolved setting together with where the value came from:
+command line, environment, file or default.
+
+- Exit status `0`: preflight passed.
+- Exit status `1`: a setting is wrong. The message names the setting.
+
+## All-in-one installation
+
+```sh
+sudo ./hagistack all-in-one
+```
+
+The phases run in this order:
+
+1. preflight
+2. secrets
+3. base packages
+4. MariaDB
+5. RabbitMQ
+6. memcached
+7. Keystone
+8. Glance
+9. Placement
+10. OVS/OVN
+11. Neutron
+12. Nova
+13. nova-compute
+14. Horizon
+15. initial resources
+
+On a GCE `n2-standard-4` a clean run took about 25 minutes. The closing banner
+shows the following:
+
+- the dashboard URL;
+- where the admin credentials are;
+- a command to boot a test guest;
+- the exact commands for adding a compute node, including this controller's
+  management IP.
+
+### What all-in-one creates
+
+Each resource is show-or-create by name. None is deleted or recreated.
+
+| Resource | Details |
+|---|---|
+| Flavor | `m1.tiny`: 1 vCPU, 512 MiB RAM, 1 GiB disk |
+| Image | `cirros-0.6.3-x86_64` (amd64). The file is verified against the SHA-256 digest **before** it is uploaded |
+| External network | `hagistack-provider`: flat, external, on `physnet1`. Its subnet holds the floating range and has no DHCP |
+| Tenant network | `hagistack-tenant` (Geneve) |
+| Router | `hagistack-router`: gateway on the provider network, plus an interface on the tenant subnet |
+| Security group rules | ICMP and TCP/22 on the admin project's `default` group |
+| Keypair | `hagistack-key` (RSA 3072). The private key is `/etc/hagistack/hagistack-key`, mode `0600` |
+
+## Add a compute node
+
+Run each step on the machine shown.
+
+**1. On the controller:** write the credentials a compute node needs to a file.
+The command refuses to write to a terminal.
+
+```sh
+(umask 077; sudo ./hagistack compute-secrets > compute-secrets.env)
+```
+
+Your shell, not `hagistack`, creates `compute-secrets.env`, so its mode comes
+from your umask. The `umask 077` above makes it readable by you only.
+
+The file holds exactly these five credentials:
+
+- `RABBIT_PASS`
+- `NOVA_SERVICE_PASS`
+- `PLACEMENT_SERVICE_PASS`
+- `NEUTRON_SERVICE_PASS`
+- `METADATA_PROXY_SECRET`
+
+It holds no database password and no admin password.
+
+**2. Copy the file to the new node over a secure channel.** Then delete the
+controller's copy.
+
+```sh
+scp compute-secrets.env NODE:/tmp/
+shred -u compute-secrets.env
+```
+
+**3. On the new node:** install the credentials, then run `compute-add` with the
+controller's management IP.
+
+```sh
+sudo install -d -m 0750 /etc/hagistack
 sudo install -o root -g root -m 0600 /tmp/compute-secrets.env /etc/hagistack/secrets.env
 shred -u /tmp/compute-secrets.env
-sudo hagistack compute-add --controller-ip 10.146.0.10
-# back on the controller
-sudo hagistack discover-hosts
+cd hagistack/ubuntu26.04
+sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP
 ```
 
-`compute-secrets` emits exactly `RABBIT_PASS`, `NOVA_SERVICE_PASS`,
-`PLACEMENT_SERVICE_PASS`, `NEUTRON_SERVICE_PASS` and `METADATA_PROXY_SECRET`.
+`compute-add` never generates secrets. It stops if
+`/etc/hagistack/secrets.env` is missing. Before it installs anything, it checks
+the following:
 
-**Input checks before anything is installed.** `nova-compute` pulls libvirt and
-qemu, so preflight first validates `--controller-ip` as an address that can
-belong to another machine (`0.x`, `127.x`, `169.254.x`, multicast,
-`255.255.255.255` and this node's own address are all refused) and then opens a
-bounded TCP connection to the controller on **5000, 9292, 8778, 5672 and 6642**.
-Any of them closed is a hard error naming which — and nothing has been installed
-or changed at that point.
+- `--controller-ip` is a usable unicast address, and it is not this node's own
+  address;
+- the controller answers on TCP 5000, 9292, 8778, 5672 and 6642.
 
-The node cannot confirm its own registration (no database, no admin credential,
-by design), so it tells you to run `hagistack discover-hosts` on the controller.
-It does check what it can: that its chassis has appeared in the controller's
-southbound database.
+The node is deliberately given much less than the controller:
 
-### Keystone
+- no database access (it reaches the cell database only through
+  `nova-conductor`);
+- no admin credential;
+- no provider bridge mapping.
 
-Served by **`apache2.service`** with `libapache2-mod-wsgi-py3`. There is no
-Keystone systemd unit on Ubuntu — the `keystone` package ships exactly one
-file, `/etc/apache2/sites-available/keystone.conf`, which carries its own
-`Listen 5000` and points at `/usr/bin/keystone-wsgi-public`, and installing it
-enables the site. hagistack drives that packaged vhost rather than inventing a
-unit or installing uwsgi. The evidence behind each of those statements is in
-`STEP2_KEYSTONE_EVIDENCE.md`.
+**4. Back on the controller:** map the new host into the cell.
 
 ```sh
+sudo ./hagistack discover-hosts
+```
+
+## Verify the deployment
+
+On any node:
+
+```sh
+sudo ./hagistack status
+```
+
+`status` shows the following:
+
+- the phase markers on this host;
+- whether the all-in-one is complete, or which phases are missing;
+- the state of every service unit.
+
+On a compute node, it tells you to run `discover-hosts` on the controller,
+because the node itself cannot see the cell database.
+
+On the controller, as root:
+
+```sh
+sudo -i
 . /etc/hagistack/admin-openrc
-openstack token issue
-```
-
-Re-running never rotates the fernet or credential keys, never rewrites the
-admin credential, and never drops the schema.
-
-### Glance and Placement
-
-They start differently, and the difference is in the packaging rather than a
-choice hagistack made:
-
-| | Glance | Placement |
-|---|---|---|
-| started by | **`glance-api.service`** (its own unit) | **`apache2.service`** — a second vhost beside identity |
-| port | 9292 (`bind_port` has no default, so it is set explicitly) | 8778 (from the packaged vhost) |
-| DB key | `[database] connection` | **`[placement_database] connection`** |
-| migration | `glance-manage db_sync` | **`placement-manage db sync`** |
-
-```sh
-. /etc/hagistack/admin-openrc
-openstack image list
-openstack endpoint list
-```
-
-Uploaded images survive re-runs: the image id, Glance's checksum and the bytes
-on disk were all unchanged across three consecutive runs. Service users,
-services and endpoints are reused, never deleted and recreated.
-
-Both phases refuse to run unless memcached is listening — a configured but dead
-token cache makes every authenticated call block, so hagistack will not
-configure against one. See `STEP3_GLANCE_PLACEMENT_EVIDENCE.md`.
-
-### Neutron and OVN
-
-A third startup model again, and again it is the packaging's choice rather than
-hagistack's:
-
-| | how it starts |
-|---|---|
-| Neutron **API** (:9696) | **`apache2.service`** — a third vhost beside identity and placement. `neutron-server` ships *no* systemd unit |
-| Neutron RPC / workers / metadata | `neutron-rpc-server`, `neutron-periodic-workers`, `neutron-ovn-metadata-agent` — real units |
-| OVN | `ovn-central` and `ovn-host` are `Type=oneshot`, `ExecStart=/bin/true` **wrappers**. The real units are `ovn-ovsdb-server-nb`, `ovn-ovsdb-server-sb`, `ovn-northd`, `ovn-controller` |
-
-Because the wrappers always "succeed", liveness is checked on the real units —
-never on `ovn-central`. Start order is `openvswitch-switch` → northbound DB →
-southbound DB → `ovn-northd` → `ovn-controller` → Neutron.
-
-Three networks are kept as three separate settings, which is what lets one
-shell serve both a single-LAN lab and a split management/provider deployment:
-
-| Concern | Setting |
-|---|---|
-| management / API plane | `MGMT_IP` |
-| Geneve tunnel endpoint | `external_ids:ovn-encap-ip` (defaults to `MGMT_IP`, but is its own setting) |
-| provider physical network | `external_ids:ovn-bridge-mappings` = `--provider-physnet`:`--provider-bridge` (default `physnet1`:`br-ex`) |
-
-Tenant networks are **geneve**; the provider physnet has both **flat** and
-**vlan** enabled, so further provider LANs can be added later as VLAN segments
-on the same bridge without re-plumbing anything.
-
-The northbound database listens on **loopback only** (`ptcp:6641:127.0.0.1`) —
-only the local Neutron talks to it. The southbound database listens on the
-management address (`ptcp:6642:$MGMT_IP`) because compute nodes will need it.
-
-**The provider bridge is created empty, on purpose.** No NIC is enslaved to it
-and no address is assigned. Attaching a physical NIC and moving the management
-IP onto the bridge is disruptive — done wrong over SSH it takes the host off the
-network — so this step does not do it. Until that happens, provider networks
-exist in Neutron but have **no path to a physical LAN**. The run warns about it,
-`status` repeats it, and the tests assert that the bridge has no port, no
-address, and that the management interface kept exactly the addresses it had.
-
-See `STEP4_NEUTRON_OVN_EVIDENCE.md` for the measured packaging facts behind
-every unit name and config path above.
-
-### Nova
-
-A fourth combination of startup models, again the packaging's choice:
-
-| | how it starts |
-|---|---|
-| compute **API** (:8774) | **`apache2.service`** — a fourth vhost. `nova-api` ships *no* systemd unit |
-| **metadata** API (:8775) | a *separate* package, `nova-api-metadata`, with its own vhost |
-| conductor / scheduler / compute | real units (`Type=simple`, `User=nova`, `ExecStart=/etc/init.d/<name> systemd-start`) |
-
-Things that are easy to get wrong and were checked in the packages:
-
-- **No Nova package touches the database.** `api_db sync`, `db sync`,
-  `cell_v2 map_cell0` and `cell_v2 create_cell` are all hagistack's job.
-- `/etc/nova/nova.conf` is stored `0644 root:root` inside the `.deb`, but
-  `nova-common`'s postinst chowns `/etc/nova` to `root:nova` and chmods it
-  `0640`, so that is what is actually installed. hagistack re-applies the same
-  mode after writing credentials — enforcement, not a fix (the first draft of
-  the evidence document claimed otherwise; the suite caught it).
-- The cell0 database **must** be called `nova_cell0`: Nova derives that name
-  from `[database] connection` by appending `_cell0`. Because of that,
-  `map_cell0` is called with **no arguments** and no password ever appears in
-  `ps`. `cell_v2 list_cells` prints passwords, so its output is matched but
-  never logged.
-- `[api] auth_strategy` does not exist in Nova 33, and `[glance] api_servers`
-  has been deprecated since 21.0.0 — neither is written.
-- `/etc/init.d/nova-compute` adds `--config-file=/etc/nova/nova-compute.conf`,
-  so the virtualisation type goes there, not into `nova.conf`.
-
-`--virt-type` (or `/dev/kvm` detection in preflight) selects `kvm` or `qemu`;
-under `qemu` the run says plainly that guests are 10–50× slower and sets
-`[libvirt] cpu_mode = none`.
-
-`phase_nova_compute` checks that the Nova control plane completed **before**
-installing anything, because `nova-compute` pulls libvirt and qemu.
-
-See `STEP5_NOVA_EVIDENCE.md`.
-
-### Completion is not assumed
-
-A service that cannot be reached is not quietly skipped. The run prints
-`INCOMPLETE`, names the phases it skipped, writes **no** state marker for them,
-and **exits 4**. `hagistack status` lists what is missing. Only a run in which
-every implemented phase actually did its work prints the completion banner and
-exits 0 — and that banner still says, in red, that nothing has been verified on
-real hardware.
-
-An incomplete run is the normal outcome in a container with no systemd. It is
-not a failure of the shell, and it is not a completed deployment either.
-
-| Exit | Meaning |
-|---|---|
-| 0 | success |
-| 1 | configuration or preflight error |
-| 2 | usage error |
-| 3 | unused — no subcommand is a stub any more |
-| 4 | ran to the end, the deployment is incomplete (a service was unreachable) |
-
-## Usage
-
-```sh
-cp hagistack.env.example hagistack.env   # edit it
-sudo ./hagistack all-in-one              # or: --check for preflight only
-./hagistack status
-```
-
-Required settings for `all-in-one`: `EXT_NIC`, `PROVIDER_CIDR`,
-`PROVIDER_GATEWAY`, `FLOATING_START`, `FLOATING_END`. Everything else is
-autodetected or defaulted (including `REGION_NAME`, which defaults to
-`RegionOne`, and the image settings).
-
-`compute-add` needs exactly one setting of its own, `--controller-ip`, and none
-of the provider-network ones.
-
-Then, to find out whether any of it works:
-
-```sh
-. /etc/hagistack/admin-openrc
+openstack compute service list
+openstack hypervisor list
+openstack network agent list
 openstack server create --flavor m1.tiny --image cirros-0.6.3-x86_64 \
     --network hagistack-tenant --key-name hagistack-key demo1
-openstack server list
-openstack console log show demo1
+openstack server show demo1 -c status
+openstack console log show demo1        # cloud-init output
 ```
 
-That has never been run successfully by anyone, which is the point of the
-section below.
+What to expect:
 
-### Configuration
+- the guest reaches `ACTIVE`, in about 12–18 seconds on the verified hosts;
+- the console log shows cloud-init fetching its metadata.
 
-Precedence is **command line > environment > `./hagistack.env` > default**, and
-it applies to *every* option, including `--tenant-cidr`, `--dns-server` and
-`--virt-type`. `--check` prints the resolved value and its source for each key:
+Guests on `hagistack-tenant` can reach each other across nodes over Geneve,
+which is verified. They **cannot** reach a physical LAN until you attach a NIC
+to the provider bridge.
 
+## Horizon
+
+- **URL:** `http://MGMT_IP/horizon/`
+- **Web server:** Apache on port 80, the same server that runs the API vhosts.
+- **User:** `admin`. The password is `OS_PASSWORD` in `/etc/hagistack/admin-openrc`.
+  Hagistack never prints it.
+- **Settings:** Hagistack writes them to a snippet that the packaged settings
+  load. The package's own `local_settings.py` is never edited.
+- **Checks during the run:** the Horizon phase confirms that the effective
+  Keystone URL and cache location are the ones it wrote, and that the login page
+  answers.
+- **`ALLOWED_HOSTS`:** left as the package ships it (`['*']`).
+- **Console tab:** does not work. The noVNC proxy is not installed.
+
+**Verification.** A real admin sign-in was verified on GCE on 2026-09-28: the
+POST returned 302, a session cookie was issued, and protected pages rendered
+for `admin`. That check ran in the first acceptance run of the day. The second
+run, which produced the current code, did not repeat the sign-in check.
+
+## Re-running Hagistack
+
+`all-in-one` and `compute-add` are designed to be run again. A second run on the
+verified hosts exited 0, reported every step as already done, and restarted no
+service.
+
+On a re-run:
+
+- **Secrets:** existing secrets are reused, never rotated.
+- **Databases:** never dropped. Existing databases are left untouched.
+- **Configuration:** files are edited key by key, and only when a value
+  changes. A service is restarted only when its configuration is newer than
+  its running process.
+- **Initial resources:** show-or-create by name. They are never deleted or
+  recreated.
+- **Base packages:** skipped once they are installed. Set `HAGISTACK_REDO=1` to
+  reinstall them.
+
+Hagistack does **not** roll back. If a run fails, it prints the line where it
+stopped. Fix the cause and run the same command again.
+
+A re-run is **not a reconfiguration tool**. If you change addresses or names
+after the first run, the resources and endpoints that already exist are left in
+place. Hagistack warns about endpoints that differ, but it does not rewrite
+them.
+
+## Command reference
+
+```text
+sudo ./hagistack all-in-one      [options]    controller + compute on this host
+sudo ./hagistack all-in-one --check [options] preflight only; changes nothing
+sudo ./hagistack compute-add --controller-ip IP [options]
+sudo ./hagistack compute-secrets > FILE       controller; refuses a terminal
+sudo ./hagistack discover-hosts               controller; map new compute hosts
+sudo ./hagistack status                       phase markers and service state
+./hagistack --help | --version
 ```
-==> resolved configuration
-    EXT_NIC            eth0                   [command line]
-    TENANT_CIDR        10.1.1.0/24            [environment]
-    DNS_SERVER         172.24.4.1             [default]
-```
 
-Giving a key an empty value on any tier is an error rather than a silent
-fall-through, so "explicitly blank" is never mistaken for "not supplied".
-Repeating a flag is allowed; the last occurrence wins.
+Options for both modes:
 
-**The config file is parsed, never executed.** Only blank lines, `#` comments
-and `KEY=VALUE` are accepted; `KEY` must be a known setting and `VALUE` may
-contain only letters, digits and `. _ - : / @ + =`. Unknown keys, duplicate
-keys, malformed lines and values containing shell metacharacters are refused,
-and a rejected value is never echoed back in the error. Use
-`--env-file /dev/null` to ignore all config files.
+- `--mgmt-ip`
+- `--virt-type`
+- `--region-name`
+- `--env-file`
+- `--check`
 
-## Safety properties
+The options for `all-in-one` and `compute-add` are listed under
+[Configuration](#configuration).
 
-These are the failures of the 2013-era shells in this repository, and the
-rules that replace them:
-
-| Old behaviour | Now |
+| Exit status | Meaning |
 |---|---|
-| `MYSQL_PASS=nova`, `ADMIN_PASSWORD=secrete` committed to Git | No password in the source. Generated per host into `/etc/hagistack/secrets.env` (`0600`), git-ignored, and **reused unchanged** on re-runs |
-| an unconditional database drop on every run | **No `DROP DATABASE` anywhere.** An existing database is detected and left untouched. There is no flag to bypass this |
-| `cat … \| tee -a /etc/sysctl.conf` duplicating on every run | `ini_set` edits key-by-key and rewrites the file only when the content actually changes |
-| `rm -rf /var/log/nova/*` | Nothing is deleted |
-| No `set -e`; ran to completion after failures | `set -Eeuo pipefail` plus an `ERR` trap that reports the failing line. `-E` matters: without it the trap is not inherited by functions, so it never fires |
-| Config file `source`d, making every value executable | The file is **parsed**. `KEY=$(command)` and backquoted values are refused, not run |
-| — | A service that cannot be reached does not count as done: no state marker, `INCOMPLETE`, exit 4 |
-| AppArmor disabled, libvirt opened on TCP with `auth_tcp="none"`, MariaDB bound to `0.0.0.0` | None of these. MariaDB is pinned to `127.0.0.1`, memcached to the management IP |
+| 0 | Success |
+| 1 | Configuration or preflight error, or a check that stopped the run |
+| 2 | Usage error: unknown command or option |
+| other non-zero | A command failed. Hagistack prints `aborted at hagistack:LINE` and stops |
+| 4 | The run reached the end, but a phase was skipped because a service it needs was unreachable. The deployment is **incomplete**. Fix the cause and re-run |
 
-Re-running `all-in-one` is safe and is part of the acceptance criteria.
+## Sensitive and generated files
 
-## What has actually been verified
+| Path | Contents | Mode |
+|---|---|---|
+| `/etc/hagistack/secrets.env` | Every generated credential. On a compute node, only the five delivered keys | `0600` |
+| `/etc/hagistack/admin-openrc` | Admin credentials for the `openstack` CLI | `0600` |
+| `/etc/hagistack/hagistack-key` | Private key of the `hagistack-key` keypair | `0600` |
+| `/var/lib/hagistack/state/*.done` | Phase markers, used by `status` and on re-runs | — |
+| `/var/lib/openstack-dashboard/secret_key` | Horizon's Django secret key | `0600` |
+| `./hagistack.env` | Your settings. It must not contain passwords | — |
+| `/etc/systemd/system/apache2.service.d/10-hagistack-procsubset.conf` | Apache drop-in (see [Troubleshooting](#troubleshooting)) | `0644` |
 
-**Nothing on real hardware.** Everything below was done in an Ubuntu 26.04.1 LTS
-amd64 container, and a container cannot boot a guest, run systemd, or be a
-second machine. Read this section as "what the container settled", not as
-"what works".
+Never commit `secrets.env`, `admin-openrc` or `hagistack.env`. The repository's
+`.gitignore` excludes them.
 
-### Step 6 (this build) — `tests/container-step6.sh`
+## Troubleshooting
 
-**PASS 69 / FAIL 0 / UNVERIFIED 7, guest exit 0.** Deliberately light, and the
-limits were decided before it ran.
+- **Exit status 4 or "INCOMPLETE".** A service Hagistack depends on did not
+  answer, so a phase was skipped. The output names the phase and the check to
+  run. Fix it and re-run.
+- **The closing banner says "NOTHING HERE IS VERIFIED ON REAL HARDWARE".** The
+  headline predates the GCE verification. The line below it and
+  [Verified environment](#verified-environment) give the current status.
+- **A guest goes to ERROR with `VirtualInterfaceCreateException`.** Check the
+  Apache drop-in:
 
-Regression on the same container, all guest exit 0 and no FAIL:
-`container-step5.sh` **68/0/7**, `container-audit.sh` **39/0/1**,
-`container-verify.sh` **63/0/8** — each matching its baseline. Four assertions
-in those older suites were re-pinned because this change removed the wording
-they matched (the `STEP <n>` numbering, and `compute-add` being a stub); one
-step-5 run also failed on a **full disk** rather than on anything in the shell,
-and was re-run with room. Both are itemised in
-`STEP6_HORIZON_RESOURCES_EVIDENCE.md` §5.3.
+  ```sh
+  systemctl show apache2 -p ProcSubset      # must be "all"
+  ```
 
-Settled: `bash -n`; ShellCheck `-S warning` clean on the shell and both suites;
-that `status` and `--help` separate *implemented* from *verified* and state that
-the second is `none`; that the stale "STEP 1" header is gone and no subcommand
-advertises itself as a stub; twelve image-input validations and eight
-controller-IP validations, none of which executed anything; that **every**
-`CONFIG_KEYS` entry is accepted from a config file; that `IMAGE_URL=$(...)` is
-refused rather than run; that the pinned cirros digest matches **the publisher's
-live `SHA256SUMS`**; that `compute-add` refuses an unreachable controller, a
-missing secrets file, a world-readable one and an incomplete one, **installing
-nothing** in any of those cases; that `compute-secrets` emits no database or
-admin credential; and a source audit — no `openstack … delete`, no `DROP`, no
-`rm -rf` against a system path, no write to the dashboard's dpkg conffile, no
-`[database]` connection on a compute node, no gateway chassis on a compute node.
+  Ubuntu 26.04's `apache2.service` sets `ProcSubset=pid`. That setting hides
+  `/proc/meminfo` from the Neutron API workers, and every OVN port event is then
+  dropped. Hagistack writes a drop-in that sets `ProcSubset=all`, and it checks
+  that the workers can read `/proc/meminfo`.
+- **`compute-add` stops: "the controller is not reachable on: …".** Nothing was
+  installed. On the controller, check that the listed ports are listening:
 
-Recorded **UNVERIFIED**, not forced into a PASS: Horizon serving and login,
-guest boot, the initial resources actually being created, a second node's OVN
-chassis, node-to-node Geneve, `compute-add` → Placement registration, and unit
-startup under systemd.
+  ```sh
+  ss -ltn | grep -E '5000|9292|8778|5672|6642'
+  ```
 
-A bug the suite found that had nothing to do with step 6: keys sitting at the
-**end of a line** inside `CONFIG_KEYS` were rejected from `hagistack.env` as
-"unknown key" while working fine on the command line. In the shipped step 5 that
-was `FLOATING_START` — a *required* setting — and `REGION_NAME`. Fixed, with a
-test that now walks every key. See `STEP6_HORIZON_RESOURCES_EVIDENCE.md` §4.
+  Then check that no firewall blocks this node. The OVN southbound database
+  listens on the controller's management IP, so `--controller-ip` must be that
+  address.
+- **Guests are slow or time out.** Check `virt_type` in the preflight output.
+  `qemu` means that `/dev/kvm` is not usable.
 
-### Earlier steps
+## Verified environment
 
-Verified in the same kind of container (no systemd): `bash -n`, ShellCheck,
-`--help`, subcommand resolution, input validation, config-generation
-idempotence, secret file permissions and value stability across runs, refusal of
-code-execution payloads in the config file, the full precedence matrix, and the
-incomplete-run reporting and exit code.
+Two virtual machines on Google Compute Engine, 2026-09-28:
 
-With **MariaDB started by hand** inside the container (`mariadbd-safe
---skip-networking`, recorded as such): database and user creation, login as the
-`nova` user to both the `nova` and `nova_api` databases with one credential, and
-survival of a planted row across three consecutive runs.
+- **Image:** `ubuntu-2604-resolute-amd64`.
+- **Virtualisation:** nested virtualisation enabled, `virt_type=kvm`.
+- **node1:** `all-in-one` on an n2-standard-4 with 60 GB of disk.
+- **node2:** `compute-add` on an n2-standard-2 with 40 GB of disk.
 
-Keystone was verified with MariaDB and Apache started **by hand**
-(`mariadbd-safe --bind-address=127.0.0.1`, `apachectl -k start`): 49-table
-schema, fernet and credential keys, bootstrap, and `openstack token issue`
-succeeding as admin, with every artefact unchanged across three consecutive runs.
+Verified:
 
-For step 4 the same container (this time `--privileged`, with `/lib/modules`
-mounted) started MariaDB, memcached, **RabbitMQ**, Apache, `ovsdb-server`,
-`ovs-vswitchd`, the OVN northbound and southbound databases and `ovn-northd`,
-all by hand and all recorded. That proved: the OVN databases listen exactly
-where the design says (`ptcp:6641:127.0.0.1` and `ptcp:6642:$MGMT_IP`, confirmed
-with `ss`), the local chassis registers itself in the southbound database with a
-**Geneve** encap pointing at the management address, the provider bridge is
-created with **no port and no address**, the management interface keeps exactly
-the addresses it had, and the networking schema is created (135 tables).
+- every phase completed;
+- authenticated calls to Keystone, Glance, Placement, Neutron and Nova;
+- cells v2 with both hosts mapped;
+- a Placement resource provider for each node;
+- two OVN chassis;
+- a guest ACTIVE on each node, in 18 s and 12 s;
+- cloud-init completed;
+- two guests on different nodes pinged each other, and the packets were captured
+  on the Geneve tunnel;
+- Horizon admin sign-in (see [Horizon](#horizon));
+- second runs of `all-in-one` and `compute-add` exited 0 and restarted nothing.
 
-Step 5 ran a light suite — **PASS 68 / FAIL 0 / UNVERIFIED 7, guest exit 0** —
-covering syntax, ShellCheck, input validation, honest skipping, the Nova
-packaging facts, configuration generation against the real packaged `nova.conf`
-(including byte-identical re-application), the three compute databases with one
-credential, and secret handling.
+The details are in `GCE_ACCEPTANCE_2026-09-28.md` and
+`GCE_ACCEPTANCE_2026-09-28_RUN2.md`.
 
-### Not verified anywhere, by anything
+## Known limitations
 
-Logging in to **Horizon**; **booting a guest**; the initial resources being
-created against a live control plane; the **authenticated Neutron API** and
-network creation; **Nova's** cells commands executing, `nova-compute`/libvirt,
-and hypervisor registration; **`compute-add`** end to end, the second node's OVN
-chassis, and **Geneve between two nodes**; any **physical-LAN** provider path or
-floating IP; and service startup and unit ordering **under systemd**.
+**Not included**
 
-Those are the GCE acceptance items — see
-`../HAGISTACK_VERIFICATION_SCOPE_2026-09-26.md` §5.
+- **Provider NIC attachment.** The provider NIC is **never attached** to
+  `br-ex`, and `br-ex` gets no address. Provider networks and floating IPs
+  reach no physical LAN until you attach a NIC yourself. On a single-NIC host,
+  attaching the management NIC would move the management address and can cut
+  off SSH.
+- **Other services.** Cinder (volumes), Swift and other OpenStack services are
+  not installed.
+- **noVNC.** The console proxy is not installed.
+- **Firewall.** No host firewall is configured. The APIs, RabbitMQ, the OVN
+  southbound database and memcached listen on the management network, so keep
+  the nodes on a trusted network.
 
-About one earlier note: step 4 hit a Keystone `QueuePool limit of size 5
-overflow 50 reached` at 98% disk, and the write-up leaned on the disk figure.
-**Disk pressure was a correlation, not a diagnosis** — the one number actually
-measured, 56 of 1024 server-side connections, says the database server was not
-the limit. It was never diagnosed. `STEP6_HORIZON_RESOURCES_EVIDENCE.md` §5.2
-lists the candidates that were not ruled out.
+**Not verified**
 
-Nothing in this shell has been run on real Ubuntu 26.04 hardware or on a GCE VM.
-
-## Rocky Linux 10.2
-
-Not implemented, and this repository does not claim it is. The re-investigation
-on 2026-09-27/28 corrected part of the earlier verdict — EL10 RPMs *do* exist,
-and `dnf` resolves a 704-package OpenStack on Rocky 10.2 — but what it resolves
-mixes three OpenStack cycles from stalled build queues behind content-hash URLs.
-The measurements, the reasoning and a re-runnable probe are in
-`../rocky10.2/README.md`.
+- a physical-LAN path, or reaching floating IPs from outside the host;
+- live migration;
+- three or more nodes;
+- `arm64`;
+- hosts with an active host firewall.
