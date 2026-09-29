@@ -55,9 +55,13 @@ of them would have produced false confidence:
   checks were failing for reasons unrelated to the shell. Output is now captured first.
 - The destructive-SQL scan matched the shell's own honest banner prose
   *"it does not drop databases"*. It now requires a DB-client invocation on the
-  same line, and a **positive control** runs the same scan against the 2013 shell
-  `ubuntu13.10/hagistack_controller_neutron.sh` and asserts it **is** flagged —
-  otherwise the check would be vacuous.
+  same line, and a **positive control** runs the same scan against a known-bad
+  sample and asserts it **is** flagged — otherwise the check would be vacuous.
+  For this run the sample was the 2013 shell
+  `ubuntu13.10/hagistack_controller_neutron.sh`, staged by hand as
+  `/src/legacy-sample.sh`. The suite now ships its own one-line sample,
+  `tests/fixtures/drop-db-positive-control.sample`, so the reproduce command
+  below arms F2b with no extra staging and nothing outside `ubuntu26.04/`.
 - The excluded-engine scan flagged the header comment that documents *not* using
   OpenStack-Ansible/Kolla/Packstack/DevStack. It now judges code, not comments.
 

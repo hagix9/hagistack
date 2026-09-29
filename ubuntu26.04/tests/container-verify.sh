@@ -272,16 +272,18 @@ DROPPAT='(mysql|mariadb|mysqladmin)[^|]*(drop[[:space:]]+(database|schema|table)
 scan "$DROPPAT" >/dev/null \
     && rec F2-no-drop-db FAIL "destructive drop statement in code" \
     || rec F2-no-drop-db PASS "no drop statement passed to a DB client"
-# Positive control: the same scan MUST flag the 2013 shell, otherwise F2 is vacuous.
-if [ -f /src/legacy-sample.sh ]; then
-    if sed -E 's/[[:space:]]#[^"'"'"']*$//; /^[[:space:]]*#/d' /src/legacy-sample.sh \
+# Positive control: the same scan MUST flag a known-bad sample, otherwise F2 is
+# vacuous. The sample ships with this suite, so a missing one is a failure.
+DROPSAMPLE=/src/tests/fixtures/drop-db-positive-control.sample
+if [ -f "$DROPSAMPLE" ]; then
+    if sed -E 's/[[:space:]]#[^"'"'"']*$//; /^[[:space:]]*#/d' "$DROPSAMPLE" \
         | grep -nEi "$DROPPAT" >/dev/null; then
-        rec F2b-scan-positive-control PASS "scan flags the legacy shell as expected"
+        rec F2b-scan-positive-control PASS "scan flags the known-bad sample as expected"
     else
-        rec F2b-scan-positive-control FAIL "scan failed to flag the known-bad legacy shell"
+        rec F2b-scan-positive-control FAIL "scan failed to flag the known-bad sample"
     fi
 else
-    rec F2b-scan-positive-control UNVERIFIED "legacy sample not staged"
+    rec F2b-scan-positive-control FAIL "positive-control sample missing: $DROPSAMPLE"
 fi
 # And the honest banner text must still be present (we did not silence it).
 grep -q 'does not drop databases' hagistack \
