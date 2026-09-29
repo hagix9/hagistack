@@ -1,0 +1,44 @@
+Adapt RDO's rpm-master openstack-nova.spec to the released 2026.1 tarball
+(nova 33.0.2).
+
+The same upstream change as keystone and placement, now in nova: the generated
+WSGI scripts are gone. nova 33.0.2's pyproject.toml declares eleven console
+scripts and none of them is an API server -
+
+    nova-compute, nova-conductor, nova-manage, nova-novncproxy, nova-policy,
+    nova-rootwrap, nova-rootwrap-daemon, nova-scheduler, nova-serialproxy,
+    nova-spicehtml5proxy, nova-status
+
+- while the API is now importable at nova/wsgi/osapi_compute.py and
+  nova/wsgi/metadata.py. Without this the build dies at the end of %install:
+
+    error: File not found: .../usr/bin/nova-api*
+    error: File not found: .../usr/bin/nova-metadata-wsgi
+
+WHAT THIS PATCH DELIBERATELY DOES NOT FIX, because it is a deployment decision
+and not a packaging one: the distgit also ships
+
+    openstack-nova-api.service          ExecStart=/usr/bin/nova-api
+    openstack-nova-metadata-api.service ExecStart=/usr/bin/nova-api-metadata
+    openstack-nova-os-compute-api.service
+
+and all three now point at binaries that do not exist. On 2026.1 the Nova API
+has to be run as a WSGI application - mod_wsgi or uwsgi against
+nova.wsgi.osapi_compute and nova.wsgi.metadata. That is the same shape Ubuntu
+26.04 already uses (nova-api is an Apache vhost there, with no unit), so a
+Rocky hagistack would write its own httpd configuration rather than enable
+these units. Leaving them visibly dead is more honest than pointing them at
+something invented here.
+
+diff -ur a/nova/openstack-nova.spec b/nova/openstack-nova.spec
+--- a/openstack-nova.spec	2026-09-28 21:43:17
++++ b/openstack-nova.spec	2026-09-28 22:37:47
+@@ -620,8 +620,6 @@
+ %{_unitdir}/openstack-nova-scheduler.service
+ 
+ %files api
+-%{_bindir}/nova-api*
+-%{_bindir}/nova-metadata-wsgi
+ %{_unitdir}/openstack-nova-*api.service
+ 
+ %files conductor

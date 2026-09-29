@@ -1,0 +1,155 @@
+# Build inputs for OpenStack 2026.1 Gazpacho on Rocky Linux 10.2 — every one pinned.
+#
+# This is the TARGET: the same OpenStack release the Ubuntu 26.04 shell gets
+# from its distribution archive. epoxy.manifest (2025.1) is kept beside it as a
+# research record and is NOT the deliverable.
+#
+# There is no `gazpacho-rdo` distgit branch and no centos10-gazpacho repository:
+# `epoxy-rdo` is the newest release branch RDO has, and `centos10-master` is the
+# only trunk tree. So the packaging here is RDO's `rpm-master` spec — the only
+# one that exists for anything newer than 2025.1 — pinned to an exact commit and
+# pointed at the released 2026.1 tarball.
+#
+# Two consequences, both handled by build-rpms.sh rather than by hand:
+#   * `rpm-master` specs ship `Version: XXX` / `Release: XXX` for DLRN to fill
+#     in, so this file carries the version and release.
+#   * A master spec does not always match a released tarball. Where it does not,
+#     the fix is a reviewable patch in ./spec-patches, not an inline sed.
+#
+# Versions are the FINAL 2026.1 releases, read from
+# openstack/releases deliverables/gazpacho/*.yaml on 2026-09-28; every one has a
+# stable/2026.1 branch upstream. Commits from `git ls-remote`, same day.
+#
+#
+# OpenStack release signing keys this manifest trusts, pinned by sha256. The
+# spec names the one it wants in %global sources_gpg_sign; a key the manifest
+# does not list stops the build.
+# 2026.1 is signed by TWO keys: glance and placement were released 2026-04,
+# keystone/neutron/nova/horizon are 2026-09 point releases made after OpenStack
+# rotated its cycle key. The fingerprints were read out of each .asc and matched
+# against the key files published at releases.openstack.org/_static/.
+KEY 0x30566c450e41d7c91e442dfb231f942f608ddeff 0f7901e358e78067604188563264589ee3a53f2369379a9b6310ab698af10fc9
+KEY 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff fcbacfaef9b9b915a417d02f78be95fbaaebcaefa58c32e279e73f2ee2ccbfe6
+#
+# Independently-released libraries were signed with whichever cycle key was
+# current when they were released, so a single-release build legitimately needs
+# more than one. Each fingerprint below was read out of that tarball's own .asc
+# and matched against a key published at releases.openstack.org/_static/.
+KEY 0x4c29ff0e437f3351fd82bdf47c5a3bc787dc7035 af5132b373e8ffa33ea2938b24c78d4855f866bda77e9d463a6fca29766fb070
+KEY 0x2ef3fe0ec2b075ab7458b5f8b702b20b13df2318 a4f619daa6f2f0d47c611fabc489cf634e55d2386bb4f92d2929d2c8aafef53e
+KEY 0xc71b007ef97887fd8fb6365ceb4fd6d618e62181 d0ab8b2f991ceb09d6fe495007f63d9a6923f0d312d6a7d3df457acf4cb51108
+KEY 0x22284f69d9eccdf3df7819791c711af193ff8e54 56ae1e9ba54e609920e3c7e92740e2f3b0f93fe7e4cc4fa1b0e6440682229997
+KEY 0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363 ab466df791c8867583c80bbd551d3b3e38ed846fc0069d0ae4e05e32e7ded563
+KEY 0x815afec729392386480e076dcc0dfe2d21c023c9 428437853c204259edb8ee99ed248750cdb0b22fdf22b520e976365611966f21
+KEY 0xa7475c5f2122fec3f90343223fe3bf5aad1080e4 c0fb2667eca4a9d44a1cec674c77b419ff686b5dfac351dcfd3b2741847b974d
+#
+# fields: package  distgit-repo  distgit-commit  spec-file  version  release  tarball  tarball-sha256  url-project  signing-key
+#
+keystone  keystone-distgit  8019c0a8e95aa8ce0c741ac0d58d5bf217d3b103  openstack-keystone.spec     29.1.0  1  keystone-29.1.0.tar.gz             9090a34976c48b518dec21d73260d3af76029c05bd40bfe2cb097dfd7d343bc1  keystone  0x30566c450e41d7c91e442dfb231f942f608ddeff
+placement placement-distgit 967f1fba4c7842dfe3065b4aa3f904d4f3438e03  openstack-placement.spec    15.0.0  1  openstack_placement-15.0.0.tar.gz  b4825e2a37eef18d92a96aef089438327bce5e4580716a8478f0c1864b188800  placement  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+glance    glance-distgit    05968b35c77aaae4b3c5a535bb68052e36b91c89  openstack-glance.spec       32.0.0  1  glance-32.0.0.tar.gz               e92cce22edf09f573c7083cecb783f19b526a3be9bc34c4018e658962b9d98e5  glance  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutron   neutron-distgit   fa1f5135e66282364250f2f5630a48423f497099  openstack-neutron.spec      28.0.2  1  neutron-28.0.2.tar.gz              cdaf45a2100de5233e4c1cc7c01c9df2b634510a0f0436913f73f29d42d325ee  neutron  0x30566c450e41d7c91e442dfb231f942f608ddeff
+nova      nova-distgit      0b94abfd93c4935230ec4f2395f04197374eee4b  openstack-nova.spec         33.0.2  1  nova-33.0.2.tar.gz                 84ab864ced8867f2989f3ba65ead61a7e39891ee7ea693850331636ac9d360ea  nova  0x30566c450e41d7c91e442dfb231f942f608ddeff
+horizon   horizon-distgit   d5ba40128726567910302c43a42bc08493c4893c  python-django-horizon.spec  25.7.3  1  horizon-25.7.3.tar.gz              0a9a1d90475bc290d4af934ff53b9ed4c2cbe063150ca48a17c64c03447c5117  horizon  0x30566c450e41d7c91e442dfb231f942f608ddeff
+#
+# --- libraries -----------------------------------------------------------
+# The six services above cannot be built without these at their 2026.1
+# versions: RDO's EL10 trunk carries 2025-era builds that are older than what
+# 2026.1 requires. Versions are the exact pins from the 2026.1
+# upper-constraints file, which is what "one release" means for a library.
+# os-traits releases independently of the cycle; 3.6.0 is its 2026.1 pin.
+#
+oslo-service oslo-service-distgit 91da0bd81cbb93e513138670f05f384d785feb49 python-oslo-service.spec 4.5.1  1 oslo_service-4.5.1.tar.gz  959b0c088aa6c4aaea52e19a4583d49f905a505e83120f2f08c9b351ffe9a244 oslo.service 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-traits    os-traits-distgit    317ca0434096ba474fc2bcd4d461f511e8a4582e python-os-traits.spec    3.6.0  1 os_traits-3.6.0.tar.gz     0fef8ef5c17ca98388551bb6c0b2d2fe2dee305b1e1866e780c0e776df6fcb60 os-traits    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+ovsdbapp     ovsdbapp-distgit     e0b75a44c73bfc2d4199cdf6d17110c31c3a25e5 python-ovsdbapp.spec     2.16.1 1 ovsdbapp-2.16.1.tar.gz     8189d1e4089d288763f8666eecde2d260d5c1be11e8dcecc38b858d6d4bbe447 ovsdbapp     0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutron-lib  neutron-lib-distgit  986b1cf1f46b14a64e8578bae68f8a6863bafaea python-neutron-lib.spec  3.24.0 1 neutron_lib-3.24.0.tar.gz  96861925534f3c3a16b0e3de9e6fe3953f58b2b5f695386d8b71aa598bdc649b neutron-lib  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-ken       os-ken-distgit       d750b567e03de5143eeaead8718e73056e035e44 python-os-ken.spec       4.1.2  1 os_ken-4.1.2.tar.gz        0a335e02ea3de4842026dafde752b1dd4d99568f957b1f97c2c1d31f8e9d911f os-ken       0x30566c450e41d7c91e442dfb231f942f608ddeff
+stevedore    stevedore-distgit    de79d11f817d14e8562bee39155aa3e1b7fab1cd python-stevedore.spec    5.7.0  1 stevedore-5.7.0.tar.gz     31dd6fe6b3cbe921e21dcefabc9a5f1cf848cf538a1f27543721b8ca09948aa3 stevedore    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-config  oslo-config-distgit  772e9c4cd8e7b809e03fc964ba3db5f6fd35caed python-oslo-config.spec  10.3.0 1 oslo_config-10.3.0.tar.gz  c405a40a8b05aa97bb5c24bb0b849981a7a5b7d56304df40632722312c58eaca oslo.config  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+#
+# --- the remaining libraries, so that a clean install resolves at one release --
+# Versions are the exact 2026.1 upper-constraints pins. Generated and verified
+# on 2026-09-29: distgit commit from git ls-remote, tarball and key sha256
+# computed from the downloaded file, signing key from the .asc fingerprint.
+#
+castellan              castellan-distgit          4b8e3f073884d26139b3a34b41b6b1e2898318e5 python-castellan.spec          5.6.0    1 castellan-5.6.0.tar.gz             917f43a1f1d26e87bef8b6de0e17fe3955f5f7cc05b746fc804fdac7c13bcc5e castellan              0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+debtcollector          debtcollector-distgit      28c8af1859a8c7c6cb1d42c200316c7b7b6fa1df python-debtcollector.spec      3.0.0    1 debtcollector-3.0.0.tar.gz         2a8917d25b0e1f1d0d365d3c1c6ecfc7a522b1e9716e8a1a4a915126f7ccea6f debtcollector          0x2ef3fe0ec2b075ab7458b5f8b702b20b13df2318
+futurist               futurist-distgit           9acd193e32bcadffe5ef099400a5e0911643fb9f python-futurist.spec           3.2.1    1 futurist-3.2.1.tar.gz              01dd4f30acdfbb2e2eb6091da565eded82d8cbaf6c48a36cc7f73c11cfa7fb3f futurist               0xc71b007ef97887fd8fb6365ceb4fd6d618e62181
+glance-store           glance_store-distgit       17791fb5fdd2a2400efac3defd158fd3d5effb5e python-glance-store.spec       5.4.1    1 glance_store-5.4.1.tar.gz          70448da7b3f4c799f2ac3c5ae0eda7cebac612b56ca6cd4841814d070cd4772f glance_store           0x30566c450e41d7c91e442dfb231f942f608ddeff
+keystoneauth1          keystoneauth1-distgit      ea6b528efd135843407b9d1a3f0860e220a23702 python-keystoneauth1.spec      5.13.1   1 keystoneauth1-5.13.1.tar.gz        e011e47ac3f3c671ffae33505c095548650cc19dab7f6af3b2ea5bd18c98f0c9 keystoneauth           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+keystonemiddleware     keystonemiddleware-distgit 7491a51098c40d822025c7918a57cbd0e7555773 python-keystonemiddleware.spec 12.0.0   1 keystonemiddleware-12.0.0.tar.gz   234ff0b5d35541ac1113396339e2d6e26b1f7a1d7867bca223f488073e207cd4 keystonemiddleware     0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+microversion-parse     microversion-parse-distgit 9032f681a2fa2cff84a7472189d035ebd1e05477 python-microversion-parse.spec 2.1.0    1 microversion_parse-2.1.0.tar.gz    57367847ecc6a4328258c88d63681f3cc91b6021d3ec284a351fb78e87d057ea microversion-parse     0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+openstacksdk           openstacksdk-distgit       03d8e697ff89f93d85d65b23d1132db077c4b491 python-openstacksdk.spec       4.10.0   1 openstacksdk-4.10.0.tar.gz         5dde9ae3f1e2411a87ff57b2d78da53fac8eae9e5bac8e5870927cb62ddfc033 openstacksdk           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-brick               os-brick-distgit           99edb21c6d0a6dc6a1caf961eae65b0efcb0a530 python-os-brick.spec           7.0.0    1 os_brick-7.0.0.tar.gz              3a28dc05c418f992e72538886136107c67b80051a5840144cd7f73d50b9ec05a os-brick               0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-resource-classes    os-resource-classes-distgit bf95c276336436474422fa710a8d47603d79a985 python-os-resource-classes.spec 1.1.0    1 os-resource-classes-1.1.0.tar.gz   e0bcbb8961a9fe33b7213734c51c001812890e2be62101c9279c88b72f75f9eb os-resource-classes    0x4c29ff0e437f3351fd82bdf47c5a3bc787dc7035
+os-service-types       os-service-types-distgit   9def9fe10dca344adb33a82ebe6da34eed77136a python-os-service-types.spec   1.8.2    1 os_service_types-1.8.2.tar.gz      ab7648d7232849943196e1bb00a30e2e25e600fa3b57bb241d15b7f521b5b575 os-service-types       0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-vif                 os-vif-distgit             8e09653a13632859fdd08a8697f297563a7648c2 python-os-vif.spec             4.3.0    1 os_vif-4.3.0.tar.gz                2d819eed0ac45a3606120f67f64f838eca1ff61653f310b33be185e028fee435 os-vif                 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-cache             oslo-cache-distgit         110d28549ff22475c59c31b182fa578b559e0b76 python-oslo-cache.spec         4.1.1    1 oslo_cache-4.1.1.tar.gz            1c19a605fe3c7f7c7608843f28c6b529c782cc3597f867ead14749f439b4f939 oslo.cache             0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-concurrency       oslo-concurrency-distgit   66197f31c54059d6da030adffc4d62ae6f28a44f python-oslo-concurrency.spec   7.4.1    1 oslo_concurrency-7.4.1.tar.gz      a8042e5797ac4c7fef9936461f7b43d0f99a23ff74a9cada9f1b30f81badfa1b oslo.concurrency       0x30566c450e41d7c91e442dfb231f942f608ddeff
+oslo-context           oslo-context-distgit       38228475d6c4ca7f09b85ccb0f3037ca346db28c python-oslo-context.spec       6.3.0    1 oslo_context-6.3.0.tar.gz          e504f8df02c5cce7fc984f867fbdfaaa1d4d4b9b88978e291f6e5cb89df5a3e0 oslo.context           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-db                oslo-db-distgit            d3c0c9d28813feeae43d2804a1960b83af3c5ae0 python-oslo-db.spec            18.0.0   1 oslo_db-18.0.0.tar.gz              94bff3241ad389ef5866c16919de005ae0e5b9df1814eeb94d4027c575270923 oslo.db                0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-i18n              oslo-i18n-distgit          274db0dde8739549dcd1c4ff2a4489178f709873 python-oslo-i18n.spec          6.7.2    1 oslo_i18n-6.7.2.tar.gz             b1241ad3eee216e9dc9acb4336fce0bd79c4c286751ee70dfa42ff2f9763d34f oslo.i18n              0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-limit             oslo-limit-distgit         721e939edf4662b7b26dca96eef1ef4dc72df395 python-oslo-limit.spec         2.10.0   1 oslo_limit-2.10.0.tar.gz           9968ad38592cc0d591fec67e9acdfea39a6fb875bff4ad07cce5502f8a278447 oslo.limit             0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-log               oslo-log-distgit           34baeddb993fc6de780d285e4db8d87cbf8fc0d0 python-oslo-log.spec           8.1.1    1 oslo_log-8.1.1.tar.gz              46e652c0064b7e7d5374127e096a9981c0c606af6f8f385056f183549672c8f7 oslo.log               0x30566c450e41d7c91e442dfb231f942f608ddeff
+oslo-messaging         oslo-messaging-distgit     42e797ebebd87c33246fd1017b52e23801bebe9f python-oslo-messaging.spec     17.3.0   1 oslo_messaging-17.3.0.tar.gz       7381a08f31091f28b82cb93c0a04ed5bb2a4487dab1b873d1fe6ad6553948777 oslo.messaging         0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-middleware        oslo-middleware-distgit    19b1b8242d969532566101bb2b5453361ed46168 python-oslo-middleware.spec    8.0.0    1 oslo_middleware-8.0.0.tar.gz       38ca82fcb39736c75e69abcacec5ea9577be9731d73fefb9ea337ca2143b8e7d oslo.middleware        0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-policy            oslo-policy-distgit        aa3eabdacaa7aeed17e71975082b6fc1877260f3 python-oslo-policy.spec        5.0.0    1 oslo_policy-5.0.0.tar.gz           b3e85d45eea0a60cb2362410c6d03906dec21a0f81df69ac16867851f075e5d1 oslo.policy            0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-privsep           oslo-privsep-distgit       346190b53b7806fc9e5f15fe5e816c1ffc2adfb8 python-oslo-privsep.spec       3.10.1   1 oslo_privsep-3.10.1.tar.gz         7340b76130654d4602caefd0173622062a3a3bf436be8d3cd88281af16c19c80 oslo.privsep           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-reports           oslo-reports-distgit       92e0d225d7ad0121d47236cd447f715866131d54 python-oslo-reports.spec       3.7.0    1 oslo_reports-3.7.0.tar.gz          30852972459594671686f232ad67e8fe63e2f2542e34e37a69731d542040e343 oslo.reports           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-rootwrap          oslo-rootwrap-distgit      b0d5d67e3de360017ed69a1e8d426376a52a23bd python-oslo-rootwrap.spec      7.9.0    1 oslo_rootwrap-7.9.0.tar.gz         6b8f65a144f82c4c9cf0a4dcd71bc786d76e50bf51e3c4cd78da68b475019df0 oslo.rootwrap          0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-serialization     oslo-serialization-distgit 2ed9886612cbc2601e07d4839af5c3f437bc56db python-oslo-serialization.spec 5.9.1    1 oslo_serialization-5.9.1.tar.gz    086ab78a15f33f02e647bdb3ca36632480d94cf661cf1fb118adebdeee5d4be7 oslo.serialization     0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-upgradecheck      oslo-upgradecheck-distgit  00c2c128bb150434d3787a4c682aabf638bcad93 python-oslo-upgradecheck.spec  2.7.1    1 oslo_upgradecheck-2.7.1.tar.gz     9ab2e726d32e47cab4f9c42580e2726e311d8243f3e44f2f67f4875517f29ef4 oslo.upgradecheck      0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-utils             oslo-utils-distgit         6cc3131c8d839ba3a528ca9182f1c53072cd0359 python-oslo-utils.spec         10.0.1   1 oslo_utils-10.0.1.tar.gz           21bfc29bb4c1cd9afb4ef741fb8e39468fa5485e60717f4f90f3ad3dce8a1f22 oslo.utils             0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+oslo-versionedobjects  oslo-versionedobjects-distgit 19a5845e77f21e6fc65180352bee709d41a802d0 python-oslo-versionedobjects.spec 3.9.0    1 oslo_versionedobjects-3.9.0.tar.gz e58f1b17f73191e1a266c02f6efb9fa7d6f741d500c3cbd0ff9b125980b39069 oslo.versionedobjects  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+osprofiler             osprofiler-distgit         2e594a302a616598d029f2c7b645cf0f20f1d5a4 python-osprofiler.spec         4.3.0    1 osprofiler-4.3.0.tar.gz            77a8da2b23bb5f9048054bd5ccc45d0ac84574ca8a88ef120b8fac6e8864e24c osprofiler             0xc71b007ef97887fd8fb6365ceb4fd6d618e62181
+pycadf                 pycadf-distgit             1d68d456afad3a83cfcb1b26171726ffcc1d058c python-pycadf.spec             4.0.1    1 pycadf-4.0.1.tar.gz                b015f1e4cfb6bd968bb8e23f903593328f0d82e1922902447197f4862f259d2f pycadf                 0x22284f69d9eccdf3df7819791c711af193ff8e54
+taskflow               taskflow-distgit           fea0c42cb89be611dbf54ba7d5459d10b6474208 python-taskflow.spec           6.2.0    1 taskflow-6.2.0.tar.gz              0a7584444da6e808582d67e70f3bd166a766a17f1aa010796e0c56b4df735f7c taskflow               0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+tooz                   tooz-distgit               4357bf8faaaa8f5568a51990b248bafaecad234a python-tooz.spec               8.1.0    1 tooz-8.1.0.tar.gz                  80876d8722b52eb9eff92565abb925fd6e59eb581820e6b4739ff4aa18476bda tooz                   0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+#
+# --- the OpenStack clients and small libraries the five services pull in ------
+# Found by installing the five services into a clean --installroot and listing
+# every package whose release was an RDO trunk snapshot (-0.20250903.hash).
+# Without these the install resolves but is a mixture of releases.
+#
+automaton              automaton-distgit          eb61f1fe1848acb2649cd09b99c5296ba339a9f2 python-automaton.spec          3.3.0    1 automaton-3.3.0.tar.gz             d73cf7ba6da43ef2adf75c49dad334fd24116ceea0dd4e6ba1e720740439a293 automaton              0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+barbicanclient         barbicanclient-distgit     b131623733dd4b981ff85384aaab496e84f3e7be python-barbicanclient.spec     7.3.0    1 python_barbicanclient-7.3.0.tar.gz f3930b7b30bce774c77b85f49dbb36bdce7cb783b3b6c6779244775e4e113da6 python-barbicanclient  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cinderclient           cinderclient-distgit       1b68970d1ab81de485cbd33d52d3435ad6e236b0 python-cinderclient.spec       9.9.0    1 python_cinderclient-9.9.0.tar.gz   697e4d12c249f39b41ecf4fa6fcb8c38cbf2d6b2d84d6f515ed567b82dcd0bd1 python-cinderclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cliff                  cliff-distgit              14519e2d9d432f4ade0ebf7a35f2c317bb4f3cd6 python-cliff.spec              4.13.3   1 cliff-4.13.3.tar.gz                5b77f5db16c963dceecd1600d4d74d889a1921e3f1ec0439bdebc91d7f1338dc cliff                  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+cursive                cursive-distgit            7105226f8e2e4320d39adf31afeb5294d972a3f6 python-cursive.spec            0.2.3    1 cursive-0.2.3.tar.gz               f435f6cdbe6a517f054c1105c36e436d7868124f1b227d310fe809d918a8c10c cursive                0xa7475c5f2122fec3f90343223fe3bf5aad1080e4
+designateclient        designateclient-distgit    c29be26b624cd6d2052894a8bc8961b7cc27da9e python-designateclient.spec    6.4.0    1 python_designateclient-6.4.0.tar.gz bb49cf1a090e01288d93b966643333833e3417040c06f463ffe3c9e66b10ad48 python-designateclient 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+glanceclient           glanceclient-distgit       7d336e960bef1ccbde69f148802c9518da799281 python-glanceclient.spec       4.11.0   1 python_glanceclient-4.11.0.tar.gz  5ce2118bfe7462934805916617e537bc5b00fd4cab3fb7bb88a4f9253970562d python-glanceclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+keystoneclient         keystoneclient-distgit     cb2b7684f95e95ed9ae189c5f406e159cae5db5f python-keystoneclient.spec     5.8.0    1 python_keystoneclient-5.8.0.tar.gz 3ca87c67c404298ce862310b569f545a58acf75cd5685094c82f35320b3a355d python-keystoneclient  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+neutronclient          neutronclient-distgit      f259ab2e31530c54f330a90b153fd39d3804a313 python-neutronclient.spec      11.8.0   1 python_neutronclient-11.8.0.tar.gz 6ea711eb88fcde47523250ac829cb9b9da8bc0bf2dd0205add4e1c9a4cce0515 python-neutronclient   0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+novaclient             novaclient-distgit         c4a86fd5d951bbf90976306e815bdf52edea9031 python-novaclient.spec         18.12.0  1 python_novaclient-18.12.0.tar.gz   ead3db2a3dd43a89bb5a56f62f87362a76e7ef9c01938699ff6c1a060f0e9eab python-novaclient      0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+osc-lib                osc-lib-distgit            458eb84df4537b0312ec1ac574dcd2514c699b01 python-osc-lib.spec            4.4.0    1 osc_lib-4.4.0.tar.gz               6a615d744f03fba513d92eb4760a9cd5baa96e3d8530611fe53b217062bf317e osc-lib                0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+os-client-config       os-client-config-distgit   710b29da292f9d99991be86303004786ce93fdaf python-os-client-config.spec   2.3.0    1 os_client_config-2.3.0.tar.gz      e16a260f2fd500af14f157b9b7b7d69292ce83b0f8a461ec68ce6a8a42967cbd os-client-config       0xc71b007ef97887fd8fb6365ceb4fd6d618e62181
+oslo-metrics           oslo-metrics-distgit       55b70d7db34590d7881baeda9573e48749f95a1f python-oslo-metrics.spec       0.15.1   1 oslo_metrics-0.15.1.tar.gz         d70a5cdaee963eb9ed9071936ce732866baa3725c3d245df9a58cbf1e7243790 oslo.metrics           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+requestsexceptions     requestsexceptions-distgit 19b76e755acb8ecc4c2e5807851cc7cfe5fd2c1a python-requestsexceptions.spec 1.4.0    1 requestsexceptions-1.4.0.tar.gz    b095cbc77618f066d459a02b137b020c37da9f46d9b057704019c9f77dba3065 requestsexceptions     0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363
+wsme                   wsme-distgit               93ceebf281683ea65785d306b9d72ef96e02dc52 python-wsme.spec               0.12.1   1 WSME-0.12.1.tar.gz                 9c049f64c2abb14b702635c70fb16ad89f9e046789c61c7c41ee0deadf29a10d wsme                   0x815afec729392386480e076dcc0dfe2d21c023c9
+#
+# --- Horizon's PyPI dependencies ---------------------------------------------
+#
+# Ten packages Horizon 2026.1 needs that Rocky 10 and EPEL 10 either carry too
+# old or do not carry at all, and that have NO RDO distgit to build from. They
+# are built from spec-templates/python-pypi-generic.spec.in, so the versions
+# live here rather than in ten hand-written spec files.
+#
+# UNLIKE EVERY OTHER ROW IN THIS FILE, these are pinned by sha256 ONLY. PyPI
+# sdists are not GPG-signed, so there is no signature chain for them the way
+# there is for the OpenStack tarballs. Stated plainly rather than left implicit.
+#
+# Versions are the exact 2026.1 upper-constraints pins; digests were read from
+# the PyPI JSON API on 2026-09-29.
+#
+# fields: PYPI  rpm-name  pypi-name  version  sdist  sha256  license  summary...
+#
+PYPI python3-qrcode qrcode 8.2 qrcode-8.2.tar.gz 35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c BSD-3-Clause QR Code image generator
+PYPI python3-XStatic XStatic 1.0.3 XStatic-1.0.3.tar.gz 402544cc9e179489441054f09c807804e115ea246907de87c0355fb4f5a31268 MIT Base package for XStatic static file packages
+PYPI python3-XStatic-Angular XStatic-Angular 1.8.2.3 xstatic_angular-1.8.2.3.tar.gz 4ad638c12955e8146f5526fe19e08ef33fb63f901b503ec59ccb030bf268337e MIT AngularJS packaged for XStatic
+PYPI python3-XStatic-Font-Awesome XStatic-Font-Awesome 6.2.1.2 xstatic_font_awesome-6.2.1.2.tar.gz 9f3cb2f038fad7d352722375d3f25af346da9ee093ed9dc2c8c46bd911ab1971 OFL-1.1 AND MIT Font Awesome packaged for XStatic
+PYPI python3-XStatic-jQuery XStatic-jQuery 3.7.1.1 xstatic_jquery-3.7.1.1.tar.gz 0c2ac780d8388bfd8b94586f6a0f86541e8702b5fc96f1ded997866214809445 MIT jQuery packaged for XStatic
+PYPI python3-XStatic-JQuery-Migrate XStatic-JQuery-Migrate 3.3.2.2 xstatic_jquery_migrate-3.3.2.2.tar.gz 641ca995d838c151dfdcadbb0eb8d2e7d9855bcd398c77c36cc65c3e79f57228 MIT jQuery Migrate packaged for XStatic
+PYPI python3-XStatic-JQuery-quicksearch XStatic-JQuery.quicksearch 2.0.3.3 xstatic_jquery_quicksearch-2.0.3.3.tar.gz 71d7fc84a73fd5da4ae08d54ada83c6e1d809465c50106a94d72747f36023a3c MIT jQuery quicksearch packaged for XStatic
+PYPI python3-XStatic-JQuery-TableSorter XStatic-JQuery.TableSorter 2.14.5.3 xstatic_jquery_tablesorter-2.14.5.3.tar.gz e8a4f4900992fe87e2a41167a07fab0aaab39ef194090f58e0083892dc4bcc34 MIT jQuery TableSorter packaged for XStatic
+PYPI python3-XStatic-jquery-ui XStatic-jquery-ui 1.13.0.2 xstatic_jquery_ui-1.13.0.2.tar.gz 11b2aa7eaa1ad69c6e594cae11a817a8fa171cec9ceb82ae2ca4ba7e93d5ae43 MIT jQuery UI packaged for XStatic
+PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar.gz afda65f80b08fafb056ef216b47d2d1b31b2f607c956abb8c6b186d2727041ae MIT term.js packaged for XStatic

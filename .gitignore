@@ -1,0 +1,20 @@
+# Operator configuration and generated secrets — never commit these.
+hagistack.env
+secrets.env
+admin-openrc
+admin-openrc.*
+*.secret
+*.pem
+*.key
+id_rsa
+id_ed25519
+known_hosts
+
+# Acceptance evidence is local and ephemeral.
+acceptance/evidence/*
+!acceptance/evidence/.gitkeep
+
+# Scratch and OS noise.
+*.tmp
+*.swp
+.DS_Store

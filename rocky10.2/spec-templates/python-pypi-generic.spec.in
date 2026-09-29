@@ -1,0 +1,71 @@
+# Generic spec for a pure-Python PyPI package, filled in by build-rpms.sh from a
+# PYPI row in the manifest.
+#
+# Horizon 2026.1 needs ten of these — nine XStatic asset packages and qrcode —
+# at versions EL10 does not carry, and none of them has an RDO distgit to start
+# from. They are all the same shape: a pyproject sdist with no compiled code and
+# no configuration, where the only interesting question is which version.
+# Writing ten near-identical spec files by hand would make ten places to get
+# that wrong, so there is one template and the versions live in the manifest.
+#
+# WHAT IS DIFFERENT ABOUT THESE INPUTS, and it matters: the OpenStack tarballs
+# are GPG-signed and the spec verifies the signature while unpacking. PyPI sdists are
+# not signed, so these are pinned by sha256 ONLY. build-rpms.sh refuses to build
+# if the digest does not match, but there is no signature chain here and this
+# comment is the honest statement of that.
+%global pypi_name @PYPI_NAME@
+
+Name:           @RPM_NAME@
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        @SUMMARY@
+License:        @LICENSE@
+URL:            https://pypi.org/project/@PYPI_NAME@/
+Source0:        @SDIST@
+BuildArch:      noarch
+
+BuildRequires:  python3-devel
+BuildRequires:  pyproject-rpm-macros
+
+%description
+@SUMMARY@
+
+Built from the PyPI sdist @SDIST@, pinned by sha256 in the hagistack manifest.
+This package exists because Rocky Linux 10 and EPEL 10 do not carry a version
+new enough for OpenStack 2026.1 Horizon.
+
+%prep
+# build-rpms.sh rewrites the directory to whatever the sdist actually unpacks
+# into: PEP 625 renamed several of these from XStatic-Foo to xstatic_foo.
+%autosetup -n @TOPDIR@
+# rpm refuses an ambiguous "#!/usr/bin/env python" shebang. qrcode ships one in
+# a module that is never executed directly, so the line is simply removed rather
+# than rewritten to a specific interpreter.
+find . -name '*.py' -exec sed -i '1{/^#![[:space:]]*\/usr\/bin\/env[[:space:]]*python[[:space:]]*$/d}' {} +
+
+%generate_buildrequires
+%pyproject_buildrequires
+
+%build
+%pyproject_wheel
+
+%install
+%pyproject_install
+%pyproject_save_files '*'
+# setuptools still emits a namespace .pth for the XStatic base
+# package. The other nine XStatic packages produce none and import fine, because
+# PEP 420 namespace packages need no .pth at all, so it is removed rather than
+# packaged. One line, and it is a no-op for every package that does not have one.
+rm -f %{buildroot}%{python3_sitelib}/*-nspkg.pth
+# The save-files macro above covers site-packages but not console scripts, and
+# qrcode installs /usr/bin/qr. List whatever landed in bindir; a package with no
+# scripts produces no output here and nothing is added.
+# NOTE: do not name a macro in a comment in this file. rpm expands macros inside
+# spec COMMENTS too, and the rest of the comment then becomes its arguments.
+ls %{buildroot}%{_bindir} 2>/dev/null | sed 's|^|%{_bindir}/|' >> %{pyproject_files} || :
+
+%files -f %{pyproject_files}
+
+%changelog
+* @DATE@ hagistack <hagistack@localhost> - @VERSION@-@RELEASE@
+- Built for OpenStack 2026.1 Horizon on Rocky Linux 10

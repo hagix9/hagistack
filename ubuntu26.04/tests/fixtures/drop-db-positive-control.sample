@@ -1,0 +1,7 @@
+# Test data for container-verify.sh F2b. NEVER execute this file.
+#
+# F2 asserts that hagistack hands no DROP statement to a database client. F2b
+# runs the same scan over this file and requires a hit, so that F2 cannot pass
+# merely because the pattern has stopped matching anything. The line below is
+# the shape the 2013-era installers used on every run.
+sudo mysql -uroot -p"$MYSQL_PASS" -e "drop database if exists keystone;"
