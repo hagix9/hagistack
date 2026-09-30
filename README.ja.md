@@ -88,7 +88,7 @@ all-in-one（コントローラ兼コンピュート）ノードには、次の�
 | Glance | Image API（ポート 9292） |
 | Placement | Placement API（ポート 8778） |
 | Nova | Compute API（8774）とメタデータ API（8775）、conductor、scheduler、compute。compute は libvirt の KVM を使い、`/dev/kvm` が使えない場合は QEMU を使います。cells v2（`cell0` と `cell1`） |
-| Neutron | Networking API（ポート 9696）。ML2/OVN ドライバと OVN メタデータエージェントを使います |
+| Neutron | Networking API（ポート 9696）。ML2/OVN ドライバを使います。API とは別に、RPC サーバ、periodic workers、OVN メンテナンスワーカー、OVN メタデータエージェントの 4 つがそれぞれ独自の unit で動きます |
 | Open vSwitch / OVN | コントローラには OVN の northbound/southbound データベースと `ovn-northd`、各ノードには `ovn-controller` が入ります。ノード間は Geneve トンネルで結びます |
 | Horizon | ポート 80 のダッシュボード。Ubuntu では `/horizon`、Rocky では `/dashboard` |
 | MariaDB | `127.0.0.1` だけで待ち受けます |

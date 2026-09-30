@@ -433,8 +433,13 @@ echo "== N5. the unit names the product uses must really exist (no guessing) =="
 : > /out/n4-units.txt
 unit_of(){ ls /usr/lib/systemd/system/"$1".service /lib/systemd/system/"$1".service 2>/dev/null | head -1; }
 miss=""
+# The neutron units come from the product's own NEUTRON_UNITS as well as the
+# fixed list, so a unit added to the shell is checked without editing this test.
+PRODUCT_NEUTRON_UNITS="$(sed -n 's/^NEUTRON_UNITS="\(.*\)"$/\1/p' "$H")"
+[ -n "$PRODUCT_NEUTRON_UNITS" ] || rec N5a0-product-unit-list FAIL "could not read NEUTRON_UNITS from $H"
 for u in ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd ovn-controller \
-         neutron-rpc-server neutron-periodic-workers neutron-ovn-metadata-agent; do
+         neutron-rpc-server neutron-periodic-workers neutron-ovn-metadata-agent \
+         $PRODUCT_NEUTRON_UNITS; do
   f="$(unit_of "$u")"
   if [ -n "$f" ]; then
     { echo "[$u] $f"; grep -E '^(Type|ExecStart|ExecStop|After|Requires|Wants|User)=' "$f" | sed 's/^/    /'; } >> /out/n4-units.txt
@@ -689,12 +694,66 @@ if [ "$NET_ID" != ABSENT ] && curl -s -o /dev/null -m 5 "http://$MGMT:9696/"; th
 else rec N9r-third-run UNVERIFIED "no network, or the API stopped answering before the 3rd check"; fi
 
 echo
+echo "== N12. a host built before the OVN maintenance worker existed converges =="
+# The ML2/OVN maintenance worker is its own package and Conflicts with the
+# transitional neutron-server, which earlier hagistack versions installed (and
+# which pulled neutron-api, -rpc-server and -periodic-workers in as automatic
+# dependencies). A re-run must move such a host to the real package set without
+# reinstalling anything and without leaving the real packages autoremovable.
+MW=neutron-ovn-maintenance-worker
+REAL="neutron-api neutron-rpc-server neutron-periodic-workers"
+pkg_ok(){ dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
+is_manual(){ apt-mark showmanual 2>/dev/null | grep -qx "$1"; }
+case " $PRODUCT_NEUTRON_UNITS " in
+  *" $MW "*) rec N12a-unit-in-product PASS "$MW is in the product's NEUTRON_UNITS" ;;
+  *)         rec N12a-unit-in-product FAIL "$MW is missing from NEUTRON_UNITS ($PRODUCT_NEUTRON_UNITS)" ;;
+esac
+if pkg_ok "$MW" && ! pkg_ok neutron-server; then
+  rec N12b-fresh-install PASS "fresh runs installed $MW ($(dpkg-query -W -f='${Version}' "$MW")) and not the transitional neutron-server"
+else rec N12b-fresh-install FAIL "after the fresh runs: $MW=$(pkg_ok "$MW" && echo yes || echo no), neutron-server=$(pkg_ok neutron-server && echo yes || echo no)"; fi
+# Recreate what an earlier hagistack left behind: neutron-server installed (apt
+# removes the worker because of the Conflicts), the real packages automatic.
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq neutron-server >/out/n4-oldstate.log 2>&1
+apt-mark auto $REAL >>/out/n4-oldstate.log 2>&1
+if pkg_ok neutron-server && ! pkg_ok "$MW" && ! is_manual neutron-api; then
+  rec N12c-pre-state PASS "old state recreated: neutron-server installed, $MW absent, neutron-api automatic"
+  api_list_before="$(stat -c %Y /var/lib/dpkg/info/neutron-api.list 2>/dev/null || echo ABSENT)"
+  ml2_before12="$(digest_of /etc/neutron/plugins/ml2/ml2_conf.ini)"
+  nc_before12="$(digest_of /etc/neutron/neutron.conf)"
+  run_product run4; rc4="$RUN_RC"
+  if [ "$rc4" = "0" ] || [ "$rc4" = "4" ]; then rec N12d-rerun-terminal PASS "re-run reached a terminal state (exit $rc4)"
+  else rec N12d-rerun-terminal FAIL "re-run exit $rc4"; fi
+  if pkg_ok "$MW" && ! pkg_ok neutron-server; then rec N12e-converged PASS "the re-run installed $MW and removed the transitional neutron-server"
+  else rec N12e-converged FAIL "after the re-run: $MW=$(pkg_ok "$MW" && echo yes || echo no), neutron-server=$(pkg_ok neutron-server && echo yes || echo no)"; fi
+  notman=""; for q in $REAL; do is_manual "$q" || notman="$notman $q"; done
+  [ -z "$notman" ] && rec N12e2-not-autoremovable PASS "$REAL are manually installed (apt autoremove would keep them)" \
+                   || rec N12e2-not-autoremovable FAIL "still automatic, so autoremove would take them:$notman"
+  api_list_after="$(stat -c %Y /var/lib/dpkg/info/neutron-api.list 2>/dev/null || echo ABSENT)"
+  if [ "$api_list_before" != ABSENT ] && [ "$api_list_before" = "$api_list_after" ]; then
+    rec N12f-no-reinstall PASS "neutron-api was not reinstalled (dpkg file list untouched)"
+  else rec N12f-no-reinstall FAIL "neutron-api dpkg state changed: $api_list_before -> $api_list_after"; fi
+  stable N12g-ml2-kept "$ml2_before12" "$(digest_of /etc/neutron/plugins/ml2/ml2_conf.ini)" "ml2_conf.ini across convergence"
+  stable N12h-conf-kept "$nc_before12" "$(digest_of /etc/neutron/neutron.conf)" "neutron.conf across convergence"
+  # And once converged, a further run must not touch packages at all.
+  hist_before="$(grep -c '^Start-Date' /var/log/apt/history.log 2>/dev/null || echo 0)"
+  run_product run5; rc5="$RUN_RC"
+  hist_after="$(grep -c '^Start-Date' /var/log/apt/history.log 2>/dev/null || echo 0)"
+  if [ "$rc5" != "0" ] && [ "$rc5" != "4" ]; then rec N12i-idempotent FAIL "converged re-run exit $rc5"
+  elif ! pkg_ok "$MW"; then rec N12i-idempotent FAIL "after the further run $MW is still not installed"
+  elif [ "$hist_before" = "$hist_after" ]; then
+    rec N12i-idempotent PASS "converged re-run (exit $rc5) ran no apt transaction and kept $MW"
+  else rec N12i-idempotent FAIL "converged re-run changed packages (apt transactions $hist_before -> $hist_after)"; fi
+else
+  rec N12c-pre-state FAIL "could not recreate the old state: neutron-server=$(pkg_ok neutron-server && echo yes || echo no) $MW=$(pkg_ok "$MW" && echo yes || echo no) neutron-api-manual=$(is_manual neutron-api && echo yes || echo no)"
+fi
+
+echo
 echo "== N10. secrets must not leak =="
 leak=""; 
 while IFS='=' read -r k v; do
   case "$k" in ''|\#*) continue;; esac
   [ -n "$v" ] || continue
-  grep -qrF "$v" /out/n4-run0.log /out/n4-run1.log /out/n4-run2.log /out/n4-run3.log /out/n4-nodb.log 2>/dev/null \
+  grep -qrF "$v" /out/n4-run0.log /out/n4-run1.log /out/n4-run2.log /out/n4-run3.log /out/n4-run4.log /out/n4-run5.log /out/n4-nodb.log 2>/dev/null \
     && leak="$leak $k"
 done < /etc/hagistack/secrets.env
 [ -z "$leak" ] && rec N10a-no-secret-in-log PASS "no secret value appears in any run output" || rec N10a-no-secret-in-log FAIL "leaked:$leak"

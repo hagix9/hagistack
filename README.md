@@ -87,7 +87,7 @@ On the all-in-one (controller + compute) node:
 | Glance | Image API on port 9292 |
 | Placement | Placement API on port 8778 |
 | Nova | Compute API (8774) and metadata API (8775); conductor, scheduler and compute (libvirt with KVM, or QEMU when `/dev/kvm` is not usable); cells v2 with `cell0` and `cell1` |
-| Neutron | Networking API on port 9696 with the ML2/OVN driver, and the OVN metadata agent |
+| Neutron | Networking API on port 9696 with the ML2/OVN driver. It is backed by four units of its own: the RPC server, the periodic workers, the OVN maintenance worker and the OVN metadata agent |
 | Open vSwitch / OVN | OVN northbound and southbound databases and `ovn-northd` on the controller; `ovn-controller` on every node; Geneve tunnels between nodes |
 | Horizon | Dashboard on port 80: `/horizon` on Ubuntu, `/dashboard` on Rocky |
 | MariaDB | Bound to `127.0.0.1` only |

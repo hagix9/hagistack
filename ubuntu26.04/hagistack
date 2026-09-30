@@ -2080,15 +2080,23 @@ ovn $(dpkg-query -W -f='${Version}' ovn-central 2>/dev/null || echo '?')"
 # Neutron (networking API)
 #
 # Packaging verified on Ubuntu 26.04 (neutron 2:28.0.2-0ubuntu1):
-#   * The API is served by Apache: the `neutron-api` package (NOT
-#     neutron-server) ships /etc/apache2/sites-available/neutron-api.conf with
-#     its own `Listen 9696` and WSGIScriptAlias to
-#     /usr/share/neutron/neutron-api.wsgi, and the site is enabled on install.
-#     `neutron-server` itself ships no systemd unit at all.
-#   * Three further units are separate processes:
+#   * The API is served by Apache: the `neutron-api` package ships
+#     /etc/apache2/sites-available/neutron-api.conf with its own `Listen 9696`
+#     and WSGIScriptAlias to /usr/share/neutron/neutron-api.wsgi, and the site
+#     is enabled on install.
+#   * Four further units are separate processes, each from its own package:
 #       neutron-rpc-server.service        User=neutron
 #       neutron-periodic-workers.service
+#       neutron-ovn-maintenance-worker.service
 #       neutron-ovn-metadata-agent.service  User=root (it manipulates netns)
+#   * neutron-ovn-maintenance-worker is, in the package's own words, what
+#     "should be used when running Neutron API under WSGI for OVN deployments":
+#     the only process that runs the ML2/OVN maintenance worker (the NB/SB sync
+#     at start and the periodic repair of Neutron/OVN inconsistencies).
+#   * `neutron-server` is "a dummy transitional package that can be removed
+#     after upgrade" (it only depends on neutron-api, -rpc-server and
+#     -periodic-workers), and neutron-ovn-maintenance-worker Conflicts with it.
+#     So the real packages are installed by name and neutron-server is not.
 #   * neutron.conf and plugins/ml2/ml2_conf.ini both come from
 #     `neutron-common`, mode 0640 root:neutron.
 #   * Config loading was checked in neutron/server/__init__.py: with no
@@ -2102,7 +2110,7 @@ NEUTRON_CONF="/etc/neutron/neutron.conf"
 ML2_CONF="/etc/neutron/plugins/ml2/ml2_conf.ini"
 OVN_META_CONF="/etc/neutron/neutron_ovn_metadata_agent.ini"
 NEUTRON_PORT=9696
-NEUTRON_UNITS="neutron-rpc-server neutron-periodic-workers neutron-ovn-metadata-agent"
+NEUTRON_UNITS="neutron-rpc-server neutron-periodic-workers neutron-ovn-maintenance-worker neutron-ovn-metadata-agent"
 
 neutron_serving() {
     _probe curl -s -o /dev/null -m 10 "http://${MGMT_IP}:${NEUTRON_PORT}/" 2>/dev/null
@@ -2111,17 +2119,33 @@ neutron_serving() {
 phase_neutron() {
     log_step "networking API (Neutron, ML2/OVN)"
 
-    local pkgs="neutron-server neutron-plugin-ml2 neutron-ovn-metadata-agent"
+    # Checked package by package rather than behind one sentinel package: a host
+    # built by an earlier hagistack has the transitional neutron-server and no
+    # maintenance worker, and a re-run must converge it. Naming the whole set
+    # also marks neutron-api and friends as manually installed, so they do not
+    # become autoremovable when neutron-server goes (apt removes it because the
+    # maintenance worker Conflicts with it). Nothing already present is reinstalled.
+    local neutron_pkgs="neutron-api neutron-rpc-server neutron-periodic-workers
+                        neutron-ovn-maintenance-worker neutron-plugin-ml2
+                        neutron-ovn-metadata-agent"
+    local pkg absent=""
+    for pkg in $neutron_pkgs; do
+        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" \
+            || absent="${absent} $pkg"
+    done
     if dpkg-query -W -f='${Status}' neutron-server 2>/dev/null | grep -q "install ok installed"; then
+        absent="${absent} (replacing the transitional neutron-server)"
+    fi
+    if [ -z "$absent" ]; then
         log_ok "neutron already installed"
     else
-        log_info "installing:$pkgs (pulls neutron-api, which provides the Apache vhost)"
+        log_info "installing:$absent"
         # shellcheck disable=SC2086
-        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $neutron_pkgs
         log_ok "neutron installed"
     fi
-    log_info "neutron $(dpkg-query -W -f='${Version}' neutron-server 2>/dev/null || echo '?'): \
-API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRON_UNITS"
+    log_info "neutron $(dpkg-query -W -f='${Version}' python3-neutron 2>/dev/null || echo '?'): \
+API via apache2 on :${NEUTRON_PORT} (from neutron-api), plus $NEUTRON_UNITS"
 
     # --- dependencies -------------------------------------------------------
     if ! mariadb_reachable; then
@@ -2261,7 +2285,7 @@ API via apache2 on :${NEUTRON_PORT} (neutron-server ships no unit), plus $NEUTRO
             service_start_enable apache2
         fi
         local u
-        # Same trap as glance: these three are started by their packages before
+        # Same trap as glance: these units are started by their packages before
         # neutron.conf and ml2_conf.ini exist, so they would otherwise keep
         # running on the stock sqlite configuration.
         for u in $NEUTRON_UNITS; do service_apply "$u" "$NEUTRON_CONF" "$ML2_CONF" "$OVN_META_CONF"; done
@@ -3962,8 +3986,8 @@ cmd_status() {
     echo
     echo "networking:"
     printf '  %-16s %s\n' "neutron pkg" \
-        "$(dpkg-query -W -f='${Version}' neutron-server 2>/dev/null || echo 'not installed')"
-    printf '  %-16s %s\n' "  API" "apache2 + mod_wsgi on :9696 (neutron-server ships no unit)"
+        "$(dpkg-query -W -f='${Version}' neutron-api 2>/dev/null || echo 'not installed')"
+    printf '  %-16s %s\n' "  API" "apache2 + mod_wsgi on :9696 (from neutron-api; no API unit)"
     printf '  %-16s %s\n' "  other units" "$NEUTRON_UNITS"
     printf '  %-16s %s\n' "ovn pkg" \
         "$(dpkg-query -W -f='${Version}' ovn-central 2>/dev/null || echo 'not installed')"
@@ -3999,7 +4023,8 @@ cmd_status() {
         local u
         for u in mariadb rabbitmq-server memcached apache2 glance-api \
                  ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd ovn-controller \
-                 neutron-rpc-server neutron-ovn-metadata-agent \
+                 neutron-rpc-server neutron-periodic-workers neutron-ovn-maintenance-worker \
+                 neutron-ovn-metadata-agent \
                  nova-conductor nova-scheduler nova-compute libvirtd; do
             printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || echo inactive)"
         done
