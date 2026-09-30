@@ -148,6 +148,12 @@ cd hagistack/rocky10.2
 - RDO の master の spec がリリース版 tarball と合わない箇所は、
   `spec-patches/` にあるレビュー可能なパッチで修正します。適用できないパッチがあればビルドを止めます。
   `spec-templates/` には、PyPI パッケージ用のテンプレートが 1 つ入っています。
+- Neutron だけは「リリース版 tarball をそのまま使う」の例外です。
+  `spec-patches/neutron.patch` は、2026.1 のどのリリースにも入っていない上流の
+  Neutron コミット `83f1d830` と `91abb5e7` の 2 つも追加します。
+  これらは、OVN メンテナンスワーカーがデータベースのロックを持たないまま動き続けることがある競合を修正します。
+  そのため Neutron の RPM はリリース `2`（`28.0.2-2`）です。
+  修正は `tests-neutron-maintenance-lock.py` で確認します。
 
 **成果物。**
 

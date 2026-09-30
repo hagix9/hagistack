@@ -25,10 +25,48 @@ shape Ubuntu 26.04 already uses, where the networking API is an Apache vhost and
 only neutron-rpc-server and neutron-periodic-workers are units. A Rocky
 hagistack would write its own httpd configuration rather than enable this unit.
 
+F-NEW-1: THE OVN MAINTENANCE-WORKER LOCK RACE
+
+This patch also adds two upstream Neutron commits to the build, as Patch0001
+and Patch0002. The two patch files are created next to the spec:
+
+    83f1d8305651a0ab23629c88d70bfa237055158c
+        Ensure MaintenanceWorker lock set before connect
+    91abb5e720e1c515dbfbe9b2313fbdff92b2abbf
+        Only set the maintenance worker lock on the worker (LP #2156979)
+
+Both are on master and stable/2026.2, not on stable/2026.1. In 28.0.2 the
+maintenance worker calls Idl.set_lock() from its main thread while the OVSDB
+connection thread is already running Idl.run(). The lock reply can be read and
+dropped in between, and the worker then runs for ever without the lock: every
+write to the northbound database fails with NOT_LOCKED while systemd reports
+the unit active. 0001 requests the lock before the connection starts. 0002
+restricts that request to the real maintenance worker. On 2026.1 the RPC
+workers share the code path 0001 changes, so 0001 without 0002 would make them
+request the maintenance lock too. The two are carried together, never apart.
+
+The files are `git format-patch --zero-commit` output of the two upstream
+commits cherry-picked onto the 28.0.2 tag. Their changed lines are the
+upstream lines; one context line differs from upstream. The spec's
+`%autosetup -S git` applies them.
+
 diff -ur a/neutron/openstack-neutron.spec b/neutron/openstack-neutron.spec
 --- a/openstack-neutron.spec	2026-09-28 21:43:16
 +++ b/openstack-neutron.spec	2026-09-28 23:25:25
-@@ -654,7 +654,6 @@
+@@ -63,6 +63,12 @@
+ Source101:        https://tarballs.openstack.org/%{service}/%{service}-%{upstream_version}.tar.gz.asc
+ Source102:        https://releases.openstack.org/_static/%{sources_gpg_sign}.txt
+ %endif
++
++# Hagistack: upstream fix for the OVN maintenance-worker lock race, which is
++# not in stable/2026.1. Rebased onto 28.0.2. The two are carried together:
++# 0001 alone would make RPC workers request the maintenance lock as well.
++Patch0001:      0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch
++Patch0002:      0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch
+ 
+ BuildArch:      noarch
+ 
+@@ -654,7 +660,6 @@
  
  %files
  %license LICENSE
@@ -36,7 +74,7 @@ diff -ur a/neutron/openstack-neutron.spec b/neutron/openstack-neutron.spec
  %{_bindir}/neutron-db-manage
  %{_bindir}/neutron-dhcp-agent
  %{_bindir}/neutron-ipset-cleanup
-@@ -667,7 +666,6 @@
+@@ -667,7 +672,6 @@
  %{_bindir}/neutron-remove-duplicated-port-bindings
  %{_bindir}/neutron-sanity-check
  %{_bindir}/neutron-status
@@ -44,3 +82,133 @@ diff -ur a/neutron/openstack-neutron.spec b/neutron/openstack-neutron.spec
  %{_bindir}/neutron-usage-audit
  %{_bindir}/neutron-ovn-metadata-agent
  %{_bindir}/neutron-ovn-agent
+diff --git a/0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch b/0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch
+new file mode 100644
+--- /dev/null
++++ b/0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch
+@@ -0,0 +1,70 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Terry Wilson <twilson@redhat.com>
++Date: Tue, 9 Jun 2026 17:33:16 -0500
++Subject: [PATCH 1/2] Ensure MaintenanceWorker lock set before connect
++
++The Idl.set_lock() call sets the lock name on the Idl class and
++sends a request to ovsdb-server requesting a lock. It does not
++wait for a reply. This creates a window where we run without
++yet receiving the lock, and tasks might fire and fail and have
++to be retried.
++
++If set_lock() is called prior to connection, the reply that
++contains the initial database dump wil aslo have the reply to the
++set_lock request, so we eliminate that window.
++
++Related-Bug: #2155155
++Change-Id: Iaefe1e2cc86ddd55c9053fde66353b2a333e1e98
++Signed-off-by: Terry Wilson <twilson@redhat.com>
++(cherry picked from commit 83f1d8305651a0ab23629c88d70bfa237055158c)
++---
++ neutron/common/ovn/constants.py                                | 1 +
++ .../plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py  | 1 +
++ .../plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py   | 3 ---
++ 3 files changed, 2 insertions(+), 3 deletions(-)
++
++diff --git a/neutron/common/ovn/constants.py b/neutron/common/ovn/constants.py
++index ddf1f494c2..640d737970 100644
++--- a/neutron/common/ovn/constants.py
+++++ b/neutron/common/ovn/constants.py
++@@ -289,6 +289,7 @@ TYPES_PRIORITY_ORDER = (
++ DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
++ MAINTENANCE_TASK_RETRY_LIMIT = 100  # times
++ MAINTENANCE_ONE_RUN_TASK_SPACING = 5  # seconds
+++MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
++ 
++ # The addresses field to set in the logical switch port which has a
++ # peer router port (connecting to the logical router).
++diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++index 3ee09db6bf..0303892598 100644
++--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++@@ -245,6 +245,7 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
++         if worker_class in (worker.MaintenanceWorker,
++                             n_service.RpcWorker):
++             idl_ = ovsdb_monitor.BaseOvnIdl.from_server(*args)
+++            idl_.set_lock(ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME)
++         else:
++             idl_ = ovsdb_monitor.OvnNbIdl.from_server(*args, driver=driver)
++         conn = connection.Connection(idl_, timeout=cfg.get_ovn_ovsdb_timeout())
++diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
++index c4552043b5..433e9a60b3 100644
++--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
+++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
++@@ -54,8 +54,6 @@ LOG = log.getLogger(__name__)
++ 
++ INCONSISTENCY_TYPE_CREATE_UPDATE = 'create/update'
++ INCONSISTENCY_TYPE_DELETE = 'delete'
++-# TODO(bpetermann): move MAINTENANCE_NB_IDL_LOCK_NAME to neutron-lib
++-MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
++ 
++ 
++ def has_lock_periodic(*args, periodic_run_limit=0, **kwargs):
++@@ -232,7 +230,6 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
++         self._nb_idl = self._ovn_client._nb_idl
++         self._sb_idl = self._ovn_client._sb_idl
++         self._idl = self._nb_idl.idl
++-        self._idl.set_lock(MAINTENANCE_NB_IDL_LOCK_NAME)
++         super().__init__(ovn_client)
++ 
++         self._resources_func_map = {
+diff --git a/0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch b/0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch
+new file mode 100644
+--- /dev/null
++++ b/0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch
+@@ -0,0 +1,50 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Terry Wilson <twilson@redhat.com>
++Date: Wed, 17 Jun 2026 18:45:25 -0500
++Subject: [PATCH 2/2] Only set the maintenance worker lock on the worker
++
++Other code passes the MaintenanceWorker as the trigger to
++from_server() like the ovn-db-sync-util and only the real
++MaintenanceWorker itself should call set_lock() before
++connecting.
++
++Closes-Bug: #2156979
++
++Signed-off-by: Terry Wilson <twilson@redhat.com>
++Change-Id: I74145ef1407856b7ec75de87daa2270b452b6c70
++(cherry picked from commit 91abb5e720e1c515dbfbe9b2313fbdff92b2abbf)
++---
++ neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py   | 3 +++
++ .../ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py        | 5 ++++-
++ 2 files changed, 7 insertions(+), 1 deletion(-)
++
++diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
++index 08accf1910..1cd376966b 100644
++--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
+++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
++@@ -427,6 +427,9 @@ class OVNMechanismDriver(api.MechanismDriver):
++         if worker_class == wsgi.WorkerService:
++             self._setup_hash_ring()
++ 
+++        if worker_class == worker.MaintenanceWorker:
+++            worker_class.lock_name = ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME
+++
++         # Initialize singleton agent cache and keep a copy.
++         self._agent_cache = n_agent.AgentCache(self)
++         self.nb_ovn, self.sb_ovn = impl_idl_ovn.get_ovn_idls(self, trigger)
++diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++index 0303892598..6f5c3b3464 100644
++--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++@@ -245,7 +245,10 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
++         if worker_class in (worker.MaintenanceWorker,
++                             n_service.RpcWorker):
++             idl_ = ovsdb_monitor.BaseOvnIdl.from_server(*args)
++-            idl_.set_lock(ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME)
+++            try:
+++                idl_.set_lock(worker_class.lock_name)
+++            except AttributeError:
+++                pass
++         else:
++             idl_ = ovsdb_monitor.OvnNbIdl.from_server(*args, driver=driver)
++         conn = connection.Connection(idl_, timeout=cfg.get_ovn_ovsdb_timeout())
