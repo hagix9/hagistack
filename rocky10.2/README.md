@@ -160,6 +160,12 @@ falls back to "latest".
 - Where RDO's master specs do not match the released tarballs, the fix is a
   reviewable patch in `spec-patches/`. A patch that does not apply stops the
   build. `spec-templates/` holds the one template used for the PyPI packages.
+- Neutron is the one exception to "the released tarball, unchanged".
+  `spec-patches/neutron.patch` also adds two upstream Neutron commits that are
+  not in any 2026.1 release: `83f1d830` and `91abb5e7`. They fix a race in which
+  the OVN maintenance worker could run indefinitely without its database lock.
+  The Neutron RPMs are therefore release `2` (`28.0.2-2`).
+  `tests-neutron-maintenance-lock.py` checks the fix.
 
 **Outputs.**
 

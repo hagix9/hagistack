@@ -116,7 +116,11 @@ OVN_SB_PORT=6642
 # Units that really exist and really work on 2026.1. The nova API units are
 # deliberately absent: see the header.
 GLANCE_UNITS="openstack-glance-api"
-NEUTRON_UNITS="neutron-rpc-server neutron-ovn-metadata-agent"
+# With the API under httpd, the periodic workers and the ML2/OVN maintenance
+# worker (NB/SB sync at start, periodic repair of Neutron/OVN inconsistencies)
+# run only if their own units do. Their RPMs install the units but, following
+# the systemd presets, do not enable them.
+NEUTRON_UNITS="neutron-rpc-server neutron-periodic-workers neutron-ovn-maintenance-worker neutron-ovn-metadata-agent"
 NOVA_UNITS="openstack-nova-conductor openstack-nova-scheduler"
 NOVA_COMPUTE_UNITS="openstack-nova-compute"
 OVN_CENTRAL_UNITS="ovn-northd"
@@ -1494,6 +1498,7 @@ phase_secrets() {
 CONTROLLER_PKGS="openstack-keystone openstack-glance openstack-placement-api
                  openstack-neutron openstack-neutron-ml2
                  openstack-neutron-rpc-server openstack-neutron-periodic-workers
+                 openstack-neutron-ovn-maintenance-worker
                  openstack-neutron-ovn-metadata-agent
                  openstack-nova-api openstack-nova-conductor openstack-nova-scheduler
                  openstack-nova-compute
@@ -2625,6 +2630,7 @@ cmd_status() {
     local u
     for u in mariadb rabbitmq-server memcached httpd openstack-glance-api \
              ovn-northd ovn-controller openvswitch neutron-rpc-server \
+             neutron-periodic-workers neutron-ovn-maintenance-worker \
              neutron-ovn-metadata-agent openstack-nova-conductor \
              openstack-nova-scheduler openstack-nova-compute libvirtd; do
         printf '    %-32s %s\n' "$u" "$($SUDO systemctl is-active "$u" 2>/dev/null || echo -)"
