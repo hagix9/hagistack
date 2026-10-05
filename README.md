@@ -251,7 +251,7 @@ Third-party material keeps its own licence:
   the upstream attribution and the source commits are in the same directory
   (`LICENSE`, `NOTICE.md`).
 - Quotations from other projects in the records, such as upstream OpenStack commit
-  messages in `acceptance/` or configuration excerpts in `ubuntu26.04/`, remain under
+  identifiers and subjects in `acceptance/` or configuration excerpts in `ubuntu26.04/`, remain under
   their original licences.
 - The software these scripts install or build (OpenStack, RDO packaging, Python
   packages and so on) is not part of this repository. It is fetched when you run
