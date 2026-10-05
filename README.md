@@ -219,8 +219,11 @@ These properties come from the code and its tests:
 
 ```text
 README.md, README.ja.md     this page
+LICENSE                     MIT License for Hagistack's own code (see License below)
 ubuntu26.04/                Ubuntu Server 26.04 installer, tests and verification records
-rocky10.2/                  Rocky Linux 10.2 installer, RPM build tooling and spec patches
+acceptance/                 dated acceptance and investigation records
+rocky10.2/                  Rocky Linux 10.2 installer, RPM build tooling and spec adaptation rules
+rocky10.2/third-party/      third-party files with their own licence (Neutron patches, Apache-2.0)
 ```
 
 ## History
@@ -235,3 +238,24 @@ rocky10.2/                  Rocky Linux 10.2 installer, RPM build tooling and sp
 
 The 2012–2013 scripts were removed from the tree in 2026. They are still in the
 Git history.
+
+## License
+
+Hagistack's own code and documentation in the current tree are licensed under the
+[MIT License](LICENSE). Copyright (c) 2026 Shiro Hagihara.
+
+Third-party material keeps its own licence:
+
+- `rocky10.2/third-party/neutron/` holds two OpenStack Neutron patches under the
+  Apache License 2.0. They are **not** covered by the MIT License. The licence text,
+  the upstream attribution and the source commits are in the same directory
+  (`LICENSE`, `NOTICE.md`).
+- Quotations from other projects in the records, such as upstream OpenStack commit
+  messages in `acceptance/` or configuration excerpts in `ubuntu26.04/`, remain under
+  their original licences.
+- The software these scripts install or build (OpenStack, RDO packaging, Python
+  packages and so on) is not part of this repository. It is fetched when you run
+  them and keeps its own licences.
+
+The MIT License applies to the files in the current tree. It is not a statement
+about the terms of earlier revisions in the Git history.

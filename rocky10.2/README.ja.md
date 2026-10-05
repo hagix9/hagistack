@@ -145,13 +145,17 @@ cd hagistack/rocky10.2
 - OpenStack の各 tarball が、SHA-256 ダイジェストと一致することを確認します。
 - spec の `%prep` が、manifest に記載した OpenStack リリース鍵で tarball の GPG 署名を検証します。
 - Horizon 用の PyPI からの入力 10 個には**署名がありません**。SHA-256 だけで固定しています。
-- RDO の master の spec がリリース版 tarball と合わない箇所は、
-  `spec-patches/` にあるレビュー可能なパッチで修正します。適用できないパッチがあればビルドを止めます。
+- RDO のパッケージング用テキストは**このリポジトリの現在のツリーに同梱しません**（過去のコミットには残っています）。固定した distgit コミットから取得します。
+  RDO の master の spec がリリース版 tarball と合わない箇所には、Hagistack が書いたルール（`spec-adapt/`）を適用します。
+  適用対象のファイルと結果の SHA-256 は manifest（`SPEC` 行）に固定し、ビルドのたびに検証します（distgit のそれ以外のファイルはコミットで固定）。
+  レビュー済みでない入力、すでに適用済みの入力、合わないルールがあればビルドを止め、黙って飛ばすことはありません。
+  詳しくは `spec-adapt/RATIONALE.md` を参照してください。
   `spec-templates/` には、PyPI パッケージ用のテンプレートが 1 つ入っています。
 - Neutron だけは「リリース版 tarball をそのまま使う」の例外です。
-  `spec-patches/neutron.patch` は、2026.1 のどのリリースにも入っていない上流の
-  Neutron コミット `83f1d830` と `91abb5e7` の 2 つも追加します。
+  2026.1 のどのリリースにも入っていない上流の Neutron コミット `83f1d830` と `91abb5e7` の 2 つも適用します。
   これらは、OVN メンテナンスワーカーがデータベースのロックを持たないまま動き続けることがある競合を修正します。
+  現在のツリーにある第三者のソースファイルはこの 2 つの patch だけです。Apache-2.0 で、
+  ライセンス全文と通知とともに `third-party/neutron/` に置き、SHA-256（`PATCH` 行）で固定しています。
   そのため Neutron の RPM はリリース `2`（`28.0.2-2`）です。
   修正は `tests-neutron-maintenance-lock.py` で確認します。
 
@@ -174,6 +178,8 @@ cd hagistack/rocky10.2
   非常に大きなものもあります（os-ken は約 121,000 件、neutron は約 21,000 件）。
 
 `epoxy.manifest` と `build-keystone-epoxy.sh` は、以前の 2025.1 ビルドの記録で、現在は使いません。
+`build-rpms.sh --manifest epoxy.manifest` は、`spec-adapt/` に 2026.1 用のルールがあるパッケージでは止まります。
+そのルールは 2025.1 の spec には適用できないためです。
 `probe-repos.sh` は、公開されている EL10 向け OpenStack リポジトリを読み取り専用で調べ直すツールです。
 そのメッセージが参照しているのはこの README の旧版の節で、旧版は Git の履歴にあります。
 

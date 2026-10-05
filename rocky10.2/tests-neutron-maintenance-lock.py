@@ -6,8 +6,9 @@ main thread while the connection thread is already running Idl.run(). If the
 connection thread reads the lock reply before python-ovs has recorded the
 request id, the reply is dropped: the worker then believes it holds the lock,
 and every northbound write fails with NOT_LOCKED for the life of the process.
-spec-patches/neutron.patch carries upstream 83f1d830 + 91abb5e7, which request
-the lock before the connection starts and only for the real maintenance worker.
+third-party/neutron/ carries upstream 83f1d830 + 91abb5e7 (Apache-2.0), which
+request the lock before the connection starts and only for the real maintenance
+worker; the Neutron RPM applies them as Patch0001 and Patch0002.
 
 The race is timing-dependent, so this test forces its window open: it wraps the
 python-ovs lock request in a short sleep between sending the request and

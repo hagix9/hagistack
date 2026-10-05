@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Terry Wilson <twilson@redhat.com>
+Date: Wed, 17 Jun 2026 18:45:25 -0500
+Subject: [PATCH 2/2] Only set the maintenance worker lock on the worker
+
+Other code passes the MaintenanceWorker as the trigger to
+from_server() like the ovn-db-sync-util and only the real
+MaintenanceWorker itself should call set_lock() before
+connecting.
+
+Closes-Bug: #2156979
+
+Signed-off-by: Terry Wilson <twilson@redhat.com>
+Change-Id: I74145ef1407856b7ec75de87daa2270b452b6c70
+(cherry picked from commit 91abb5e720e1c515dbfbe9b2313fbdff92b2abbf)
+---
+ neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py   | 3 +++
+ .../ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py        | 5 ++++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
+index 08accf1910..1cd376966b 100644
+--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py
+@@ -427,6 +427,9 @@ class OVNMechanismDriver(api.MechanismDriver):
+         if worker_class == wsgi.WorkerService:
+             self._setup_hash_ring()
+ 
++        if worker_class == worker.MaintenanceWorker:
++            worker_class.lock_name = ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME
++
+         # Initialize singleton agent cache and keep a copy.
+         self._agent_cache = n_agent.AgentCache(self)
+         self.nb_ovn, self.sb_ovn = impl_idl_ovn.get_ovn_idls(self, trigger)
+diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+index 0303892598..6f5c3b3464 100644
+--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+@@ -245,7 +245,10 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
+         if worker_class in (worker.MaintenanceWorker,
+                             n_service.RpcWorker):
+             idl_ = ovsdb_monitor.BaseOvnIdl.from_server(*args)
+-            idl_.set_lock(ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME)
++            try:
++                idl_.set_lock(worker_class.lock_name)
++            except AttributeError:
++                pass
+         else:
+             idl_ = ovsdb_monitor.OvnNbIdl.from_server(*args, driver=driver)
+         conn = connection.Connection(idl_, timeout=cfg.get_ovn_ovsdb_timeout())

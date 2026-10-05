@@ -131,7 +131,7 @@ The recorded build ran on a GCE `n2-standard-4` running the stock Rocky Linux
 **Prepare the builder:**
 
 - a user with `sudo`;
-- `git`, `curl`, `rpm-build`, `rpmdevtools` and `createrepo_c`;
+- `git`, `curl`, `python3`, `rpm-build`, `rpmdevtools` and `createrepo_c`;
 - repositories from which `dnf builddep` can resolve the build dependencies.
 
 `build-rpms.sh` does **not** configure the builder's repositories. The recorded
@@ -157,15 +157,24 @@ falls back to "latest".
   release key named in the manifest.
 - The ten PyPI inputs for Horizon have **no signature**. They are pinned by
   SHA-256 only.
-- Where RDO's master specs do not match the released tarballs, the fix is a
-  reviewable patch in `spec-patches/`. A patch that does not apply stops the
-  build. `spec-templates/` holds the one template used for the PyPI packages.
-- Neutron is the one exception to "the released tarball, unchanged".
-  `spec-patches/neutron.patch` also adds two upstream Neutron commits that are
-  not in any 2026.1 release: `83f1d830` and `91abb5e7`. They fix a race in which
-  the OVN maintenance worker could run indefinitely without its database lock.
-  The Neutron RPMs are therefore release `2` (`28.0.2-2`).
-  `tests-neutron-maintenance-lock.py` checks the fix.
+- RDO's packaging text is **not stored in the current tree of this repository**
+  (older commits still contain it). It is fetched from the pinned distgit
+  commit. Where RDO's master specs do not match the released tarballs,
+  `spec-adapt/` applies Hagistack-written rules to it. The SHA-256 of every
+  file that is adapted, and of every result, is pinned in the manifest (`SPEC`
+  rows) and checked on each build; the rest of a distgit is pinned by its
+  commit. An input that is not the reviewed one, an input
+  that is already adapted, or a rule that does not fit stops the build; nothing
+  is skipped. See `spec-adapt/RATIONALE.md`. `spec-templates/` holds the one
+  template used for the PyPI packages.
+- Neutron is the one exception to "the released tarball, unchanged". It also
+  applies two upstream Neutron commits that are not in any 2026.1 release:
+  `83f1d830` and `91abb5e7`. They fix a race in which the OVN maintenance worker
+  could run indefinitely without its database lock. These two patch files are
+  the only third-party source files in the current tree. They are
+  Apache-2.0, kept in `third-party/neutron/` with the licence text and a notice,
+  and pinned by SHA-256 (`PATCH` rows). The Neutron RPMs are therefore release
+  `2` (`28.0.2-2`). `tests-neutron-maintenance-lock.py` checks the fix.
 
 **Outputs.**
 
@@ -186,7 +195,9 @@ repository step. `--lock` rewrites only the lock file.
   for os-ken and 21,000 for neutron.
 
 `epoxy.manifest` and `build-keystone-epoxy.sh` are records of an earlier 2025.1
-build and are not used. `probe-repos.sh` re-runs the read-only check for
+build and are not used. `build-rpms.sh --manifest epoxy.manifest` stops for the
+packages that have 2026.1 rules in `spec-adapt/`, because those rules are not
+valid for 2025.1 specs. `probe-repos.sh` re-runs the read-only check for
 published EL10 OpenStack repositories. Its messages refer to sections of an
 earlier version of this README, which is available in the Git history.
 

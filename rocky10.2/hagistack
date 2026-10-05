@@ -1797,8 +1797,9 @@ phase_placement() {
     $SUDO chown root:placement "$PLACEMENT_CONF"; $SUDO chmod 0640 "$PLACEMENT_CONF"
 
     # The vhost the RPM ships. Verified on a real install to point at
-    # site-packages/placement/wsgi/api.py, because spec-patches/placement.patch
-    # retargets it; without that patch it names a binary 15.0.0 does not build.
+    # site-packages/placement/wsgi/api.py, because the placement rules in
+    # spec-adapt/rules.py retarget it; without them it names a binary 15.0.0
+    # does not build.
     local vhost="$HTTPD_CONF_D/00-placement-api.conf"
     if $SUDO grep -q "placement/wsgi/api.py" "$vhost" 2>/dev/null; then
         log_ok "packaged placement vhost points at the WSGI module — used as shipped"

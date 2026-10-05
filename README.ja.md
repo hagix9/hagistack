@@ -211,8 +211,11 @@ Google Compute Engine 上で**検証済み**です。仮想マシンはネスト
 
 ```text
 README.md, README.ja.md     このページ
+LICENSE                     Hagistack 自身のコードの MIT License（下の「ライセンス」を参照）
 ubuntu26.04/                Ubuntu Server 26.04 用インストーラ、テスト、検証記録
-rocky10.2/                  Rocky Linux 10.2 用インストーラ、RPM ビルドツール、spec パッチ
+acceptance/                 日付つきの受け入れ・調査の記録
+rocky10.2/                  Rocky Linux 10.2 用インストーラ、RPM ビルドツール、spec の調整ルール
+rocky10.2/third-party/      独自のライセンスを持つ第三者のファイル（Neutron の patch、Apache-2.0）
 ```
 
 ## 歴史
@@ -225,3 +228,21 @@ rocky10.2/                  Rocky Linux 10.2 用インストーラ、RPM ビル�
 - **2026 年：** OpenStack 2026.1 向けの素の Bash インストーラとして、一から書き直しました。
 
 2012〜2013 年のスクリプトは 2026 年に作業ツリーから削除しましたが、Git の履歴には残っています。
+
+## ライセンス
+
+現在のツリーにある Hagistack 自身のコードとドキュメントは、[MIT License](LICENSE) で提供します。
+Copyright (c) 2026 Shiro Hagihara。
+
+第三者のものは、それぞれのライセンスのままです。
+
+- `rocky10.2/third-party/neutron/` には、Apache License 2.0 の OpenStack Neutron の patch が 2 つあります。
+  これらは MIT License の**対象外**です。ライセンス全文、上流の帰属表示、元のコミットは
+  同じディレクトリ（`LICENSE`、`NOTICE.md`）にあります。
+- `acceptance/` の記録にある上流 OpenStack のコミットメッセージや、`ubuntu26.04/` の記録にある設定の抜粋など、
+  他のプロジェクトからの引用は、元のライセンスのままです。
+- このスクリプトが導入またはビルドするソフトウェア（OpenStack、RDO のパッケージング、Python パッケージなど）は、
+  このリポジトリには含まれません。実行時に取得するもので、それぞれのライセンスに従います。
+
+MIT License が対象とするのは、現在のツリーのファイルです。Git の履歴にある過去のリビジョンの条件について
+述べるものではありません。
