@@ -14,7 +14,8 @@
 #   * `rpm-master` specs ship `Version: XXX` / `Release: XXX` for DLRN to fill
 #     in, so this file carries the version and release.
 #   * A master spec does not always match a released tarball. Where it does not,
-#     the fix is a reviewable patch in ./spec-patches, not an inline sed.
+#     the fix is a reviewable rule in ./spec-adapt, pinned by SPEC rows below,
+#     not an inline sed and not a copy of the spec.
 #
 # Versions are the FINAL 2026.1 releases, read from
 # openstack/releases deliverables/gazpacho/*.yaml on 2026-09-28; every one has a
@@ -153,3 +154,40 @@ PYPI python3-XStatic-JQuery-quicksearch XStatic-JQuery.quicksearch 2.0.3.3 xstat
 PYPI python3-XStatic-JQuery-TableSorter XStatic-JQuery.TableSorter 2.14.5.3 xstatic_jquery_tablesorter-2.14.5.3.tar.gz e8a4f4900992fe87e2a41167a07fab0aaab39ef194090f58e0083892dc4bcc34 MIT jQuery TableSorter packaged for XStatic
 PYPI python3-XStatic-jquery-ui XStatic-jquery-ui 1.13.0.2 xstatic_jquery_ui-1.13.0.2.tar.gz 11b2aa7eaa1ad69c6e594cae11a817a8fa171cec9ceb82ae2ca4ba7e93d5ae43 MIT jQuery UI packaged for XStatic
 PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar.gz afda65f80b08fafb056ef216b47d2d1b31b2f607c956abb8c6b186d2727041ae MIT term.js packaged for XStatic
+#
+# --- Hagistack's own adaptation of the pinned RDO specs ----------------------
+#
+# The RDO specs above are third-party packaging text. They are fetched at the exact
+# distgit commit in each package row and are NOT stored in this repository. Where a
+# spec does not fit a released 2026.1 tarball, spec-adapt/ applies Hagistack-written
+# rules to it (see spec-adapt/RATIONALE.md); the old spec-patches/ are gone.
+#
+# A SPEC row pins one input file of such a package: the file name inside the distgit
+# at the commit of the package's own row, the SHA-256 of that file as RDO published
+# it, and the SHA-256 of the file after adaptation. All three are checked on every
+# build; any mismatch, an already-adapted input, or a rule that finds a different
+# number of targets than it expects stops the build.
+#
+# fields: SPEC  package  file  input-sha256  output-sha256
+#
+# A PATCH row pins a file Hagistack DOES redistribute: an upstream OpenStack patch
+# under Apache-2.0, kept in third-party/ with its licence and notice, installed next
+# to the spec and verified by SHA-256 before use.
+#
+# fields: PATCH  package  path-relative-to-this-directory  sha256
+#
+SPEC  cliff         python-cliff.spec            7569ea4219cbd317a1640fb708d0fd309b6b97186aa51ef6d36d42e886f54002 cb69acbb9b873d82304de29b970210149366927385fa79912c2502ca00df1cb2
+SPEC  horizon       python-django-horizon.spec   7f29e455a7f26384d2922b6adda920eeda06e3407ae59d5e556fd5788443dd12 29756e848c89672d411c17350b373b44eb8d3f2191673069c56411c7d3a07f86
+SPEC  keystone      openstack-keystone.spec      27528b0241b48c856d1c138a5b30a63c1d3a3f4a7e9142d8659498b249f783fb 8669edf39ede8edc2d9d6e9cc5fcddd926330c11bd03daf64b6f62ef5ce7a693
+SPEC  neutron       openstack-neutron.spec       9869639694d3402720652a22c0488009091786b4954abf1e6e5eab017ab4b114 66c321ad0da346dc36140ca25fea650049f1791cbd737c4857983782c20ab41d
+SPEC  nova          openstack-nova.spec          63a748d1072ec5d63bb669d6fc5361b5054ba86827c5bd6dc896668e77a2bda6 b572431f216b7c2dc832f9235b35bafeec01254ce60760e01e007e799e87e9c2
+SPEC  os-ken        python-os-ken.spec           74d12e18997a4482592000673f548709799493fcca28d9b58bcfe415218e2f44 fe1f1cee213d3a42659bae61f3528d72a1cf46c0fdaafca524aaac8e0f023e69
+SPEC  oslo-cache    python-oslo-cache.spec       9968fdab1e3c53216b4d4cae67c95b8cf0fe115c14199417911cb27993e8357c bfb9448fe9d42bdfda5249142c0c6acf218c291dcea7a1584aff35bf42c71e1b
+SPEC  oslo-privsep  python-oslo-privsep.spec     214fedf3a60a22ce8aa4f7604fbf4691fc3545b3317be23e256b229825823a1b 11d7f04d0d44bf226f5ecd356f8ef63d8ae16177698259692d4c10f8edd8ffba
+SPEC  oslo-utils    python-oslo-utils.spec       354574873d8927f88d1d943d43c5efa51f1f07f371d8ecefd0caa0b476819fd9 57f88c078f39772149ee4be3e5ee31babeed016d50e25baa401fbaa33c5fb48b
+SPEC  placement     openstack-placement.spec     7a35ac9ceb6fbeba0bc4b7e15e2d6eeb1bafe9bb6e7750d95ffe013462c80c9c 4192c884afc851a2ba789c5ed3e51a68a0434c164428704389e7e7e6b650bb7b
+SPEC  placement     placement-api.conf           829e74856246ff8f4a56a4995cd421edd210e3c0342c998de9e934d33c2d229f e6f002a181a49d65c7da7a21de7d6e183b4bf5764bd3b77f09e53022e8ed62ff
+SPEC  tooz          python-tooz.spec             f4eac9a4fc7ee1547099b47c1a47fc739d249822e34863447e5316daa3eb5be9 0bf35ef99b281ca0c1b2d0a16617741cd4b4f0037401dd6b06cde8efee84c6e0
+#
+PATCH neutron third-party/neutron/0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch 4f981103be17689f9186776b5059c55bb33950dae47740fd52575be7849387e4
+PATCH neutron third-party/neutron/0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch 136ce37c86bf3ac8dd7f737b23c5e2b60bdb17326cac6876852ebc4bfb96d9cf

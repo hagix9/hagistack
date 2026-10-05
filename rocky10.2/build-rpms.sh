@@ -26,9 +26,11 @@
 #     release, and this script substitutes them, saying so in the log. The
 #     `epoxy-rdo` specs carry real values and are left alone.
 #   * A spec written against master does not always match a released tarball.
-#     Where it does not, the difference is a reviewable patch in ./spec-patches
-#     rather than an inline sed, and a patch that does not apply STOPS the
-#     build.
+#     Where it does not, the difference is a reviewable rule in ./spec-adapt
+#     rather than an inline sed, applied to the pinned spec by spec-adapt/adapt.py
+#     against SPEC rows in the manifest (input SHA-256, output SHA-256). The RDO
+#     spec itself is never stored in this repository, and a rule that does not
+#     fit STOPS the build.
 #
 # --nocheck skips %check. That is a deliberate, recorded choice, not a default:
 # the test suites here run to 121 166 tests (os-ken) and 21 189 (neutron), and
@@ -45,7 +47,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="$HERE/gazpacho.manifest"
-PATCHDIR="$HERE/spec-patches"
+ADAPT="$HERE/spec-adapt/adapt.py"
 NOCHECK=0
 # these have to be parsed before anything reads $MANIFEST
 while :; do
@@ -77,6 +79,7 @@ die(){ printf '\nSTOP: %s\n' "$*" >&2; exit 1; }
 [ -r "$MANIFEST" ] || die "manifest not found: $MANIFEST"
 command -v git >/dev/null      || die "git is required"
 command -v rpmbuild >/dev/null || die "rpmbuild is required (dnf install rpm-build rpmdevtools)"
+command -v python3 >/dev/null  || die "python3 is required (spec-adapt/adapt.py)"
 
 mkdir -p "$WORK" "$LOGDIR"
 rpmdev-setuptree
@@ -220,17 +223,15 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
 
     # A spec written against master is not always right for a released tarball,
     # and neither is a vhost the distgit ships beside it. Keep every such
-    # difference visible and reviewable: one patch per package over the whole
-    # distgit tree, applied with --dry-run first, and a hard stop if it does not
-    # apply — a silently skipped patch means building something other than what
-    # was reviewed.
-    if [ -f "$PATCHDIR/$pkg.patch" ]; then
-        patch -p1 --dry-run -d "$dir" < "$PATCHDIR/$pkg.patch" >/dev/null 2>&1 \
-            || die "spec-patches/$pkg.patch does not apply to $repo at $commit"
-        patch -p1 -s -d "$dir" < "$PATCHDIR/$pkg.patch" \
-            || die "spec-patches/$pkg.patch failed to apply"
-        ok "applied spec-patches/$pkg.patch ($(grep -c '^@@' "$PATCHDIR/$pkg.patch") hunk(s))"
-    fi
+    # difference visible and reviewable: spec-adapt/rules.py holds Hagistack's
+    # edits, and the manifest's SPEC rows pin each input file and each result by
+    # SHA-256. adapt.py writes nothing and exits non-zero when an input is not the
+    # reviewed one, is already adapted, or a rule finds something other than what
+    # it expects - a silently skipped rule means building something other than
+    # what was reviewed. A package with no rules and no SPEC rows is left alone.
+    python3 "$ADAPT" --manifest "$MANIFEST" --package "$pkg" --tree "$dir" \
+        || die "spec adaptation of $pkg failed ($repo at $commit); see the STOP line above"
+    ok "spec adaptation step finished for $pkg"
 
     [ -f "$dir/$specfile" ] || die "$specfile is not in $repo at $commit"
     install -m 0644 "$dir/$specfile" "$SPECS/$specfile"
@@ -450,8 +451,12 @@ WANT=("$@")
 if [ "${1:-}" = "--lock" ]; then write_lock; exit 0; fi
 if [ "${1:-}" = "--publish" ]; then publish_repo; exit $?; fi
 
+# Every row is validated before anything is built, so a malformed or unknown
+# SPEC/PATCH row cannot be skipped by asking for a subset of the packages.
+python3 "$ADAPT" --manifest "$MANIFEST" --check || die "manifest check failed: $MANIFEST"
+
 while read -r pkg repo commit specfile version release tarball tsha urlproj signkey _rest; do
-    case "$pkg" in ''|\#*|KEY) continue ;; esac
+    case "$pkg" in ''|\#*|KEY|SPEC|PATCH) continue ;; esac
     # PYPI <rpm-name> <pypi-name> <version> <sdist> <sha256> <license> <summary...>
     if [ "$pkg" = "PYPI" ]; then
         if [ ${#WANT[@]} -gt 0 ]; then

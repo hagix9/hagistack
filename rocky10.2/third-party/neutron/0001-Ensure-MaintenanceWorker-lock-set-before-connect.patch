@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Terry Wilson <twilson@redhat.com>
+Date: Tue, 9 Jun 2026 17:33:16 -0500
+Subject: [PATCH 1/2] Ensure MaintenanceWorker lock set before connect
+
+The Idl.set_lock() call sets the lock name on the Idl class and
+sends a request to ovsdb-server requesting a lock. It does not
+wait for a reply. This creates a window where we run without
+yet receiving the lock, and tasks might fire and fail and have
+to be retried.
+
+If set_lock() is called prior to connection, the reply that
+contains the initial database dump wil aslo have the reply to the
+set_lock request, so we eliminate that window.
+
+Related-Bug: #2155155
+Change-Id: Iaefe1e2cc86ddd55c9053fde66353b2a333e1e98
+Signed-off-by: Terry Wilson <twilson@redhat.com>
+(cherry picked from commit 83f1d8305651a0ab23629c88d70bfa237055158c)
+---
+ neutron/common/ovn/constants.py                                | 1 +
+ .../plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py  | 1 +
+ .../plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py   | 3 ---
+ 3 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/neutron/common/ovn/constants.py b/neutron/common/ovn/constants.py
+index ddf1f494c2..640d737970 100644
+--- a/neutron/common/ovn/constants.py
++++ b/neutron/common/ovn/constants.py
+@@ -289,6 +289,7 @@ TYPES_PRIORITY_ORDER = (
+ DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
+ MAINTENANCE_TASK_RETRY_LIMIT = 100  # times
+ MAINTENANCE_ONE_RUN_TASK_SPACING = 5  # seconds
++MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
+ 
+ # The addresses field to set in the logical switch port which has a
+ # peer router port (connecting to the logical router).
+diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+index 3ee09db6bf..0303892598 100644
+--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py
+@@ -245,6 +245,7 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
+         if worker_class in (worker.MaintenanceWorker,
+                             n_service.RpcWorker):
+             idl_ = ovsdb_monitor.BaseOvnIdl.from_server(*args)
++            idl_.set_lock(ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME)
+         else:
+             idl_ = ovsdb_monitor.OvnNbIdl.from_server(*args, driver=driver)
+         conn = connection.Connection(idl_, timeout=cfg.get_ovn_ovsdb_timeout())
+diff --git a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
+index c4552043b5..433e9a60b3 100644
+--- a/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
++++ b/neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py
+@@ -54,8 +54,6 @@ LOG = log.getLogger(__name__)
+ 
+ INCONSISTENCY_TYPE_CREATE_UPDATE = 'create/update'
+ INCONSISTENCY_TYPE_DELETE = 'delete'
+-# TODO(bpetermann): move MAINTENANCE_NB_IDL_LOCK_NAME to neutron-lib
+-MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
+ 
+ 
+ def has_lock_periodic(*args, periodic_run_limit=0, **kwargs):
+@@ -232,7 +230,6 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
+         self._nb_idl = self._ovn_client._nb_idl
+         self._sb_idl = self._ovn_client._sb_idl
+         self._idl = self._nb_idl.idl
+-        self._idl.set_lock(MAINTENANCE_NB_IDL_LOCK_NAME)
+         super().__init__(ovn_client)
+ 
+         self._resources_func_map = {
