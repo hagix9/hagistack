@@ -47,6 +47,36 @@ Hagistack は、**Ubuntu Server 26.04 LTS** または **Rocky Linux 10.2** に
 例外が 1 つあります。Rocky 用スクリプトは、他の EL10 系ディストリビューション
 （RHEL、AlmaLinux、CentOS 10）では警告を出して処理を続けます。これらは未検証です。
 
+## バージョン方針
+
+Hagistack は、Git HEAD や未検証の「最新」には追従しません。
+対象 OS の最新版と OpenStack の最新の安定リリースを検証し、検証済みのバージョンを
+**Current Generation** として**固定（pin）**します。Current Generation とは、
+「対応プラットフォーム」に載せた OS と OpenStack の組み合わせで、CI と実 OS での受け入れを通過したものです。
+バージョン、ソースリリース、packaging の commit、SHA-256 などの pin により、
+Current Generation は再現可能に保たれます。
+「最新に追従する」とは、新しいリリースを把握して検証することです。
+ビルドのたびに最新を取得するという意味ではありません。
+
+- **OS の新しい minor リリース**（例: Rocky 10.2 → 10.3）は候補として扱います。
+  新 OS で Current Generation を検証し、必要なら最小限の互換修正を行い、
+  受け入れと独立監査を通過した後に Current Generation を更新します。
+  OS の更新と OpenStack の更新は、可能な限り同時に行いません。
+- **OpenStack の新しい安定リリース**も候補として扱います。
+  manifest と pin は明示的に更新し、ブランチへの追従では更新しません。
+  release candidate や未リリースの開発コードは Current Generation にしません。
+- **Rocky と Ubuntu では供給方式が異なります。** Rocky では、固定した upstream リリースと
+  固定した packaging ソースから Hagistack がパッケージをビルドし、RDO の packaging テキストは
+  同梱しません。Ubuntu では、サポート対象の Ubuntu アーカイブのパッケージを使います。
+  upstream の fix は自動では取り込まないため、サポート対象の Ubuntu パッケージに
+  反映されるまで作業を保留（HOLD）する場合があります。
+- **Legacy。** 以前に検証した generation は、新しい Current Generation に置き換わった時点で
+  *Legacy* になります。コードやドキュメントが残り、今も動く可能性はありますが、
+  継続的な CI、実 OS での受け入れ、セキュリティ修正の backport、
+  新しい依存や新しい OS 環境との互換性は保証しません。
+
+coding agent 向けの規則を含む方針の全文は [docs/CURRENT_GENERATION_POLICY.md](docs/CURRENT_GENERATION_POLICY.md) にあります。
+
 ## プラットフォームを選ぶ
 
 - **[Ubuntu Server 26.04 LTS →](ubuntu26.04/README.ja.md)**
@@ -211,6 +241,7 @@ Google Compute Engine 上で**検証済み**です。仮想マシンはネスト
 
 ```text
 README.md, README.ja.md     このページ
+docs/                       Current Generation の方針（バージョン方針と coding agent 向けの規則）
 LICENSE                     Hagistack 自身のコードの MIT License（下の「ライセンス」を参照）
 ubuntu26.04/                Ubuntu Server 26.04 用インストーラ、テスト、検証記録
 acceptance/                 日付つきの受け入れ・調査の記録

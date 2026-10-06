@@ -44,6 +44,36 @@ Other OS versions are refused by preflight. One exception: the Rocky script
 continues with a warning on other EL10 distributions (RHEL, AlmaLinux,
 CentOS 10), which have not been verified.
 
+## Version policy
+
+Hagistack does not follow Git HEAD or an unverified "latest". It verifies the
+newest target OS and the newest stable OpenStack release, then **pins** the
+verified versions as the **Current Generation**: the OS + OpenStack combinations
+listed in *Supported platforms*, which have passed CI and real-OS acceptance.
+Pins (versions, source releases, packaging commits, SHA-256 digests) keep the
+Current Generation reproducible. "Following the latest" means noticing new
+releases and validating them. It does not mean fetching the newest at build time.
+
+- **A new OS minor release** (for example Rocky 10.2 → 10.3) is a candidate. The
+  Current Generation is verified on it, minimal compatibility fixes are made if
+  needed, and the Current Generation moves only after acceptance and an
+  independent audit. OS and OpenStack updates are kept separate where possible.
+- **A new stable OpenStack release** is also a candidate. The manifest and pins
+  are updated explicitly, never by following a branch. Release candidates and
+  unreleased development code are not the Current Generation.
+- **Rocky and Ubuntu are supplied differently.** On Rocky, Hagistack builds the
+  packages from pinned upstream releases and pinned packaging sources, and does
+  not bundle RDO packaging text. On Ubuntu, packages come from the supported
+  Ubuntu archive. An upstream fix is not adopted automatically, so some work may
+  be on hold until the fix reaches a supported Ubuntu package.
+- **Legacy.** A generation verified earlier is *Legacy* once a new Current
+  Generation replaces it. Its code and documentation may remain and it may still
+  work, but it gets no continuing CI, real-OS acceptance, security backports,
+  or guarantee of compatibility with new dependencies or newer OS environments.
+
+The full policy, including the rules for coding agents, is in
+[docs/CURRENT_GENERATION_POLICY.md](docs/CURRENT_GENERATION_POLICY.md).
+
 ## Choose your platform
 
 - **[Ubuntu Server 26.04 LTS →](ubuntu26.04/README.md)**
@@ -219,6 +249,7 @@ These properties come from the code and its tests:
 
 ```text
 README.md, README.ja.md     this page
+docs/                       Current Generation policy (version policy and rules for coding agents)
 LICENSE                     MIT License for Hagistack's own code (see License below)
 ubuntu26.04/                Ubuntu Server 26.04 installer, tests and verification records
 acceptance/                 dated acceptance and investigation records
