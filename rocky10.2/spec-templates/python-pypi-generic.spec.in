@@ -63,6 +63,13 @@ rm -f %{buildroot}%{python3_sitelib}/*-nspkg.pth
 # NOTE: do not name a macro in a comment in this file. rpm expands macros inside
 # spec COMMENTS too, and the rest of the comment then becomes its arguments.
 ls %{buildroot}%{_bindir} 2>/dev/null | sed 's|^|%{_bindir}/|' >> %{pyproject_files} || :
+# Ship the upstream licence text with the package. Whatever licence files the
+# sdist carries at its top level are listed as licence documents; an sdist that
+# carries none adds nothing here (recorded in the release licence audit).
+for f in LICENSE* LICENCE* COPYING* NOTICE*; do
+    [ -f "$f" ] && echo "%%license $f" >> %{pyproject_files}
+done
+:
 
 %files -f %{pyproject_files}
 

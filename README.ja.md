@@ -39,7 +39,7 @@ Hagistack は、**Ubuntu Server 26.04 LTS** または **Rocky Linux 10.2** に
 |---|---|---|
 | アーキテクチャ | amd64（検証済み）。arm64 は preflight を通過しますが**未検証**です | x86_64 のみ（それ以外は拒否されます） |
 | OpenStack | 2026.1 Gazpacho | 2026.1 Gazpacho |
-| パッケージの入手元 | Ubuntu 26.04 の公式アーカイブ | **先に自分でビルドする** RPM。`build-rpms.sh` で、固定した 2026.1 リリース tarball からビルドします |
+| パッケージの入手元 | Ubuntu 26.04 の公式アーカイブ | 固定した 2026.1 リリース tarball からビルドした RPM。`hagistack` が固定済みリリースをダウンロード（未公開）するか、`--rpm-source build` でホスト上でビルドします |
 | 検証 | Google Compute Engine 上の 2 ノード、2026-09-28 | Google Compute Engine 上の 2 ノード、2026-09-29 |
 
 上記以外の OS バージョンは、preflight で拒否されます。
@@ -94,7 +94,8 @@ coding agent 向けの規則を含む方針の全文は [docs/CURRENT_GENERATION
    - provider NIC として指定する、実在するインターフェース
    - provider ネットワークの値（CIDR、ゲートウェイ、Floating IP の範囲）
 
-   Rocky の場合は、ビルド済みの RPM リポジトリも必要です。
+   Rocky の場合もほかに準備は不要です（`hagistack` が RPM を用意します）。RPM のリリースが
+   公開されるまでは `--rpm-source build`（ホスト上でビルド、数時間）か、手元のリポジトリを `--repo-url` で指定します。
 3. **preflight だけを実行します。**
    `sudo ./hagistack all-in-one --check …`
    すべての設定を検証し、最終的な設定値を表示します。何も変更しません。
@@ -150,12 +151,15 @@ all-in-one（コントローラ兼コンピュート）ノードには、次の�
 | `all-in-one [options]` | コントローラ | このホストにコントローラとコンピュートのサービスを導入します |
 | `all-in-one --check [options]` | コントローラ | preflight だけを行います。設定を検証して最終的な設定値を表示し、何も変更しません |
 | `compute-add --controller-ip IP [options]` | 新しいノード | このホストを追加のコンピュートノードにします |
+| `controller [options]` | コントローラ | **Rocky のみ。** ハイパーバイザなしのコントローラ |
+| `compute-add --local` | コントローラ | **Rocky のみ。** `controller` ホストにハイパーバイザを追加 |
+| `rpm-prepare`、`rpm-bundle --output FILE` | 任意 / コントローラ | **Rocky のみ。** RPM セットの用意と検証、コンピュートノード向けの書き出し |
 | `compute-secrets` | コントローラ | コンピュートノードに必要な 5 つの資格情報を標準出力に書き出します。端末への出力は拒否します |
 | `discover-hosts` | コントローラ | 新しく登録されたコンピュートホストを Nova の cell に登録します |
 | `status` | 任意のノード | バージョン、phase の完了マーカー、サービスの状態を表示します |
 | `--help`、`--version` | — | 使い方の説明とバージョン文字列を表示します |
 
-- **Rocky のみ：** `all-in-one` と `compute-add` には `--repo-url` も必要です。自分でビルドした RPM リポジトリを指定します。
+- **Rocky のみ：** RPM の入手方法は `--rpm-source github|build|bundle|repo-url` で選びます（Rocky のガイドを参照）。`--repo-url` も従来どおり使えます。
 - **終了ステータス：**
   - `0`：成功です。
   - `1`：設定または preflight のエラーです。

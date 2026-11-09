@@ -11,8 +11,11 @@
 # publishes 2026.1 for EL10 — there is no `gazpacho-rdo` distgit branch and no
 # `centos10-gazpacho` repository. So the RPMs are built from the released 2026.1
 # tarballs against RDO's `rpm-master` specs, with every input pinned by commit
-# id and sha256, by ../rocky10.2/build-rpms.sh. That build is a prerequisite for
-# this shell, not a part of it: point --repo-url at its output.
+# id and sha256, by ../rocky10.2/build-rpms.sh. Getting those RPMs is the first
+# this shell's RPM source. Four are supported (see "RPM sources" below):
+# a verified download of a published GitHub Release (the default), a build from
+# source in a disposable container on this host, a bundle copied from another
+# node, or a repository you run yourself (--repo-url).
 #
 # This shell deliberately does NOT enable RDO's `delorean-component-*`
 # repositories. Those carry trunk snapshots of the OpenStack libraries and would
@@ -39,12 +42,12 @@
 # left disabled rather than "fixed" by inventing an ExecStart.
 set -euo pipefail
 
-HAGISTACK_VERSION="0.1.0-rocky"
-HAGISTACK_STAGE="rocky step1: all-in-one and compute-add implemented; verification in progress"
+HAGISTACK_VERSION="0.2.0-rocky"
+HAGISTACK_STAGE="rocky: all-in-one, controller, compute-add (local/remote); RPM sources github/build/bundle/repo-url"
 TARGET_OS="Rocky Linux 10.2 (x86_64)"
 TARGET_RELEASE="OpenStack 2026.1 Gazpacho"
 VERIFIED_ON_HARDWARE="see rocky10.2/README.md; nothing here is claimed until it is measured"
-UNVERIFIED_ITEMS="Horizon (its XStatic/qrcode dependencies are unresolved on EL10); SELinux in enforcing mode; any physical-LAN path"
+UNVERIFIED_ITEMS="SELinux in enforcing mode; any physical-LAN path; %check of the RPMs; see README Known limitations"
 
 C_RESET=''; C_RED=''; C_GRN=''; C_YEL=''; C_BLU=''; C_DIM=''
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -492,6 +495,15 @@ valid_http_url() {
     [ "${#u}" -le 512 ]
 }
 
+# --repo-url: http(s) as above, or a local directory as file:///path.
+valid_repo_url() {
+    local u="$1"
+    valid_http_url "$u" && return 0
+    [[ "$u" =~ ^file:///[A-Za-z0-9._/-]*$ ]] || return 1
+    case "$u" in *..*) return 1 ;; esac
+    [ "${#u}" -le 512 ]
+}
+
 # An address that is supposed to belong to ANOTHER machine. Rejects the values
 # that are never a peer: this catches "--controller-ip 127.0.0.1" and
 # "--controller-ip 0.0.0.0", which otherwise fail much later with an opaque
@@ -607,7 +619,8 @@ print("" if val is None else val)
 CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
              FLOATING_END DNS_SERVER TENANT_CIDR VIRT_TYPE REGION_NAME
              PROVIDER_PHYSNET PROVIDER_BRIDGE IMAGE_NAME IMAGE_URL IMAGE_SHA256
-             IMAGE_FILE CONTROLLER_IP REPO_URL"
+             IMAGE_FILE CONTROLLER_IP REPO_URL RPM_SOURCE RPM_BUNDLE
+             RPM_LOCK_FILE BUILD_IMAGE RPM_SET_EXPECTED"
 declare -A CLI_VAL CLI_SET ENV_VAL ENV_SET FILE_VAL FILE_SET CONFIG_SOURCE DEFAULT_VAL
 
 # The defaults are whatever the variables hold before any tier is applied, so
@@ -632,6 +645,11 @@ MGMT_IP=""; EXT_NIC=""; PROVIDER_CIDR=""; PROVIDER_GATEWAY=""
 FLOATING_START=""; FLOATING_END=""; DNS_SERVER=""; TENANT_CIDR="10.10.10.0/24"
 VIRT_TYPE=""; REGION_NAME="RegionOne"; PROVIDER_PHYSNET="physnet1"
 PROVIDER_BRIDGE="br-ex"; CONTROLLER_IP=""; REPO_URL=""
+RPM_SOURCE=""; RPM_BUNDLE=""; RPM_LOCK_FILE=""; BUILD_IMAGE=""; RPM_SET_EXPECTED=""
+# Which kind of compute node this run is making. compute-add without --local
+# is a REMOTE compute node (identity, database and queue live elsewhere);
+# compute-add --local adds nova-compute to this controller.
+REMOTE_COMPUTE=0; LOCAL_COMPUTE=0; CONTROLLER_RPM_SET=""; DEPLOY_ROLE=""
 # The defaults are the initial values, because _capture_defaults snapshots them
 # before any tier is applied. Keeping them here rather than in a separate
 # *_DEFAULT variable is what makes --check print the value that will be used.
@@ -639,7 +657,10 @@ IMAGE_NAME="cirros-0.6.3-x86_64"
 IMAGE_URL="https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img"
 IMAGE_SHA256="7d6355852aeb6dbcd191bcda7cd74f1536cfe5cbf8a10495a7283a8396e4b75b"
 IMAGE_FILE=""
-ENV_FILE="./hagistack.env"; CHECK_ONLY=0; SUBCOMMAND=""
+# Empty: load_env_file then looks in ./, beside this script, and in /etc/hagistack.
+# (It used to default to "./hagistack.env", which made a missing file fatal
+# and the search below unreachable.)
+ENV_FILE=""; CHECK_ONLY=0; SUBCOMMAND=""
 
 
 phase_done()      { [ -f "$STATE_DIR/$1.done" ]; }
@@ -1270,6 +1291,16 @@ phase_preflight() {
     _need_privilege
     _preflight_host
 
+    deploy_load
+    if [ "$LOCAL_COMPUTE" -eq 1 ]; then
+        # The controller already decided these; a local compute must not
+        # disagree with it.
+        [ -n "${DEPLOY[MGMT_IP]:-}" ] || die "$DEPLOYMENT_FILE has no MGMT_IP; is this host a hagistack controller?"
+        [ -z "$MGMT_IP" ] || [ "$MGMT_IP" = "${DEPLOY[MGMT_IP]}" ] \
+            || die "--mgmt-ip $MGMT_IP differs from this controller's ${DEPLOY[MGMT_IP]}"
+        MGMT_IP="${DEPLOY[MGMT_IP]}"
+        REGION_NAME="${DEPLOY[REGION_NAME]:-$REGION_NAME}"
+    fi
     if [ -z "$MGMT_IP" ]; then
         MGMT_IP="$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)"
         [ -n "$MGMT_IP" ] || die "could not autodetect MGMT_IP; pass --mgmt-ip"
@@ -1279,9 +1310,13 @@ phase_preflight() {
         log_ok "MGMT_IP $MGMT_IP"
     fi
 
-    if [ "$SUBCOMMAND" = "compute-add" ]; then
-        [ -n "$CONTROLLER_IP" ] || die "compute-add needs --controller-ip"
-        valid_ipv4 "$CONTROLLER_IP" || die "CONTROLLER_IP '$CONTROLLER_IP' is not a valid IPv4 address"
+    if [ "$LOCAL_COMPUTE" -eq 1 ]; then
+        [ -z "$CONTROLLER_IP" ] || die "--local and --controller-ip are mutually exclusive"
+        log_ok "local compute on this controller ($MGMT_IP)"
+    elif [ "$REMOTE_COMPUTE" -eq 1 ]; then
+        [ -n "$CONTROLLER_IP" ] || die "compute-add needs --controller-ip (or --local on the controller itself)"
+        valid_peer_ipv4 "$CONTROLLER_IP" || die "CONTROLLER_IP '$CONTROLLER_IP' is not a usable address of another machine"
+        [ "$CONTROLLER_IP" != "$MGMT_IP" ] || die "--controller-ip is this host's own address; use compute-add --local here"
         log_ok "CONTROLLER_IP $CONTROLLER_IP"
     else
         [ -n "$EXT_NIC" ]          || die "--ext-nic is required"
@@ -1300,6 +1335,8 @@ phase_preflight() {
         log_ok "provider network $PROVIDER_CIDR via $PROVIDER_GATEWAY, floating $FLOATING_START-$FLOATING_END"
     fi
     _preflight_virt
+    rpm_source_resolve
+    role_guard
 
     local free_mb free_gb
     free_gb="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
@@ -1309,6 +1346,556 @@ phase_preflight() {
     [ -n "$free_mb" ] && [ "$free_mb" -lt 7000 ] \
         && log_warn "only ${free_mb}MB of RAM; an all-in-one wants 8GB or more"
     log_ok "preflight complete"
+}
+
+# ---------------------------------------------------------------------------
+# RPM sources
+#
+# Rocky ships no OpenStack, so before anything is installed this shell needs a
+# repository of the 2026.1 RPMs. There are four ways to get one, chosen with
+# --rpm-source, and all of them end in the same place — a directory on this
+# host that has been verified and is then handed to dnf as a file:// repository
+# — so the OpenStack half of the shell does not know or care which was used.
+#
+#   github    download the RPM set published as a GitHub Release asset. The
+#             trust anchor is NOT a checksum file sitting next to the asset (an
+#             attacker who can replace one can replace the other): it is
+#             rpm-release.lock in this checkout, which pins the asset's SHA-256
+#             and the identity of the RPM set inside it. The default.
+#   build     build the RPMs from source with the existing build-rpms.sh, in a
+#             disposable Rocky 10.2 container on this host. Slow (hours), and
+#             needs no second machine: everything a build needs and a node must
+#             never have (builddep as root, RDO's trunk repositories) lives and
+#             dies with the container.
+#   bundle    a tarball of an already-verified set, made on another node with
+#             `hagistack rpm-bundle`. How a compute node reuses what its
+#             controller built instead of building again. The expected set
+#             identity comes from compute-secrets, i.e. from the controller.
+#   repo-url  an existing repository you run yourself (--repo-url), exactly as
+#             before. hagistack downloads and verifies nothing in this mode.
+#
+# A failure in one source never falls through to another: a failed download
+# does not quietly start a three-hour build, and a build failure does not go
+# looking for a download.
+#
+# The identity of an RPM set is the SHA-256 of its RPM-SHA256SUMS file: one
+# "<sha256>  <file name>" line per RPM, sorted by name (LC_ALL=C). Two nodes
+# with the same identity have byte-identical RPMs.
+# ---------------------------------------------------------------------------
+RPM_STORE="$HAGISTACK_STATE/rpms"
+RPM_BUILD_ROOT="$HAGISTACK_STATE/rpm-build"
+DEPLOYMENT_FILE="$HAGISTACK_ETC/deployment.env"
+DEFAULT_RPM_LOCK_FILE="$SELF_DIR/rpm-release.lock"
+RPM_VERIFIED_MARK=".hagistack-verified"
+RPM_SET_DIR=""
+RPM_SET_SHA256=""
+RPM_SOURCE_FROM_RECORD=0
+LOCK_KEYS="LOCK_FORMAT LOCK_STATUS RELEASE_TAG BASE_URL ASSET_NAME ASSET_SHA256 ASSET_SIZE RPM_SET_SHA256 RPM_COUNT MANIFEST_SHA256"
+DEPLOYMENT_KEYS="ROLE MGMT_IP REGION_NAME CONTROLLER_IP VIRT_TYPE RPM_SOURCE RPM_SET_SHA256 RPM_SET_DIR REPO_URL"
+# The build container. Pinned by digest: a tag is a name, and the image under a
+# name can change between two builds.
+DEFAULT_BUILD_IMAGE="quay.io/rockylinux/rockylinux:10.2@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834"
+
+sha256_of() { $SUDO sha256sum "$1" | cut -d' ' -f1; }
+
+# A KEY=VALUE file read as data, never sourced: the same character rules as
+# the config file, unknown and duplicate keys refused.
+parse_kv_file() {   # parse_kv_file <file> <assoc-array-name> <allowed keys>
+    local f="$1" allowed=" $3 " line key val lineno=0
+    local -n _kv="$2"
+    $SUDO test -r "$f" || die "cannot read $f"
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1)); line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] \
+            || die "$f line $lineno: not a KEY=VALUE line"
+        key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+        case "$allowed" in *" $key "*) ;; *) die "$f line $lineno: unknown key '$key'" ;; esac
+        [[ "$val" =~ $ENVFILE_VALUE_RE ]] \
+            || die "$f line $lineno: the value of '$key' contains characters that are not allowed"
+        [ -z "${_kv[$key]+set}" ] || die "$f line $lineno: duplicate key '$key'"
+        _kv[$key]="$val"
+    done < <($SUDO cat "$f")
+}
+
+# deployment.env: what this host IS (role, addresses, which RPM set it runs).
+# Written by hagistack, 0600, no secrets in it, but kept beside them.
+declare -A DEPLOY=()
+deploy_load() {
+    DEPLOY=()
+    $SUDO test -f "$DEPLOYMENT_FILE" || return 0
+    parse_kv_file "$DEPLOYMENT_FILE" DEPLOY "$DEPLOYMENT_KEYS"
+}
+deploy_set() {      # deploy_set KEY VALUE ...  (rewrites the file only on change)
+    deploy_load
+    while [ $# -ge 2 ]; do DEPLOY[$1]="$2"; shift 2; done
+    local tmp k; tmp="$(mktemp)"; chmod 0600 "$tmp"
+    { echo "# hagistack deployment record — written by hagistack, not a config file."
+      echo "# It says what this host is so that a later run cannot quietly change it."
+      for k in $DEPLOYMENT_KEYS; do
+          [ -n "${DEPLOY[$k]:-}" ] && printf '%s=%s\n' "$k" "${DEPLOY[$k]}"
+      done
+    } > "$tmp"
+    $SUDO install -d -m 0700 "$HAGISTACK_ETC"
+    if ! $SUDO cmp -s "$tmp" "$DEPLOYMENT_FILE" 2>/dev/null; then
+        # Owned by whoever runs this, which is root on a real run.
+        $SUDO install -m 0600 "$tmp" "$DEPLOYMENT_FILE"
+    fi
+    rm -f "$tmp"
+}
+
+# "<sha256>  <name>" for every *.rpm directly in <dir>, sorted by name.
+rpm_sums_of_dir() {
+    local d="$1" n
+    $SUDO find "$d" -maxdepth 1 -type f -name '*.rpm' -printf '%f\n' | LC_ALL=C sort \
+    | while IFS= read -r n; do
+        printf '%s  %s\n' "$($SUDO sha256sum "$d/$n" | cut -d' ' -f1)" "$n"
+    done
+}
+
+# Checks repodata against the files: every metadata file's checksum as
+# recorded in repomd.xml, every package in primary present with the recorded
+# checksum, and no RPM in the directory that primary does not list. Standard
+# library only, so it runs on a bare node.
+REPODATA_CHECK_PY='
+import gzip, hashlib, lzma, bz2, os, sys
+import xml.etree.ElementTree as ET
+repo = os.path.realpath(sys.argv[1])
+R = "{http://linux.duke.edu/metadata/repo}"
+C = "{http://linux.duke.edu/metadata/common}"
+def fail(msg):
+    print("repodata check: " + msg, file=sys.stderr); sys.exit(1)
+def digest(path, algo):
+    if algo not in ("sha256", "sha512"): fail("unsupported checksum type " + algo)
+    h = hashlib.new(algo)
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
+    return h.hexdigest()
+md = os.path.join(repo, "repodata")
+try:
+    root = ET.parse(os.path.join(md, "repomd.xml")).getroot()
+except Exception as e:
+    fail("repomd.xml unreadable: %s" % e)
+primary = None
+for data in root.findall(R + "data"):
+    loc = data.find(R + "location").get("href")
+    ck = data.find(R + "checksum")
+    path = os.path.realpath(os.path.join(repo, loc))
+    if os.path.dirname(path) != md: fail("metadata outside repodata/: " + loc)
+    if not os.path.isfile(path): fail("missing metadata file " + loc)
+    if digest(path, ck.get("type")) != ck.text.strip(): fail("checksum mismatch: " + loc)
+    if data.get("type") == "primary": primary = path
+if primary is None: fail("repomd.xml has no primary metadata")
+opener = {".gz": gzip.open, ".xz": lzma.open, ".bz2": bz2.open}.get(os.path.splitext(primary)[1])
+if opener is None: fail("primary metadata compression not readable here: " + os.path.basename(primary))
+with opener(primary, "rb") as f:
+    proot = ET.parse(f).getroot()
+listed = set()
+for pkg in proot.findall(C + "package"):
+    loc = pkg.find(C + "location").get("href")
+    ck = pkg.find(C + "checksum")
+    if "/" in loc or loc.startswith(".") or not loc.endswith(".rpm"):
+        fail("unexpected package location " + loc)
+    path = os.path.join(repo, loc)
+    if not os.path.isfile(path): fail("primary lists a missing package: " + loc)
+    if digest(path, ck.get("type")) != ck.text.strip(): fail("package checksum mismatch: " + loc)
+    if loc in listed: fail("package listed twice: " + loc)
+    listed.add(loc)
+present = {n for n in os.listdir(repo) if n.endswith(".rpm")}
+extra = sorted(present - listed)
+if extra: fail("RPMs not in the metadata: " + " ".join(extra[:5]))
+declared = proot.get("packages")
+if declared is not None and int(declared) != len(listed):
+    fail("primary declares %s packages but lists %d" % (declared, len(listed)))
+print(len(listed))
+'
+
+# rpm_verify_set <set-dir> [expected-identity]
+# A set directory holds RPM-SHA256SUMS and repo/ (the RPMs and repodata).
+# Prints the set identity on success; says why and returns 1 otherwise.
+# The first two checks alone: the files are exactly the listing, and the
+# listing is the expected set. Prints nothing; returns 1 with a reason.
+rpm_check_listing() {   # rpm_check_listing <set-dir> [expected-identity]
+    local d="$1" want="${2:-}" sums listed have
+    $SUDO test -f "$d/RPM-SHA256SUMS" || { log_error "$d/RPM-SHA256SUMS is missing"; return 1; }
+    sums="$(rpm_sums_of_dir "$d/repo")"
+    listed="$($SUDO cat "$d/RPM-SHA256SUMS")"
+    [ -n "$sums" ] || { log_error "$d/repo contains no RPMs"; return 1; }
+    if [ "$sums" != "$listed" ]; then
+        log_error "the RPMs in $d/repo do not match RPM-SHA256SUMS (missing, extra or altered files):"
+        diff <(printf '%s\n' "$listed") <(printf '%s\n' "$sums") | grep '^[<>]' | head -8 | sed 's/^/     /' >&2
+        return 1
+    fi
+    have="$(sha256_of "$d/RPM-SHA256SUMS")"
+    if [ -n "$want" ] && [ "$have" != "$want" ]; then
+        log_error "RPM set identity mismatch:"
+        log_error "  expected $want"
+        log_error "  got      $have"
+        return 1
+    fi
+}
+
+rpm_verify_set() {
+    local d="$1" want="${2:-}" sums listed have n bad=0 f
+    $SUDO test -f "$d/RPM-SHA256SUMS" || { log_error "$d/RPM-SHA256SUMS is missing"; return 1; }
+    $SUDO test -f "$d/repo/repodata/repomd.xml" || { log_error "$d/repo has no repodata"; return 1; }
+    sums="$(rpm_sums_of_dir "$d/repo")"
+    listed="$($SUDO cat "$d/RPM-SHA256SUMS")"
+    [ -n "$sums" ] || { log_error "$d/repo contains no RPMs"; return 1; }
+    if [ "$sums" != "$listed" ]; then
+        log_error "the RPMs in $d/repo do not match RPM-SHA256SUMS (missing, extra or altered files):"
+        diff <(printf '%s\n' "$listed") <(printf '%s\n' "$sums") | grep '^[<>]' | head -8 | sed 's/^/     /' >&2
+        return 1
+    fi
+    have="$(sha256_of "$d/RPM-SHA256SUMS")"
+    if [ -n "$want" ] && [ "$have" != "$want" ]; then
+        log_error "RPM set identity mismatch:"
+        log_error "  expected $want"
+        log_error "  got      $have"
+        return 1
+    fi
+    n="$($SUDO python3 -I -c "$REPODATA_CHECK_PY" "$d/repo")" || return 1
+    # rpm's own header and payload digests, so a file that is internally
+    # corrupt is caught even if it was corrupt when the listing was written.
+    while IFS= read -r f; do
+        $SUDO rpm -K --nosignature "$d/repo/$f" >/dev/null 2>&1 || { log_error "rpm -K failed: $f"; bad=1; }
+    done < <(printf '%s\n' "$sums" | awk '{print $2}')
+    [ "$bad" -eq 0 ] || return 1
+    log_ok "RPM set verified: $n RPMs, repodata consistent, identity ${have:0:16}…" >&2
+    printf '%s\n' "$have"
+}
+
+rpm_mark_verified() {   # rpm_mark_verified <set-dir> <identity> <source>
+    printf 'RPM_SET_SHA256=%s\nSOURCE=%s\nVERIFIED_AT=%s\n' "$2" "$3" "$(date -u +%FT%TZ)" \
+        | $SUDO tee "$1/$RPM_VERIFIED_MARK" >/dev/null
+}
+
+# A previously verified set is reused only if it still verifies, completely.
+rpm_try_cached() {      # rpm_try_cached <set-dir> [expected-identity] -> identity
+    local d="$1" want="${2:-}" marked
+    $SUDO test -f "$d/$RPM_VERIFIED_MARK" || return 1
+    marked="$($SUDO sed -n 's/^RPM_SET_SHA256=//p' "$d/$RPM_VERIFIED_MARK")"
+    [ -n "$want" ] || want="$marked"
+    [ "$marked" = "$want" ] || return 1
+    log_info "re-verifying the cached RPM set in $d" >&2
+    rpm_verify_set "$d" "$want"
+}
+
+# Unpack a release asset or bundle: a tar holding RPM-SHA256SUMS and repo/.
+# Members are checked BEFORE extraction — regular files only, nothing outside
+# those two names, no absolute path, no "..".
+TAR_CHECK_PY='
+import sys, tarfile, posixpath
+ok = 0
+with tarfile.open(sys.argv[1], "r:*") as t:
+    for m in t.getmembers():
+        n = m.name
+        if n.startswith("./"): n = n[2:]
+        if n in ("", "repo", "repo/repodata") and m.isdir(): continue
+        if not (m.isfile() or m.isdir()): sys.exit("not a regular file: " + m.name)
+        if n.startswith("/") or ".." in n.split("/") or posixpath.normpath(n) != n:
+            sys.exit("unsafe member name: " + m.name)
+        if m.isdir(): sys.exit("unexpected directory: " + m.name)
+        parts = n.split("/")
+        good = (n == "RPM-SHA256SUMS"
+                or (len(parts) == 2 and parts[0] == "repo" and parts[1].endswith(".rpm"))
+                or (len(parts) == 3 and parts[:2] == ["repo", "repodata"]))
+        if not good: sys.exit("unexpected member: " + m.name)
+        ok += 1
+print(ok)
+'
+rpm_unpack_tar() {      # rpm_unpack_tar <tar> <empty-dest-dir>
+    local tarf="$1" dest="$2" n
+    n="$($SUDO python3 -I -c "$TAR_CHECK_PY" "$tarf" 2>&1)" \
+        || { log_error "refusing to unpack $tarf: $n"; return 1; }
+    $SUDO tar -xf "$tarf" -C "$dest" --no-same-owner --no-same-permissions \
+        || { log_error "tar could not unpack $tarf"; return 1; }
+    $SUDO chmod -R u=rwX,go=rX "$dest"
+}
+
+# Move a freshly verified staging directory into place. A broken previous copy
+# is kept aside for inspection, never deleted.
+rpm_install_set() {     # rpm_install_set <staging-set> <final-set>
+    if $SUDO test -e "$2"; then
+        $SUDO mv "$2" "$2.broken.$(date -u +%Y%m%dT%H%M%SZ)"
+        log_warn "the previous copy of $2 did not verify and was moved aside"
+    fi
+    $SUDO mv "$1" "$2"
+}
+
+rpm_prepare_github() {
+    local lockf="${RPM_LOCK_FILE:-$DEFAULT_RPM_LOCK_FILE}"
+    local -A LOCK=()
+    parse_kv_file "$lockf" LOCK "$LOCK_KEYS"
+    [ "${LOCK[LOCK_FORMAT]:-}" = "1" ] || die "$lockf: unsupported LOCK_FORMAT '${LOCK[LOCK_FORMAT]:-}'"
+    if [ "${LOCK[LOCK_STATUS]:-}" != "published" ]; then
+        die "no published RPM release is pinned in $lockf (LOCK_STATUS=${LOCK[LOCK_STATUS]:-unset}).
+     This checkout does not point at a GitHub Release, so there is nothing to
+     download. Build the RPMs on this host instead:
+       --rpm-source build
+     or use a repository you already have:
+       --repo-url URL
+     Nothing was downloaded, and hagistack never switches to building by itself."
+    fi
+    local k
+    for k in RELEASE_TAG BASE_URL ASSET_NAME ASSET_SHA256 ASSET_SIZE RPM_SET_SHA256 RPM_COUNT MANIFEST_SHA256; do
+        [ -n "${LOCK[$k]:-}" ] || die "$lockf: $k is missing"
+    done
+    [[ "${LOCK[RELEASE_TAG]}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "$lockf: RELEASE_TAG is not a valid tag"
+    [[ "${LOCK[ASSET_NAME]}" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || die "$lockf: ASSET_NAME is not a valid file name"
+    valid_http_url "${LOCK[BASE_URL]}" || die "$lockf: BASE_URL is not an http(s) URL"
+    valid_sha256 "${LOCK[ASSET_SHA256]}" || die "$lockf: ASSET_SHA256 is not a SHA-256"
+    valid_sha256 "${LOCK[RPM_SET_SHA256]}" || die "$lockf: RPM_SET_SHA256 is not a SHA-256"
+    valid_sha256 "${LOCK[MANIFEST_SHA256]}" || die "$lockf: MANIFEST_SHA256 is not a SHA-256"
+    [[ "${LOCK[ASSET_SIZE]}" =~ ^[0-9]+$ ]] && [[ "${LOCK[RPM_COUNT]}" =~ ^[0-9]+$ ]] \
+        || die "$lockf: ASSET_SIZE and RPM_COUNT must be numbers"
+
+    # The release must have been built from the inputs this checkout pins;
+    # otherwise the shell and the RPMs disagree about what 2026.1 means.
+    local man; man="$(sha256_of "$SELF_DIR/gazpacho.manifest")"
+    [ "$man" = "${LOCK[MANIFEST_SHA256]}" ] || die "the pinned release was built from a different gazpacho.manifest.
+     release manifest ${LOCK[MANIFEST_SHA256]}
+     this checkout    $man
+     Use the Hagistack version that matches release ${LOCK[RELEASE_TAG]}."
+
+    local set_dir="$RPM_STORE/github-${LOCK[RELEASE_TAG]}-${LOCK[RPM_SET_SHA256]:0:16}"
+    log_info "release ${LOCK[RELEASE_TAG]}, asset ${LOCK[ASSET_NAME]} (pinned by $lockf)"
+    if RPM_SET_SHA256="$(rpm_try_cached "$set_dir" "${LOCK[RPM_SET_SHA256]}")"; then
+        log_ok "cached RPM set reused — not downloaded again"
+        RPM_SET_DIR="$set_dir"; return 0
+    fi
+
+    $SUDO install -d -m 0755 "$RPM_STORE"
+    local stg; stg="$($SUDO mktemp -d "$RPM_STORE/.staging.XXXXXX")"
+    local url="${LOCK[BASE_URL]%/}/${LOCK[RELEASE_TAG]}/${LOCK[ASSET_NAME]}"
+    log_info "downloading $url"
+    if ! $SUDO curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 30 -m 7200 \
+            -o "$stg/asset" "$url"; then
+        $SUDO rm -rf "$stg"
+        die "could not download $url
+     (HTTP error, missing release asset or no network). Nothing was installed.
+     hagistack does not fall back to building; re-run when the release is
+     reachable, or choose --rpm-source build yourself."
+    fi
+    local size have
+    size="$($SUDO stat -c %s "$stg/asset")"
+    have="$(sha256_of "$stg/asset")"
+    if [ "$size" != "${LOCK[ASSET_SIZE]}" ] || [ "$have" != "${LOCK[ASSET_SHA256]}" ]; then
+        $SUDO rm -rf "$stg"
+        die "the downloaded asset does not match the pinned release — deleted, not used.
+     expected ${LOCK[ASSET_SHA256]} (${LOCK[ASSET_SIZE]} bytes)
+     got      $have ($size bytes)"
+    fi
+    log_ok "asset matches the pinned SHA-256 and size"
+    $SUDO install -d -m 0755 "$stg/set"
+    rpm_unpack_tar "$stg/asset" "$stg/set" || { $SUDO rm -rf "$stg"; die "the release asset could not be unpacked safely"; }
+    local got
+    got="$(rpm_verify_set "$stg/set" "${LOCK[RPM_SET_SHA256]}")" \
+        || { $SUDO rm -rf "$stg"; die "the release asset failed verification; nothing was installed"; }
+    local count; count="$($SUDO find "$stg/set/repo" -maxdepth 1 -name '*.rpm' | wc -l)"
+    [ "$count" = "${LOCK[RPM_COUNT]}" ] \
+        || { $SUDO rm -rf "$stg"; die "the release holds $count RPMs; the lock says ${LOCK[RPM_COUNT]}"; }
+    rpm_mark_verified "$stg/set" "$got" "github:${LOCK[RELEASE_TAG]}"
+    rpm_install_set "$stg/set" "$set_dir"
+    $SUDO rm -rf "$stg"
+    RPM_SET_DIR="$set_dir"; RPM_SET_SHA256="$got"
+    log_ok "RPM set from release ${LOCK[RELEASE_TAG]} ready in $set_dir"
+}
+
+# Identity of the build inputs: every file in this checkout that decides what
+# the build produces. Same inputs, same work directory, so a re-run reuses the
+# finished result instead of building again.
+rpm_build_input_id() {
+    ( cd "$SELF_DIR" && find gazpacho.manifest build-rpms.sh build-in-container.sh \
+        spec-adapt spec-templates third-party -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
+        -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) | sha256sum | cut -d' ' -f1
+}
+
+rpm_prepare_build() {
+    local id; id="$(rpm_build_input_id)"
+    local root="$RPM_BUILD_ROOT/${id:0:16}"
+    local out="$root/out"
+    log_info "build inputs ${id:0:16}… (manifest, build scripts, spec rules, patches)"
+    if RPM_SET_SHA256="$(rpm_try_cached "$out")"; then
+        log_ok "these inputs were already built and the result still verifies — not rebuilt"
+        RPM_SET_DIR="$out"; return 0
+    fi
+
+    have podman || dnf_install "podman (for the disposable build container)" podman
+    local image="${BUILD_IMAGE:-$DEFAULT_BUILD_IMAGE}"
+    log_info "pulling the build image $image"
+    $SUDO podman pull -q "$image" >/dev/null || die "could not pull the build image $image"
+
+    $SUDO install -d -m 0755 "$root" "$root/build"
+    # A fresh output every attempt, so a half-finished earlier attempt cannot
+    # contribute files. /build is kept: it holds clones and tarballs, which are
+    # re-verified by build-rpms.sh against their pins before any use.
+    $SUDO rm -rf "$out"; $SUDO install -d -m 0755 "$out"
+    log_warn "building every RPM in gazpacho.manifest from source. This takes hours."
+    log_info "progress: $out/logs/pass1.log (and pass2.log if needed)"
+    # label=disable rather than :Z, so this checkout's SELinux labels are not
+    # rewritten. The checkout is mounted read-only.
+    if ! $SUDO podman run --rm --network host --security-opt label=disable \
+            -v "$SELF_DIR:/src:ro" -v "$root/build:/build" -v "$out:/out" \
+            "$image" bash /src/build-in-container.sh > "$root/container.log" 2>&1; then
+        tail -n 25 "$root/container.log" | sed 's/^/     /' >&2
+        die "the RPM build failed; see $root/container.log and $out/logs.
+     Nothing was installed. hagistack does not fall back to a download."
+    fi
+    tail -n 3 "$root/container.log" | sed 's/^/    /'
+    rpm_sums_of_dir "$out/repo" | $SUDO tee "$out/RPM-SHA256SUMS" >/dev/null
+    RPM_SET_SHA256="$(rpm_verify_set "$out")" || die "the freshly built RPM set did not verify"
+    rpm_mark_verified "$out" "$RPM_SET_SHA256" "build:${id:0:16}"
+    RPM_SET_DIR="$out"
+    log_ok "RPM set built from source and verified: $out"
+}
+
+rpm_prepare_bundle() {
+    local want="${RPM_SET_EXPECTED:-}"
+    [ -n "$want" ] || die "--rpm-source bundle needs the identity of the set to expect.
+     It is in compute-secrets (RPM_SET_SHA256), or pass --rpm-set-sha256."
+    valid_sha256 "$want" || die "the expected RPM set identity is not a SHA-256"
+    local set_dir="$RPM_STORE/bundle-${want:0:16}"
+    if RPM_SET_SHA256="$(rpm_try_cached "$set_dir" "$want")"; then
+        log_ok "cached RPM set reused"; RPM_SET_DIR="$set_dir"; return 0
+    fi
+    [ -n "$RPM_BUNDLE" ] || die "the RPM set this host was deployed from no longer verifies, and no
+     bundle was given to replace it. Pass --rpm-bundle FILE (from the controller's
+     'hagistack rpm-bundle'). Nothing was installed."
+    $SUDO test -f "$RPM_BUNDLE" || die "the bundle $RPM_BUNDLE does not exist"
+    $SUDO install -d -m 0755 "$RPM_STORE"
+    local stg; stg="$($SUDO mktemp -d "$RPM_STORE/.staging.XXXXXX")"
+    $SUDO install -d -m 0755 "$stg/set"
+    rpm_unpack_tar "$RPM_BUNDLE" "$stg/set" || { $SUDO rm -rf "$stg"; die "the bundle could not be unpacked safely"; }
+    # The set identity covers the RPMs, not the repository metadata, and a
+    # bundle (unlike a release asset) has no pin over its whole content. So the
+    # metadata that came with it is not trusted or even parsed: it is thrown
+    # away and generated here, from the RPMs, after their identity is checked.
+    $SUDO rm -rf "$stg/set/repo/repodata"
+    rpm_check_listing "$stg/set" "$want" \
+        || { $SUDO rm -rf "$stg"; die "the bundle is not the RPM set the controller runs; nothing was installed"; }
+    have createrepo_c || dnf_install "createrepo_c (to index the bundle locally)" createrepo_c
+    $SUDO createrepo_c --quiet --general-compress-type=gz "$stg/set/repo" \
+        || { $SUDO rm -rf "$stg"; die "createrepo_c could not index the bundle"; }
+    local got
+    got="$(rpm_verify_set "$stg/set" "$want")" \
+        || { $SUDO rm -rf "$stg"; die "the bundle is not the RPM set the controller runs; nothing was installed"; }
+    rpm_mark_verified "$stg/set" "$got" "bundle"
+    rpm_install_set "$stg/set" "$set_dir"
+    $SUDO rm -rf "$stg"
+    RPM_SET_DIR="$set_dir"; RPM_SET_SHA256="$got"
+    log_ok "RPM bundle verified and installed in $set_dir"
+}
+
+# Settle which source is used, before anything is changed. Runs in preflight,
+# so --check reports it too.
+rpm_source_resolve() {
+    deploy_load
+    if [ -z "$RPM_SOURCE" ]; then
+        if [ -n "$REPO_URL" ]; then RPM_SOURCE="repo-url"
+        elif [ -n "$RPM_BUNDLE" ]; then RPM_SOURCE="bundle"
+        elif [ -n "${DEPLOY[RPM_SOURCE]:-}" ]; then
+            # A re-run, or compute-add --local: keep what this host already uses.
+            RPM_SOURCE="${DEPLOY[RPM_SOURCE]}"
+            RPM_SOURCE_FROM_RECORD=1
+            [ "$RPM_SOURCE" = "repo-url" ] && REPO_URL="${DEPLOY[REPO_URL]:-}"
+            log_info "RPM source taken from $DEPLOYMENT_FILE: $RPM_SOURCE"
+        else RPM_SOURCE="github"
+        fi
+    fi
+    case "$RPM_SOURCE" in
+        github|build)
+            [ -z "$REPO_URL" ] || die "--repo-url cannot be combined with --rpm-source $RPM_SOURCE"
+            [ -z "$RPM_BUNDLE" ] || die "--rpm-bundle needs --rpm-source bundle" ;;
+        bundle)
+            # A re-run of a bundle-deployed host re-uses its recorded set and
+            # needs no bundle file; one is asked for only if that set no longer
+            # verifies (see rpm_prepare_bundle).
+            if [ -n "$RPM_BUNDLE" ]; then
+                valid_abs_path "$RPM_BUNDLE" || die "--rpm-bundle must be an absolute path without '..'"
+            elif [ "$RPM_SOURCE_FROM_RECORD" -ne 1 ]; then
+                die "--rpm-source bundle needs --rpm-bundle FILE"
+            fi
+            [ -z "$REPO_URL" ] || die "--repo-url cannot be combined with --rpm-source bundle" ;;
+        repo-url)
+            [ -n "$REPO_URL" ] || die "--rpm-source repo-url needs --repo-url URL"
+            valid_repo_url "$REPO_URL" || die "--repo-url must be http(s):// or file:/// with no unusual characters" ;;
+        *) die "--rpm-source must be one of: github, build, bundle, repo-url (got '$RPM_SOURCE')" ;;
+    esac
+    if [ -n "$RPM_LOCK_FILE" ]; then
+        [ "$RPM_SOURCE" = "github" ] || die "--rpm-lock-file only applies to --rpm-source github"
+        valid_abs_path "$RPM_LOCK_FILE" || die "--rpm-lock-file must be an absolute path"
+    fi
+    if [ -n "$BUILD_IMAGE" ]; then
+        [ "$RPM_SOURCE" = "build" ] || die "--build-image only applies to --rpm-source build"
+        [[ "$BUILD_IMAGE" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]] \
+            || die "--build-image must be pinned by digest: NAME@sha256:<64 hex>"
+    fi
+    log_ok "RPM source: $RPM_SOURCE"
+}
+
+# Nodes of one cloud run one RPM set, and a host never changes set by accident.
+rpm_guard_consistency() {
+    local recorded="${DEPLOY[RPM_SET_SHA256]:-}"
+    if [ -n "$recorded" ] && [ "$recorded" != "$RPM_SET_SHA256" ]; then
+        die "this host was deployed from RPM set ${recorded:0:16}… and the prepared set is ${RPM_SET_SHA256:0:16}….
+     Switching the package set of a running cloud is an upgrade, and hagistack
+     does not do upgrades implicitly. Nothing was installed or changed."
+    fi
+    if [ "$REMOTE_COMPUTE" -eq 1 ]; then
+        local want="${CONTROLLER_RPM_SET:-}"
+        if [ -z "$want" ]; then
+            log_warn "compute-secrets carries no RPM set identity (made by an older hagistack);"
+            log_warn "  this node cannot prove it runs the controller's RPMs"
+        elif [ "$want" = "repo-url" ] || [ "$RPM_SET_SHA256" = "repo-url" ]; then
+            [ "$want" = "$RPM_SET_SHA256" ] \
+                || die "the controller and this node use different kinds of RPM source ($want vs $RPM_SET_SHA256)"
+            log_warn "both nodes use --repo-url: hagistack cannot verify they install the same RPMs"
+        elif [ "$want" != "$RPM_SET_SHA256" ]; then
+            die "this node's RPM set is not the controller's.
+     controller ${want}
+     this node  ${RPM_SET_SHA256}
+     Use the controller's set: on the controller
+       sudo hagistack rpm-bundle --output /root/hagistack-rpms.tar
+     copy it here, then  --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar"
+        else
+            log_ok "this node's RPM set is the controller's (${want:0:16}…)"
+        fi
+    fi
+}
+
+phase_rpm_source() {
+    log_step "RPM source ($RPM_SOURCE)"
+    # A host that is already deployed keeps using the set it was deployed from,
+    # as long as it still verifies: a re-run (or compute-add --local) never
+    # downloads or rebuilds because the checkout around it changed.
+    if [ "$RPM_SOURCE" != "repo-url" ] && [ "${DEPLOY[RPM_SOURCE]:-}" = "$RPM_SOURCE" ] \
+       && [ -n "${DEPLOY[RPM_SET_DIR]:-}" ] \
+       && RPM_SET_SHA256="$(rpm_try_cached "${DEPLOY[RPM_SET_DIR]}" "${DEPLOY[RPM_SET_SHA256]:-}")"; then
+        RPM_SET_DIR="${DEPLOY[RPM_SET_DIR]}"
+        log_ok "re-using the RPM set this host was deployed from (verified again, not fetched or built)"
+        REPO_URL="file://$RPM_SET_DIR/repo"
+        rpm_guard_consistency
+        phase_mark_done rpm_source
+        return 0
+    fi
+    case "$RPM_SOURCE" in
+        repo-url)
+            RPM_SET_SHA256="repo-url"; RPM_SET_DIR=""
+            log_ok "using your repository $REPO_URL — hagistack downloads and verifies nothing in this mode" ;;
+        github) rpm_prepare_github ;;
+        build)  rpm_prepare_build ;;
+        bundle) rpm_prepare_bundle ;;
+    esac
+    [ "$RPM_SOURCE" = "repo-url" ] || REPO_URL="file://$RPM_SET_DIR/repo"
+    rpm_guard_consistency
+    phase_mark_done rpm_source
+}
+
+# Record the set only once the packages from it are on the host.
+rpm_record_deployed() {
+    deploy_set RPM_SOURCE "$RPM_SOURCE" RPM_SET_SHA256 "$RPM_SET_SHA256" \
+               RPM_SET_DIR "$RPM_SET_DIR" REPO_URL "$REPO_URL"
 }
 
 # ---------------------------------------------------------------------------
@@ -1395,11 +1982,7 @@ EOF
     fi
 
     # The 2026.1 RPMs themselves, built by ../rocky10.2/build-rpms.sh.
-    [ -n "$REPO_URL" ] || die "--repo-url is required on Rocky.
-     There is no distribution OpenStack here and no published 2026.1 for EL10.
-     Point it at the output of build-rpms.sh, e.g.
-       --repo-url file:///opt/hagistack-repo
-       --repo-url https://your.host/hagistack-gazpacho/"
+    [ -n "$REPO_URL" ] || die "internal: no 2026.1 repository was prepared (phase_rpm_source did not run)"
     local ours="/etc/yum.repos.d/hagistack-gazpacho.repo"
     local want
     want="$(cat <<EOF
@@ -1459,7 +2042,7 @@ phase_secrets() {
     if [ -f "$SECRETS_FILE" ]; then
         log_ok "$SECRETS_FILE exists; existing secrets are reused, never rotated"
     else
-        if [ "$SUBCOMMAND" = "compute-add" ]; then
+        if [ "$REMOTE_COMPUTE" -eq 1 ]; then
             die "$SECRETS_FILE does not exist.
      compute-add NEVER invents secrets: a compute node that made up its own
      RabbitMQ password could not talk to anything. On the controller run
@@ -1482,13 +2065,19 @@ phase_secrets() {
         case "$line" in ''|\#*) continue ;; esac
         k="${line%%=*}"; v="${line#*=}"
         case " $SECRET_KEYS " in *" $k "*) printf -v "$k" '%s' "$v" ;; esac
+        # Not a secret: the identity of the RPM set the controller runs, so a
+        # compute node can refuse to join with different packages.
+        [ "$k" = "RPM_SET_SHA256" ] && CONTROLLER_RPM_SET="$v"
     done < <($SUDO cat "$SECRETS_FILE")
     for k in $SECRET_KEYS; do
-        if [ "$SUBCOMMAND" = "compute-add" ]; then
+        if [ "$REMOTE_COMPUTE" -eq 1 ]; then
             case " $COMPUTE_SECRET_KEYS " in *" $k "*) ;; *) continue ;; esac
         fi
         [ -n "${!k:-}" ] || die "$SECRETS_FILE is missing $k"
     done
+    if [ "$REMOTE_COMPUTE" -eq 1 ] && [ "$RPM_SOURCE" = "bundle" ] && [ -z "$RPM_SET_EXPECTED" ]; then
+        RPM_SET_EXPECTED="$CONTROLLER_RPM_SET"
+    fi
     log_ok "secrets loaded"
 }
 
@@ -1507,6 +2096,9 @@ CONTROLLER_PKGS="openstack-keystone openstack-glance openstack-placement-api
                  mariadb-server rabbitmq-server memcached
                  openvswitch3.5 ovn26.03 ovn26.03-central ovn26.03-host
                  libvirt qemu-kvm crudini"
+# Controller-only: everything except the hypervisor. ovn-host stays, because
+# the controller is the gateway chassis for router external gateways.
+CONTROLLER_ONLY_PKGS="$(printf '%s\n' $CONTROLLER_PKGS | grep -vxE 'openstack-nova-compute|libvirt|qemu-kvm' | tr '\n' ' ')"
 COMPUTE_PKGS="openstack-nova-compute openstack-neutron-ovn-metadata-agent
               openvswitch3.5 ovn26.03 ovn26.03-host libvirt qemu-kvm"
 
@@ -1526,9 +2118,18 @@ dnf_install() {
 
 phase_packages() {
     log_step "packages"
-    local pkgs="$CONTROLLER_PKGS"
-    [ "$SUBCOMMAND" = "compute-add" ] && pkgs="$COMPUTE_PKGS"
-    dnf_install "$([ "$SUBCOMMAND" = "compute-add" ] && echo 'compute-node packages' || echo 'the OpenStack 2026.1 package set')" $pkgs
+    local pkgs what
+    case "$DEPLOY_ROLE" in
+        controller) pkgs="$CONTROLLER_ONLY_PKGS"; what="the controller package set (no hypervisor)" ;;
+        compute)    pkgs="$COMPUTE_PKGS";         what="compute-node packages" ;;
+        *)          pkgs="$CONTROLLER_PKGS";      what="the OpenStack 2026.1 package set" ;;
+    esac
+    [ "$LOCAL_COMPUTE" -eq 1 ] && { pkgs="$COMPUTE_PKGS"; what="the hypervisor packages for this controller"; }
+    dnf_install "$what" $pkgs
+    # From here on this host runs packages from this RPM set, and says so.
+    rpm_record_deployed
+    deploy_set ROLE "$DEPLOY_ROLE" MGMT_IP "$MGMT_IP" REGION_NAME "$REGION_NAME" \
+               VIRT_TYPE "$VIRT_TYPE" CONTROLLER_IP "$CONTROLLER_IP"
 
     # Say what was actually installed, from the RPM database, and prove that the
     # OpenStack half came from the 2026.1 repository rather than from anywhere
@@ -1861,7 +2462,7 @@ phase_ovn() {
     wait_for 60 "Open vSwitch" ovs_ready || die "ovs-vsctl does not answer"
     log_ok "Open vSwitch $(ovs_vsctl --version 2>/dev/null | head -1 | awk '{print $NF}') running"
 
-    if [ "$SUBCOMMAND" != "compute-add" ]; then
+    if [ "$REMOTE_COMPUTE" -eq 0 ]; then
         service_start_enable ovn-northd
         wait_for 60 "the OVN northbound database" ovn_nb_ready || die "ovn-nbctl does not answer"
         wait_for 60 "the OVN southbound database" ovn_sb_ready || die "ovn-sbctl does not answer"
@@ -1873,14 +2474,14 @@ phase_ovn() {
     fi
 
     local sb_remote="tcp:${MGMT_IP}:${OVN_SB_PORT}"
-    [ "$SUBCOMMAND" = "compute-add" ] && sb_remote="tcp:${CONTROLLER_IP}:${OVN_SB_PORT}"
+    [ "$REMOTE_COMPUTE" -eq 1 ] && sb_remote="tcp:${CONTROLLER_IP}:${OVN_SB_PORT}"
 
     ovs_vsctl set open . external-ids:ovn-remote="$sb_remote"
     ovs_vsctl set open . external-ids:ovn-encap-type=geneve
     ovs_vsctl set open . external-ids:ovn-encap-ip="$MGMT_IP"
     ovs_vsctl set open . external-ids:system-id="$OS_HOSTNAME"
     ovs_vsctl set open . external-ids:hostname="$OS_HOSTNAME"
-    if [ "$SUBCOMMAND" != "compute-add" ]; then
+    if [ "$REMOTE_COMPUTE" -eq 0 ]; then
         ovs_vsctl set open . external-ids:ovn-cms-options=enable-chassis-as-gw
         ovs_vsctl --may-exist add-br "$PROVIDER_BRIDGE"
         ovs_vsctl set open . external-ids:ovn-bridge-mappings="${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}"
@@ -2156,10 +2757,10 @@ phase_nova_compute() {
         || { note_skip nova_compute "openstack-nova-compute is not running; see journalctl"; return 0; }
     log_ok "nova-compute running (virt_type=$VIRT_TYPE)"
 
-    if [ "$SUBCOMMAND" != "compute-add" ]; then
+    if [ "$REMOTE_COMPUTE" -eq 0 ]; then
         wait_for 180 "this hypervisor to register" bash -c '
             set -a; . /etc/hagistack/admin-openrc; set +a
-            openstack compute service list --service nova-compute -f value -c State 2>/dev/null | grep -q up' \
+            openstack compute service list --service nova-compute --host "$1" -f value -c State 2>/dev/null | grep -q up' _ "$OS_HOSTNAME" \
             || { note_skip nova_compute "nova-compute is running but never registered"; return 0; }
         nova_manage cell_v2 discover_hosts --verbose >/dev/null 2>&1 || true
         log_ok "hypervisor registered and mapped into a cell"
@@ -2515,7 +3116,11 @@ print_banner() {
         printf ' %severy phase completed%s\n' "$C_GRN" "$C_RESET"
     fi
     echo
-    echo " $TARGET_RELEASE on $TARGET_OS"
+    echo " $TARGET_RELEASE on $TARGET_OS — this host: $DEPLOY_ROLE"
+    case "$RPM_SOURCE" in
+        repo-url) echo " RPMs       : your repository $REPO_URL (not verified by hagistack)" ;;
+        *)        echo " RPMs       : $RPM_SOURCE, set ${RPM_SET_SHA256:0:16}… in $RPM_SET_DIR" ;;
+    esac
     case "$SELINUX_ACTION" in
       permissive)
         printf ' %sSELinux is PERMISSIVE%s (verified with getenforce) — the stated scope of\n this demo. Enforcing is out of scope; openstack-selinux is not available\n in a single-release repository.\n' "$C_YEL" "$C_RESET" ;;
@@ -2523,21 +3128,35 @@ print_banner() {
         printf ' %sSELinux is DISABLED on this host%s — NOT the configuration this shell was\n verified in, and not the same as permissive. Reported, not corrected.\n' "$C_YEL" "$C_RESET" ;;
     esac
     echo
-    if [ "$SUBCOMMAND" = "all-in-one" ]; then
+    if [ "$REMOTE_COMPUTE" -eq 0 ]; then
         echo " Credentials: $HAGISTACK_ETC/admin-openrc (mode 0600)"
         if phase_done horizon; then
             echo " Dashboard  : http://$MGMT_IP$HORIZON_URL_PATH/   (user: admin)"
             echo "              the admin password is in admin-openrc; it is never printed here"
         fi
         echo
-        echo " Boot a guest to find out whether any of this actually works:"
-        echo "   . $HAGISTACK_ETC/admin-openrc"
-        echo "   openstack server create --flavor m1.tiny --image ${IMAGE_NAME} \\"
-        echo "       --network hagistack-tenant --key-name hagistack-key demo1"
+        if [ "$DEPLOY_ROLE" = "controller" ]; then
+            echo " This is a controller with NO hypervisor: guests cannot boot until a"
+            echo " compute node exists. That is expected. Add one:"
+            echo "   on this host : sudo hagistack compute-add --local"
+        else
+            echo " Boot a guest to find out whether any of this actually works:"
+            echo "   . $HAGISTACK_ETC/admin-openrc"
+            echo "   openstack server create --flavor m1.tiny --image ${IMAGE_NAME} \\"
+            echo "       --network hagistack-tenant --key-name hagistack-key demo1"
+        fi
         echo
-        echo " Add a compute node:"
+        echo " Add a compute node on another host:"
         echo "   here      : sudo hagistack compute-secrets > compute-secrets.env"
-        echo "   on node2  : sudo hagistack compute-add --controller-ip $MGMT_IP --repo-url $REPO_URL"
+        if [ "$RPM_SOURCE" = "build" ] || [ "$RPM_SOURCE" = "bundle" ]; then
+            echo "               sudo hagistack rpm-bundle --output /root/hagistack-rpms.tar"
+            echo "   on node2  : sudo hagistack compute-add --controller-ip $MGMT_IP \\"
+            echo "                   --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar"
+        elif [ "$RPM_SOURCE" = "repo-url" ]; then
+            echo "   on node2  : sudo hagistack compute-add --controller-ip $MGMT_IP --repo-url $REPO_URL"
+        else
+            echo "   on node2  : sudo hagistack compute-add --controller-ip $MGMT_IP"
+        fi
         echo "   back here : sudo hagistack discover-hosts"
     fi
     echo " $rule"
@@ -2545,10 +3164,33 @@ print_banner() {
     return 0
 }
 
-cmd_all_in_one() {
-    SUBCOMMAND="all-in-one"
-    phase_preflight
-    [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+# What each command may do to a host that hagistack has already deployed.
+# The rule is that nothing ever silently changes what a host is:
+#   controller  -> all-in-one (by `all-in-one` or `compute-add --local`): allowed,
+#                  it only adds the hypervisor
+#   anything else that changes the role: refused
+role_guard() {
+    local cur="${DEPLOY[ROLE]:-}"
+    case "$SUBCOMMAND:$LOCAL_COMPUTE:$cur" in
+        *:*:)                          [ "$LOCAL_COMPUTE" -eq 0 ] \
+                                           || die "compute-add --local runs on a hagistack controller; this host has no deployment record ($DEPLOYMENT_FILE)" ;;
+        all-in-one:0:all-in-one|all-in-one:0:controller) ;;
+        controller:0:controller) ;;
+        controller:0:all-in-one)       die "this host is already all-in-one (it runs nova-compute).
+     hagistack does not remove a hypervisor; 'controller' would leave it running
+     while reporting a controller-only host." ;;
+        compute-add:1:controller|compute-add:1:all-in-one) ;;
+        compute-add:0:compute) ;;
+        compute-add:0:*)               die "this host is a hagistack $cur. A remote compute node must be a separate host;
+     to add a hypervisor HERE use: sudo hagistack compute-add --local" ;;
+        *:*:compute)                   die "this host is a hagistack compute node; refusing to turn it into a $SUBCOMMAND" ;;
+        *)                             die "refusing: '$SUBCOMMAND' on a host recorded as '$cur' ($DEPLOYMENT_FILE)" ;;
+    esac
+    [ -z "$cur" ] || log_ok "deployment record: this host is '$cur'"
+}
+
+_deploy_common_controller() {
+    phase_rpm_source
     phase_repos
     phase_selinux
     phase_secrets
@@ -2562,7 +3204,26 @@ cmd_all_in_one() {
     phase_ovn
     phase_neutron
     phase_nova
+}
+
+cmd_all_in_one() {
+    SUBCOMMAND="all-in-one"; DEPLOY_ROLE="all-in-one"
+    phase_preflight
+    [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+    _deploy_common_controller
     phase_nova_compute
+    phase_bootstrap_resources
+    phase_horizon
+    print_banner
+}
+
+cmd_controller() {
+    SUBCOMMAND="controller"; DEPLOY_ROLE="controller"
+    phase_preflight
+    [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+    _deploy_common_controller
+    # No nova-compute here, on purpose. Nova API, scheduler and conductor run;
+    # a guest cannot be scheduled until a compute node registers.
     phase_bootstrap_resources
     phase_horizon
     print_banner
@@ -2570,12 +3231,29 @@ cmd_all_in_one() {
 
 cmd_compute_add() {
     SUBCOMMAND="compute-add"
+    if [ "$LOCAL_COMPUTE" -eq 1 ]; then
+        REMOTE_COMPUTE=0; DEPLOY_ROLE="all-in-one"
+        phase_preflight
+        [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
+        # The controller is left exactly as it is: no configuration phase of
+        # the controller is run again. nova.conf already carries the compute
+        # settings (driver, virt_type) because the controller wrote them.
+        phase_rpm_source
+        phase_repos
+        phase_selinux
+        phase_packages
+        phase_nova_compute
+        print_banner
+        return
+    fi
+    REMOTE_COMPUTE=1; DEPLOY_ROLE="compute"
     phase_preflight
     [ "$CHECK_ONLY" -eq 1 ] && { print_resolved_config; return 0; }
-    phase_repos
-    phase_selinux
     phase_secrets
     phase_compute_preflight
+    phase_rpm_source
+    phase_repos
+    phase_selinux
     phase_packages
     phase_ovn
     phase_compute_nova
@@ -2583,11 +3261,50 @@ cmd_compute_add() {
     print_banner
 }
 
+# Prepare (download/build/unpack and verify) the RPM set without installing
+# anything. Useful to start a long source build ahead of time; a later
+# all-in-one/controller run reuses the result.
+cmd_rpm_prepare() {
+    _need_privilege
+    log_step "preflight (RPM preparation only)"
+    _preflight_host
+    rpm_source_resolve
+    if [ "$RPM_SOURCE" = "bundle" ] && [ -z "$RPM_SET_EXPECTED" ]; then
+        die "--rpm-source bundle needs --rpm-set-sha256 here (there is no compute-secrets to read it from)"
+    fi
+    [ "$RPM_SOURCE" != "repo-url" ] || die "rpm-prepare has nothing to prepare for --repo-url"
+    phase_rpm_source
+    echo
+    echo "RPM_SET_SHA256=$RPM_SET_SHA256"
+    echo "RPM_SET_DIR=$RPM_SET_DIR"
+}
+
+# Write the RPM set this host was deployed from as a tarball, for compute nodes.
+cmd_rpm_bundle() {
+    _need_privilege
+    [ -n "$BUNDLE_OUTPUT" ] || die "rpm-bundle needs --output FILE"
+    valid_abs_path "$BUNDLE_OUTPUT" || die "--output must be an absolute path without '..'"
+    $SUDO test -e "$BUNDLE_OUTPUT" && die "$BUNDLE_OUTPUT already exists; refusing to overwrite it"
+    deploy_load
+    local d="${DEPLOY[RPM_SET_DIR]:-}" want="${DEPLOY[RPM_SET_SHA256]:-}"
+    [ -n "$d" ] && [ -n "$want" ] && [ "$want" != "repo-url" ] \
+        || die "this host has no hagistack-managed RPM set to bundle (deployed with --repo-url, or not deployed)"
+    rpm_verify_set "$d" "$want" >/dev/null || die "the deployed RPM set no longer verifies; not bundling it"
+    local tmp; tmp="$($SUDO mktemp "$(dirname "$BUNDLE_OUTPUT")/.rpm-bundle.XXXXXX")"
+    $SUDO tar -cf "$tmp" -C "$d" --owner=0 --group=0 --numeric-owner RPM-SHA256SUMS repo \
+        || { $SUDO rm -f "$tmp"; die "could not write the bundle"; }
+    $SUDO chmod 0644 "$tmp"; $SUDO mv "$tmp" "$BUNDLE_OUTPUT"
+    log_ok "wrote $BUNDLE_OUTPUT ($($SUDO stat -c %s "$BUNDLE_OUTPUT") bytes)"
+    echo "RPM_SET_SHA256=$want"
+    log_info "compute-secrets carries this identity; compute-add verifies the bundle against it"
+}
+
 cmd_compute_secrets() {
     _need_privilege
     [ -t 1 ] && die "refusing to print secrets to a terminal. Redirect to a file:
        sudo hagistack compute-secrets > compute-secrets.env"
-    [ -f "$SECRETS_FILE" ] || die "$SECRETS_FILE does not exist; run all-in-one first"
+    [ -f "$SECRETS_FILE" ] || die "$SECRETS_FILE does not exist; run all-in-one or controller first"
+    deploy_load
     # Diagnostics go to stderr, because stdout IS the credentials file.
     log_info "reading $SECRETS_FILE" >&2
     echo "# hagistack compute-node credentials — generated $(date -u +%FT%TZ)"
@@ -2599,6 +3316,12 @@ cmd_compute_secrets() {
         k="${line%%=*}"; v="${line#*=}"
         case " $COMPUTE_SECRET_KEYS " in *" $k "*) printf '%s=%s\n' "$k" "$v" ;; esac
     done < <($SUDO cat "$SECRETS_FILE")
+    # Not a secret: which RPM set the controller runs, so a compute node can
+    # refuse to join with different packages.
+    if [ -n "${DEPLOY[RPM_SET_SHA256]:-}" ]; then
+        echo "# The controller's RPM set (not a secret); compute-add refuses any other."
+        printf 'RPM_SET_SHA256=%s\n' "${DEPLOY[RPM_SET_SHA256]}"
+    fi
 }
 
 cmd_discover_hosts() {
@@ -2612,9 +3335,12 @@ cmd_discover_hosts() {
 
 cmd_status() {
     _need_privilege
+    deploy_load
     echo "hagistack $HAGISTACK_VERSION"
     echo "  stage        : $HAGISTACK_STAGE"
     echo "  target       : $TARGET_RELEASE on $TARGET_OS"
+    echo "  role         : ${DEPLOY[ROLE]:-not deployed}"
+    echo "  rpm source   : ${DEPLOY[RPM_SOURCE]:--}  set ${DEPLOY[RPM_SET_SHA256]:--}"
     echo "  unverified   : $UNVERIFIED_ITEMS"
     local sel_now sel_cfg sel_act
     sel_now="$(have getenforce && getenforce 2>/dev/null || echo n/a)"
@@ -2644,27 +3370,37 @@ hagistack $HAGISTACK_VERSION — $TARGET_RELEASE on $TARGET_OS
 
   STAGE: $HAGISTACK_STAGE
 
-  Rocky does not ship OpenStack and nobody publishes 2026.1 for EL10, so the
-  RPMs have to be built first, from the released tarballs with every input
-  pinned:
-
-      cd rocky10.2 && ./build-rpms.sh --manifest gazpacho.manifest
-
-  Then point this shell at that output with --repo-url.
-
 usage:
   hagistack all-in-one   [options]   controller + compute on one host
-  hagistack compute-add  [options]   this host becomes an extra compute node
+  hagistack controller   [options]   controller services only, no hypervisor
+  hagistack compute-add --local      add nova-compute to THIS controller
+  hagistack compute-add --controller-ip IP [options]
+                                     this host becomes an extra compute node
   hagistack compute-secrets          (controller) emit only the credentials a
                                      compute node needs; refuses a terminal
   hagistack discover-hosts           (controller) map new compute hosts into a cell
-  hagistack status                   stage, phases, SELinux and service state
+  hagistack rpm-prepare  [rpm options]  prepare and verify the RPM set only
+  hagistack rpm-bundle --output FILE (controller) write this host's RPM set as a
+                                     tarball for compute nodes
+  hagistack status                   role, RPM set, phases, SELinux and services
 
-required for both:
-  --repo-url URL           the 2026.1 repository built by build-rpms.sh
-                           e.g. file:///opt/hagistack-repo
+where the RPMs come from (Rocky ships no OpenStack):
+  --rpm-source github      download the release pinned in rpm-release.lock and
+                           verify it against that pin                 (default)
+  --rpm-source build       build every RPM from source with build-rpms.sh, in
+                           a disposable container on this host (takes hours)
+  --rpm-source bundle      use a tarball made by 'hagistack rpm-bundle'
+    --rpm-bundle FILE        the tarball
+    --rpm-set-sha256 HEX     expected set identity (read from compute-secrets
+                             when omitted on compute-add)
+  --rpm-source repo-url    a repository you run yourself (same as --repo-url)
+    --repo-url URL           http(s)://... or file:///path
+  --rpm-lock-file PATH     another lock file (testing a mirror)   [github only]
+  --build-image REF@sha256:...  another pinned build image         [build only]
+  A failed download never starts a build, and a failed build never downloads.
+  A re-run reuses an already verified set; nothing is fetched or built twice.
 
-options for all-in-one:
+options for all-in-one and controller:
   --ext-nic NAME           provider/external interface            (required)
   --provider-cidr CIDR     external network, e.g. 172.24.4.0/24   (required)
   --provider-gateway IP    gateway on that network                (required)
@@ -2675,9 +3411,10 @@ options for all-in-one:
   --image-name/--image-url/--image-sha256/--image-file
 
 options for compute-add:
-  --controller-ip IP       the controller's management address    (required)
+  --controller-ip IP       the controller's management address (remote compute)
+  --local                  add the hypervisor to this controller instead
 
-options for both:
+common options:
   --mgmt-ip IP             management IP           (default: autodetected)
   --virt-type kvm|qemu     hypervisor mode         (default: autodetected)
   --region-name NAME       Keystone region         (default: RegionOne)
@@ -2688,21 +3425,17 @@ options for both:
 exit status:
   0 success   1 configuration or preflight error   2 usage error
   4 ran to the end but a phase was skipped, so the deployment is incomplete
-
-what this shell does NOT do:
-  Horizon. Its 2026.1 dependencies (XStatic-* and qrcode) are not packaged for
-  EL10 at the required versions and have no distgit to build from. Recorded as
-  incomplete, not quietly dropped.
 EOF
 }
 
 _cli_set() { [ $# -eq 2 ] || die "option $1 requires a value"; CLI_VAL[$1]="$2"; CLI_SET[$1]=1; }
+BUNDLE_OUTPUT=""
 
 parse_args() {
     [ $# -gt 0 ] || { usage; exit 2; }
     SUBCOMMAND="$1"; shift
     case "$SUBCOMMAND" in
-        all-in-one|compute-add|compute-secrets|discover-hosts|status) ;;
+        all-in-one|controller|compute-add|compute-secrets|discover-hosts|status|rpm-prepare|rpm-bundle) ;;
         -h|--help) usage; exit 0 ;;
         --version) echo "hagistack $HAGISTACK_VERSION"; exit 0 ;;
         *) log_error "unknown command: $SUBCOMMAND"; usage; exit 2 ;;
@@ -2723,16 +3456,29 @@ parse_args() {
             --provider-bridge)  _cli_set PROVIDER_BRIDGE "${2:-}"; shift 2 ;;
             --controller-ip)    _cli_set CONTROLLER_IP "${2:-}"; shift 2 ;;
             --repo-url)         _cli_set REPO_URL "${2:-}"; shift 2 ;;
+            --rpm-source)       _cli_set RPM_SOURCE "${2:-}"; shift 2 ;;
+            --rpm-bundle)       _cli_set RPM_BUNDLE "${2:-}"; shift 2 ;;
+            --rpm-lock-file)    _cli_set RPM_LOCK_FILE "${2:-}"; shift 2 ;;
+            --build-image)      _cli_set BUILD_IMAGE "${2:-}"; shift 2 ;;
+            --rpm-set-sha256)   _cli_set RPM_SET_EXPECTED "${2:-}"; shift 2 ;;
             --image-name)       _cli_set IMAGE_NAME "${2:-}"; shift 2 ;;
             --image-url)        _cli_set IMAGE_URL "${2:-}"; shift 2 ;;
             --image-sha256)     _cli_set IMAGE_SHA256 "${2:-}"; shift 2 ;;
             --image-file)       _cli_set IMAGE_FILE "${2:-}"; shift 2 ;;
+            --local)            LOCAL_COMPUTE=1; shift ;;
+            --output)           [ -n "${2:-}" ] || die "--output requires a value"; BUNDLE_OUTPUT="$2"; shift 2 ;;
             --env-file)         ENV_FILE="${2:-}"; shift 2 ;;
             --check)            CHECK_ONLY=1; shift ;;
             -h|--help)          usage; exit 0 ;;
             *) log_error "unknown option: $1"; usage; exit 2 ;;
         esac
     done
+    if [ "$LOCAL_COMPUTE" -eq 1 ] && [ "$SUBCOMMAND" != "compute-add" ]; then
+        log_error "--local only applies to compute-add"; exit 2
+    fi
+    if [ -n "$BUNDLE_OUTPUT" ] && [ "$SUBCOMMAND" != "rpm-bundle" ]; then
+        log_error "--output only applies to rpm-bundle"; exit 2
+    fi
 }
 
 main() {
@@ -2741,6 +3487,7 @@ main() {
         compute-secrets) cmd_compute_secrets; exit 0 ;;
         discover-hosts)  cmd_discover_hosts;  exit 0 ;;
         status)          cmd_status;          exit 0 ;;
+        rpm-bundle)      cmd_rpm_bundle;      exit 0 ;;
     esac
     _need_privilege
     _capture_defaults
@@ -2749,8 +3496,13 @@ main() {
     resolve_config
     case "$SUBCOMMAND" in
         all-in-one)  cmd_all_in_one ;;
+        controller)  cmd_controller ;;
         compute-add) cmd_compute_add ;;
+        rpm-prepare) cmd_rpm_prepare ;;
     esac
 }
 
-main "$@"
+# Sourcing the file (tests) defines the functions without running anything.
+if [ "${HAGISTACK_LIB_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi

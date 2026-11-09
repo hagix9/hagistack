@@ -292,8 +292,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_every_rule_package_is_pinned_and_vice_versa(self):
         self.assertEqual(set(rules.RULES), set(SPECS))
-        self.assertEqual(sum(len(v) for v in SPECS.values()), 12)
-        self.assertEqual(len(rules.RULES), 11)
+        self.assertEqual(sum(len(v) for v in SPECS.values()), 11)  # cliff disabled 2026-11-09
+        self.assertEqual(len(rules.RULES), 10)  # cliff disabled 2026-11-09
 
     def test_epoxy_does_not_silently_skip_the_rules(self):
         # epoxy.manifest has keystone but no SPEC row for it: building it must stop rather
@@ -345,10 +345,7 @@ class PinnedInputTests(unittest.TestCase):
         def n(text, rx):
             return len([ln for ln in code(text) if re.search(rx, ln)])
 
-        # cliff: no entry for the tests directory is left in any %files
-        s = 'python-cliff.spec'
-        self.assertEqual(n(i['cliff'][s], r'/%\{modname\}/tests$'), 2)
-        self.assertEqual(n(o['cliff'][s], r'/%\{modname\}/tests$'), 0)
+        # (cliff: rule disabled 2026-11-09, see rules.DISABLED_RULES)
         # horizon: docs off, catalogs copied before %find_lang
         s = 'python-django-horizon.spec'
         self.assertRegex(o['horizon'][s], r'(?m)^%global with_doc 0$')
@@ -426,7 +423,6 @@ class PinnedInputTests(unittest.TestCase):
     def test_duplicate_selector(self):
         cases = [('os-ken', 'python-os-ken.spec', dup(rb'.*/%\{binname\}-manager')),
                  ('neutron', 'openstack-neutron.spec', dup(rb'.*/neutron-api')),
-                 ('cliff', 'python-cliff.spec', dup(rb'.*/%\{modname\}/tests')),
                  ('horizon', 'python-django-horizon.spec', dup(rb'%global with_doc'))]
         for pkg, name, fn in cases:
             with self.subTest(pkg=pkg):

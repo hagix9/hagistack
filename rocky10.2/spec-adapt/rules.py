@@ -60,15 +60,21 @@ NEUTRON_PATCHES = (
 KEYSTONE = 'openstack-keystone.spec'
 NEUTRON = 'openstack-neutron.spec'
 
-RULES = {
-
+# Rules for packages whose manifest rows are disabled. Kept as a record of the
+# reviewed adaptation; adapt.py does not apply them and the manifest pins none.
+DISABLED_RULES = {
     # cliff 4.13.3 still has cliff/tests in the sdist but its wheel no longer
     # installs it, so neither the exclude in the main package nor the tests
     # subpackage's file entry can be satisfied. Both go; the subpackage stays
     # declared and empty, because removing a subpackage changes what an upgrade sees.
+    # DISABLED 2026-11-09: the RPM this produced lacked cliff/formatters; the
+    # nodes use EPEL 10's python3-cliff 4.13.3 (see gazpacho.manifest).
     'cliff': dict(version='4.13.3', files=['python-cliff.spec'], ops=[
         replace_lines('python-cliff.spec', '%files*', 2, ends=('/%{modname}/tests',)),
     ]),
+}
+
+RULES = {
 
     # Documentation off: the doc build needs a Sphinx extension EL10 does not ship as
     # an importable module, and the dashboard is what this shell deploys, not the docs.

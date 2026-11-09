@@ -115,7 +115,11 @@ tooz                   tooz-distgit               4357bf8faaaa8f5568a51990b248ba
 automaton              automaton-distgit          eb61f1fe1848acb2649cd09b99c5296ba339a9f2 python-automaton.spec          3.3.0    1 automaton-3.3.0.tar.gz             d73cf7ba6da43ef2adf75c49dad334fd24116ceea0dd4e6ba1e720740439a293 automaton              0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 barbicanclient         barbicanclient-distgit     b131623733dd4b981ff85384aaab496e84f3e7be python-barbicanclient.spec     7.3.0    1 python_barbicanclient-7.3.0.tar.gz f3930b7b30bce774c77b85f49dbb36bdce7cb783b3b6c6779244775e4e113da6 python-barbicanclient  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 cinderclient           cinderclient-distgit       1b68970d1ab81de485cbd33d52d3435ad6e236b0 python-cinderclient.spec       9.9.0    1 python_cinderclient-9.9.0.tar.gz   697e4d12c249f39b41ecf4fa6fcb8c38cbf2d6b2d84d6f515ed567b82dcd0bd1 python-cinderclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
-cliff                  cliff-distgit              14519e2d9d432f4ade0ebf7a35f2c317bb4f3cd6 python-cliff.spec              4.13.3   1 cliff-4.13.3.tar.gz                5b77f5db16c963dceecd1600d4d74d889a1921e3f1ec0439bdebc91d7f1338dc cliff                  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
+# cliff is NOT built (2026-11-09). The RPM built from this row on 2026-10-13 was
+# found to lack cliff/formatters (it would break `openstack ... -f json`), and EPEL 10
+# ships python3-cliff 4.13.3 - the same upstream release - which the nodes use. The
+# row and its SPEC pin are kept, disabled, so the pin stays visible:
+#DISABLED cliff                  cliff-distgit              14519e2d9d432f4ade0ebf7a35f2c317bb4f3cd6 python-cliff.spec              4.13.3   1 cliff-4.13.3.tar.gz                5b77f5db16c963dceecd1600d4d74d889a1921e3f1ec0439bdebc91d7f1338dc cliff                  0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 cursive                cursive-distgit            7105226f8e2e4320d39adf31afeb5294d972a3f6 python-cursive.spec            0.2.3    1 cursive-0.2.3.tar.gz               f435f6cdbe6a517f054c1105c36e436d7868124f1b227d310fe809d918a8c10c cursive                0xa7475c5f2122fec3f90343223fe3bf5aad1080e4
 designateclient        designateclient-distgit    c29be26b624cd6d2052894a8bc8961b7cc27da9e python-designateclient.spec    6.4.0    1 python_designateclient-6.4.0.tar.gz bb49cf1a090e01288d93b966643333833e3417040c06f463ffe3c9e66b10ad48 python-designateclient 0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 glanceclient           glanceclient-distgit       7d336e960bef1ccbde69f148802c9518da799281 python-glanceclient.spec       4.11.0   1 python_glanceclient-4.11.0.tar.gz  5ce2118bfe7462934805916617e537bc5b00fd4cab3fb7bb88a4f9253970562d python-glanceclient    0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
@@ -125,7 +129,12 @@ novaclient             novaclient-distgit         c4a86fd5d951bbf90976306e815bdf
 osc-lib                osc-lib-distgit            458eb84df4537b0312ec1ac574dcd2514c699b01 python-osc-lib.spec            4.4.0    1 osc_lib-4.4.0.tar.gz               6a615d744f03fba513d92eb4760a9cd5baa96e3d8530611fe53b217062bf317e osc-lib                0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
 os-client-config       os-client-config-distgit   710b29da292f9d99991be86303004786ce93fdaf python-os-client-config.spec   2.3.0    1 os_client_config-2.3.0.tar.gz      e16a260f2fd500af14f157b9b7b7d69292ce83b0f8a461ec68ce6a8a42967cbd os-client-config       0xc71b007ef97887fd8fb6365ceb4fd6d618e62181
 oslo-metrics           oslo-metrics-distgit       55b70d7db34590d7881baeda9573e48749f95a1f python-oslo-metrics.spec       0.15.1   1 oslo_metrics-0.15.1.tar.gz         d70a5cdaee963eb9ed9071936ce732866baa3725c3d245df9a58cbf1e7243790 oslo.metrics           0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff
-requestsexceptions     requestsexceptions-distgit 19b76e755acb8ecc4c2e5807851cc7cfe5fd2c1a python-requestsexceptions.spec 1.4.0    1 requestsexceptions-1.4.0.tar.gz    b095cbc77618f066d459a02b137b020c37da9f46d9b057704019c9f77dba3065 requestsexceptions     0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363
+# requestsexceptions is NOT built (2026-11-09). Its 1.4.0 tarball is signed by key id
+# 421E6472811F9A81, which is none of the 22 keys published at releases.openstack.org,
+# so %gpgverify fails and no key can honestly be pinned for it. The deployed and
+# accepted nodes already used EPEL 10's python3-requestsexceptions (same upstream
+# 1.4.0). The row is kept, disabled, so the pin stays visible:
+#DISABLED requestsexceptions     requestsexceptions-distgit 19b76e755acb8ecc4c2e5807851cc7cfe5fd2c1a python-requestsexceptions.spec 1.4.0    1 requestsexceptions-1.4.0.tar.gz    b095cbc77618f066d459a02b137b020c37da9f46d9b057704019c9f77dba3065 requestsexceptions     0x01527a34f0d0080f8a5db8d6eb6c5df21b4b6363
 wsme                   wsme-distgit               93ceebf281683ea65785d306b9d72ef96e02dc52 python-wsme.spec               0.12.1   1 WSME-0.12.1.tar.gz                 9c049f64c2abb14b702635c70fb16ad89f9e046789c61c7c41ee0deadf29a10d wsme                   0x815afec729392386480e076dcc0dfe2d21c023c9
 #
 # --- Horizon's PyPI dependencies ---------------------------------------------
@@ -176,7 +185,7 @@ PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar
 #
 # fields: PATCH  package  path-relative-to-this-directory  sha256
 #
-SPEC  cliff         python-cliff.spec            7569ea4219cbd317a1640fb708d0fd309b6b97186aa51ef6d36d42e886f54002 cb69acbb9b873d82304de29b970210149366927385fa79912c2502ca00df1cb2
+#DISABLED SPEC  cliff         python-cliff.spec            7569ea4219cbd317a1640fb708d0fd309b6b97186aa51ef6d36d42e886f54002 cb69acbb9b873d82304de29b970210149366927385fa79912c2502ca00df1cb2
 SPEC  horizon       python-django-horizon.spec   7f29e455a7f26384d2922b6adda920eeda06e3407ae59d5e556fd5788443dd12 29756e848c89672d411c17350b373b44eb8d3f2191673069c56411c7d3a07f86
 SPEC  keystone      openstack-keystone.spec      27528b0241b48c856d1c138a5b30a63c1d3a3f4a7e9142d8659498b249f783fb 8669edf39ede8edc2d9d6e9cc5fcddd926330c11bd03daf64b6f62ef5ce7a693
 SPEC  neutron       openstack-neutron.spec       9869639694d3402720652a22c0488009091786b4954abf1e6e5eab017ab4b114 66c321ad0da346dc36140ca25fea650049f1791cbd737c4857983782c20ab41d

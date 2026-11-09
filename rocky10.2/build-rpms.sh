@@ -42,7 +42,13 @@
 #         ./build-rpms.sh [--manifest FILE] --lock      (build-environment lock)
 #         ./build-rpms.sh [--manifest FILE] --publish   (re-publish the repo only)
 #
+# environment:
+#   BUILD_SRPMS=1     also write a .src.rpm for every package that built
+#   RESULTS_FILE=F    write the PASS/FAIL summary lines to F
+#   REPO_PUBLISH_DIR  directory published as the repository (default ~/rpmbuild/RPMS)
+#
 # Run it in a throwaway VM or container: it installs build dependencies as root.
+# `hagistack --rpm-source build` runs it in a disposable container for you.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -195,6 +201,9 @@ build_pypi() {   # build_pypi <rpm-name> <pypi-name> <version> <sdist> <sha256> 
     if [ "$rc" -eq 0 ]; then
         ok "rpmbuild exit=0"
         find "$RPMTOP/RPMS" -name "$rpmname-$version*.rpm" -printf '      %f\n' | sort
+        build_srpm "$spec" "$rpmname" || rc=1
+    fi
+    if [ "$rc" -eq 0 ]; then
         RESULTS+=("PASS $rpmname (PyPI; built; %check $([ "$NOCHECK" -eq 1 ] && echo 'NOT run' || echo 'per spec'))")
     else
         bad "rpmbuild exit=$rc — see $LOGDIR/$rpmname.rpmbuild.log"
@@ -202,6 +211,25 @@ build_pypi() {   # build_pypi <rpm-name> <pypi-name> <version> <sdist> <sha256> 
             "$LOGDIR/$rpmname.rpmbuild.log" | sort -u | head -8 | sed 's/^/      /' >&2
         RESULTS+=("FAIL $rpmname (PyPI, rpmbuild exit $rc)")
     fi
+}
+
+# ---------------------------------------------------------------------------
+# source RPM, on request
+#
+# BUILD_SRPMS=1 also writes the .src.rpm for every package that built. It is
+# what a binary redistribution has to be able to point at: the exact spec,
+# patches and pinned upstream tarball that produced the binaries, in one file.
+# Built from the same staged spec and SOURCES as the binaries, after they
+# succeeded, so it cannot describe something other than what was built.
+# ---------------------------------------------------------------------------
+build_srpm() {   # build_srpm <spec> <name>
+    [ "${BUILD_SRPMS:-0}" = "1" ] || return 0
+    if rpmbuild -bs "$1" > "$LOGDIR/$2.srpm.log" 2>&1; then
+        ok "source RPM written: $(grep -aoE '[^/ ]+\.src\.rpm' "$LOGDIR/$2.srpm.log" | tail -1)"
+        return 0
+    fi
+    bad "rpmbuild -bs failed for $2 — see $LOGDIR/$2.srpm.log"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -350,6 +378,9 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
         ok "rpmbuild exit=0"
         grep -aE "Good signature|gpgverify" "$LOGDIR/$pkg.rpmbuild.log" | head -3 | sed 's/^/      /'
         find "$RPMTOP/RPMS" -name "*.rpm" -newer "$spec" -printf '      %f\n' | sort
+        build_srpm "$spec" "$pkg" || rc=1
+    fi
+    if [ "$rc" -eq 0 ]; then
         if [ "$NOCHECK" -eq 1 ]; then
             RESULTS+=("PASS $pkg (built; %check NOT run)")
         else
@@ -475,6 +506,12 @@ done < "$MANIFEST"
 
 say "summary"
 printf '  %s\n' "${RESULTS[@]:-（no package matched）}"
+# RESULTS_FILE: the same PASS/FAIL lines, machine-readable, for a caller that
+# has to decide what to rebuild (hagistack --rpm-source build re-runs only the
+# packages that failed on build order).
+if [ -n "${RESULTS_FILE:-}" ]; then
+    printf '%s\n' "${RESULTS[@]:-}" > "$RESULTS_FILE"
+fi
 say "publishing the built RPMs so the release stays pinned"
 publish_repo || true
 write_lock

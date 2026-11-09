@@ -4,23 +4,27 @@
 
 [← Hagistack の概要](../README.ja.md)
 
-> **最初に OpenStack の RPM リポジトリをビルドしてください。**
-> Rocky Linux には OpenStack が含まれていません。
-> EL10 向けの OpenStack 2026.1 は、RDO のリリースリポジトリとしても、
-> CentOS Cloud SIG からも公開されていません。
-> そのため、2026.1 の RPM は `build-rpms.sh` で自分でビルドします
-> （「[RPM リポジトリのビルド](#rpm-リポジトリのビルド)」を参照）。
-> その成果物を `--repo-url` でインストーラに指定します。
-> このリポジトリがなければ、`hagistack` はインストールを行いません。
+> **OpenStack の RPM の入手方法**
+> Rocky Linux には OpenStack が含まれず、EL10 向けの OpenStack 2026.1 はどこからも公開されていません。
+> そこで `hagistack` 自身が 2026.1 の RPM を用意します。方法は `--rpm-source` で選ぶ 4 つです
+> （「[RPM の入手方法](#rpm-の入手方法)」を参照）。
+> 固定された公開リリースのダウンロード（`github`、既定）、**このホスト上でのソースビルド**（`build`）、
+> コントローラの RPM の再利用（`bundle`）、手元のリポジトリの利用（`--repo-url`）です。
+> 利用者が RPM をビルドしたり DNF リポジトリを手で作ったりする必要はありません。
+>
+> **2026-11-09 時点：** RPM のリリースはまだ公開していません。そのため既定の `github` は理由を表示して停止します。
+> 公開されるまでは `--rpm-source build`（または `--repo-url`）を使ってください。
 
 ## 概要
 
 `hagistack` は 1 本の Bash スクリプトです。
-リリース版の 2026.1 tarball から自分でビルドした RPM リポジトリを使い、
-Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。動作モードは 2 つです。
+リリース版の 2026.1 tarball からビルドした RPM を使い、
+Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。対応する構成は 4 つです。
 
 - **`all-in-one`**：コントロールプレーン全体とコンピュートサービスを、1 台のホストにまとめて導入します。
-- **`compute-add`**：そのホストにコンピュートノードを追加します。
+- **`controller`**：コントロールプレーンだけを導入します。ハイパーバイザは入りません。
+- **`compute-add --local`**：あとからそのコントローラにハイパーバイザを追加し、all-in-one と同等にします。コントローラの再設定は行いません。
+- **`compute-add --controller-ip IP`**：別のホストで実行し、リモートのコンピュートノードを追加します。台数分繰り返します。
 
 導入されるものは次のとおりです。
 
@@ -51,7 +55,8 @@ Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。動作�
     RDO が OpenStack 用に出している SELinux ポリシー（`openstack-selinux`）は
     RDO の OpenStack コンポーネントリポジトリでしか公開されておらず、
     Hagistack はそのリポジトリを有効にしないためです。
-- **2026.1 の RPM リポジトリ：** 各ノードから `--repo-url` で到達できること。
+- **2026.1 の RPM：** 事前準備は不要です。`hagistack` がダウンロード・ビルド・展開します（「[RPM の入手方法](#rpm-の入手方法)」）。
+  `--rpm-source build` には追加で約 30 GB のディスク、ビルド入力へのインターネット接続、数時間が必要です。
 - **依存リポジトリのためのインターネット接続。** Hagistack は次のものを追加します。
   - EPEL 10（あわせて CRB を有効にします）
   - Open vSwitch と OVN のための CentOS Stream 10 NFV SIG のミラー
@@ -71,7 +76,7 @@ Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。動作�
 
 **2 台目のノード**
 
-- Rocky Linux 10.2 x86_64 で、同じ RPM リポジトリにアクセスできること。
+- Rocky Linux 10.2 x86_64 で、コントローラと**同じ RPM セット**を使うこと（`compute-add` が確認し、異なれば停止します）。
 - コントローラの管理 IP に、次の TCP ポートで到達できること。
   - 5000（Keystone）
   - 9292（Glance）
@@ -86,23 +91,78 @@ Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。動作�
 ## インストールの流れ
 
 ```text
- ビルド用 VM（使い捨て）                        各 OpenStack ノード
- ─────────────────────────                    ───────────────────────────────
- build-rpms.sh + gazpacho.manifest            hagistack all-in-one / compute-add
-   → 固定した distgit と tarball                 --repo-url <作成したリポジトリ>
-   → rpmbuild                                   → そのリポジトリから dnf install
-   → createrepo_c  ──── コピーまたは配信 ────▶     ＋ Rocky、EPEL、NFV SIG、RDO の依存リポジトリ
+                         hagistack（各ノードで同じ 1 本のスクリプト）
+                         ─────────────────────────────────────
+ --rpm-source github ─┐
+ --rpm-source build  ─┼─▶ /var/lib/hagistack の検証済み RPM セット ─▶ file:// リポジトリ
+ --rpm-source bundle ─┤                                                (priority=1)
+ --repo-url URL      ─┘─────────────────────────────────────────▶ あなたのリポジトリ
+                                                                       │
+                     all-in-one │ controller │ compute-add ◀── dnf install
 ```
 
-**OpenStack のパッケージは、すべて自分でビルドした 2026.1 リポジトリから入ります。**
-このリポジトリは `priority=1` で登録します。
+**OpenStack のパッケージは、すべて 2026.1 の RPM セットから入ります。**
+そのリポジトリは `priority=1` で登録します。
 RDO の OpenStack コンポーネントリポジトリ（`delorean-component-*`）はトランクのスナップショットを含むため、
-Hagistack は追加しません。有効になっている場合は警告を出します。
+Hagistack はノードに追加しません。有効になっている場合は警告を出します。
 
 サードパーティの Python ライブラリは RDO の依存ツリーから入り、バージョンは EL10 にあるものになります。
-これらは OpenStack の成果物ではありません。
+これらは OpenStack の成果物ではありません。`python3-cliff` と `python3-requestsexceptions` は、
+2026.1 が固定するのと同じ upstream バージョンを EPEL 10 から使います。
+
+## RPM の入手方法
+
+| `--rpm-source` | 用途 | 動作 |
+|---|---|---|
+| `github`（既定） | 通常のインストール | `rpm-release.lock` が指すリリースアセットをダウンロードし、そのファイルに固定された SHA-256・サイズ・RPM セット識別子で検証 |
+| `build` | ソースからのビルド | このホスト上の使い捨て Rocky 10.2 コンテナで `build-rpms.sh` を実行し、結果を検証 |
+| `bundle` | ソースビルドしたコントローラに追加するコンピュートノード | `hagistack rpm-bundle` で作った tarball を、コントローラの RPM セット識別子で検証 |
+| `repo-url` | 既存のリポジトリ | 従来どおり `--repo-url` を使う。このモードでは Hagistack は何も検証しない |
+
+共通の規則：
+
+- **勝手に切り替えません。** ダウンロードに失敗してもビルドは始めず、ビルドに失敗してもダウンロードはせず、「最新版」にも切り替えません。
+- **使う前に検証します。** 各 RPM が一覧（`RPM-SHA256SUMS`）と一致すること、セット識別子（一覧の SHA-256）が期待値と一致すること、
+  リポジトリのメタデータがファイルと一致すること、各 RPM の `rpm -K` が通ることを確認します。
+- **再実行では再利用します。** 検証済みセットは再確認したうえで再利用し、二重にダウンロードやビルドはしません。
+  検証に通らなくなったキャッシュは削除せず退避し、`github` なら取り直します。
+- **1 つのクラウドに 1 つのセット。** 各ノードはセットを記録します。異なるセットでの再実行は何もインストールせずに停止し、
+  コンピュートノードはコントローラと異なるセットなら停止します。
+
+**`github` で何を信頼するか。** ダウンロードの横に置かれたチェックサムは、ダウンロードを差し替えられる者なら一緒に差し替えられるため、何も証明しません。
+信頼の起点は**この Git チェックアウトの** `rpm-release.lock` です。アセットの SHA-256 とサイズ、中の RPM セット識別子、
+ビルド元の `gazpacho.manifest` を固定しています。RPM 自体には GPG 署名はありません。
+
+**`build`：ソースからビルドする**
+
+```sh
+sudo ./hagistack all-in-one --rpm-source build   # ほかの設定もあわせて指定
+# 先に RPM だけ用意し、あとで再ビルドなしにインストールすることもできます
+sudo ./hagistack rpm-prepare --rpm-source build
+```
+
+- 別マシンは不要です。ビルドはコンテナ（`quay.io/rockylinux/rockylinux:10.2`、digest で固定）で行うため、
+  ビルド依存パッケージや RDO のトランクリポジトリがホストに入ることはありません。`podman` がなければ導入します。
+- 数時間かかります。進捗：`/var/lib/hagistack/rpm-build/<id>/out/logs/pass1.log`
+- 2 パスで実行します。マニフェストはサービスをライブラリより先に並べているため、ライブラリができた後にサービスを再ビルドします。
+- 結果は `/var/lib/hagistack/rpm-build/<id>/` に残ります。`<id>` はビルド入力の識別子で、同じ入力は再ビルドしません。
+
+**`bundle`：コントローラの RPM をコンピュートノードで再利用する**
+
+```sh
+# コントローラで
+sudo ./hagistack rpm-bundle --output /root/hagistack-rpms.tar
+# ファイルをノードにコピーし、ノードで
+sudo ./hagistack compute-add --controller-ip 10.0.0.10 \
+    --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar
+```
+
+期待する識別子はコントローラの `compute-secrets` ファイルから読むため、コントローラのセットでない bundle は拒否します。
 
 ## RPM リポジトリのビルド
+
+通常は自分で実行する必要はありません。`--rpm-source build` がコンテナ内で実行します。
+この節は、保守担当者向けと、別マシンでビルドする場合のための `build-rpms.sh` の説明です。
 
 `build-rpms.sh` は、`gazpacho.manifest` に記載されたパッケージをビルドします。
 
@@ -183,7 +243,7 @@ cd hagistack/rocky10.2
 `probe-repos.sh` は、公開されている EL10 向け OpenStack リポジトリを読み取り専用で調べ直すツールです。
 そのメッセージが参照しているのはこの README の旧版の節で、旧版は Git の履歴にあります。
 
-## リポジトリを利用可能にする
+## 自分のリポジトリを使う（`--repo-url`）
 
 `--repo-url` の値は、各ノードの `/etc/yum.repos.d/hagistack-gazpacho.repo` の `baseurl` になります。
 ノードはそこから `openstack-keystone` を解決できなければならず、インストーラは先に進む前にそれを確認します。
@@ -223,12 +283,17 @@ Hagistack が追加する依存リポジトリも `gpgcheck=0` です。
 
 | オプション | キー | 必須 | 既定値 |
 |---|---|---|---|
-| `--repo-url URL` | `REPO_URL` | all-in-one、compute-add | — |
-| `--ext-nic NAME` | `EXT_NIC` | all-in-one | — |
-| `--provider-cidr CIDR` | `PROVIDER_CIDR` | all-in-one | — |
-| `--provider-gateway IP` | `PROVIDER_GATEWAY` | all-in-one | — |
-| `--floating-start IP` | `FLOATING_START` | all-in-one | — |
-| `--floating-end IP` | `FLOATING_END` | all-in-one | — |
+| `--rpm-source SRC` | `RPM_SOURCE` | | `github`。`--repo-url` があれば `repo-url`。導入済みホストでは記録済みの方式 |
+| `--repo-url URL` | `REPO_URL` | `--rpm-source repo-url` のとき | —（`http(s)://…` または `file:///…`） |
+| `--rpm-bundle PATH` | `RPM_BUNDLE` | `--rpm-source bundle` のとき | — |
+| `--rpm-set-sha256 HEX` | `RPM_SET_EXPECTED` | | `compute-add` では compute-secrets から読む |
+| `--rpm-lock-file PATH` | `RPM_LOCK_FILE` | | `rocky10.2/rpm-release.lock`（ミラーの試験用） |
+| `--build-image REF@sha256:…` | `BUILD_IMAGE` | | 固定済みの Rocky 10.2 イメージ |
+| `--ext-nic NAME` | `EXT_NIC` | all-in-one、controller | — |
+| `--provider-cidr CIDR` | `PROVIDER_CIDR` | all-in-one、controller | — |
+| `--provider-gateway IP` | `PROVIDER_GATEWAY` | all-in-one、controller | — |
+| `--floating-start IP` | `FLOATING_START` | all-in-one、controller | — |
+| `--floating-end IP` | `FLOATING_END` | all-in-one、controller | — |
 | `--tenant-cidr CIDR` | `TENANT_CIDR` | | `10.10.10.0/24` |
 | `--dns-server IP` | `DNS_SERVER` | | provider のゲートウェイ |
 | `--provider-physnet NAME` | `PROVIDER_PHYSNET` | | `physnet1` |
@@ -237,7 +302,8 @@ Hagistack が追加する依存リポジトリも `gpgcheck=0` です。
 | `--image-url URL` | `IMAGE_URL` | | CirrOS 0.6.3 のダウンロード URL |
 | `--image-sha256 HEX` | `IMAGE_SHA256` | URL を変更したら必ず指定 | CirrOS が公開しているダイジェスト |
 | `--image-file PATH` | `IMAGE_FILE` | | —（ダウンロードせず、ローカルのファイルを使います） |
-| `--controller-ip IP` | `CONTROLLER_IP` | compute-add | — |
+| `--controller-ip IP` | `CONTROLLER_IP` | リモートの compute-add | — |
+| `--local` | — | | このコントローラにハイパーバイザを追加（compute-add のみ） |
 | `--mgmt-ip IP` | `MGMT_IP` | | 自動検出 |
 | `--virt-type kvm\|qemu` | `VIRT_TYPE` | | `/dev/kvm` から自動判定 |
 | `--region-name NAME` | `REGION_NAME` | | `RegionOne` |
@@ -247,7 +313,7 @@ Hagistack が追加する依存リポジトリも `gpgcheck=0` です。
 `hagistack.env` の例です（値は仮のものです）。
 
 ```sh
-REPO_URL=file:///opt/hagistack-repo
+RPM_SOURCE=build
 EXT_NIC=eth1
 PROVIDER_CIDR=192.0.2.0/24
 PROVIDER_GATEWAY=192.0.2.1
@@ -259,7 +325,7 @@ FLOATING_END=192.0.2.200
 
 ```sh
 cd hagistack/rocky10.2
-sudo ./hagistack all-in-one --check --repo-url file:///opt/hagistack-repo \
+sudo ./hagistack all-in-one --check --rpm-source build \
     --ext-nic eth1 --provider-cidr 192.0.2.0/24 --provider-gateway 192.0.2.1 \
     --floating-start 192.0.2.100 --floating-end 192.0.2.200
 ```
@@ -272,40 +338,45 @@ sudo ./hagistack all-in-one --check --repo-url file:///opt/hagistack-repo \
 - provider のアドレス（ゲートウェイと Floating IP の範囲が CIDR 内にあること）
 - テナントの CIDR、DNS サーバ、リージョン
 - `virt_type`
+- RPM 入手方法の設定と、このホストの記録済みの役割でこのコマンドを実行してよいか
 - ディスクとメモリ
 
 最後に、最終的な各設定値とその出どころを表示します。
 
 `--check` では次のことは**確認しません**。インストーラがその段階に達したときに確認します。
 
+- RPM セットをダウンロード・ビルド・展開できるかどうか（RPM 入手の phase で実施）
 - `--repo-url` が使えるかどうか（リポジトリの phase で確認）
 - `compute-add` の場合、コントローラのポートに到達できるかどうか（コンピュート用 preflight で確認）
 
 ## all-in-one のインストール
 
 ```sh
-sudo ./hagistack all-in-one --repo-url file:///opt/hagistack-repo   # ほかの設定もあわせて指定
+sudo ./hagistack all-in-one --rpm-source build   # ほかの設定もあわせて指定
+# リリース公開後は次だけで済みます
+sudo ./hagistack all-in-one                      # ほかの設定もあわせて指定
 ```
 
 phase は次の順に実行されます。
 
 1. preflight
-2. リポジトリ
-3. SELinux
-4. secrets
-5. パッケージ
-6. MariaDB
-7. RabbitMQ
-8. memcached
-9. Keystone
-10. Glance
-11. Placement
-12. OVS/OVN
-13. Neutron
-14. Nova
-15. nova-compute
-16. 初期リソース
-17. Horizon
+2. RPM の入手（ダウンロード・ビルド・展開と検証）
+3. リポジトリ
+4. SELinux
+5. secrets
+6. パッケージ
+7. MariaDB
+8. RabbitMQ
+9. memcached
+10. Keystone
+11. Glance
+12. Placement
+13. OVS/OVN
+14. Neutron
+15. Nova
+16. nova-compute
+17. 初期リソース
+18. Horizon
 
 各 API の動かし方は次のとおりです。
 
@@ -330,9 +401,39 @@ phase は次の順に実行されます。
 | セキュリティグループのルール | admin プロジェクトの `default` グループに SSH と ICMP を追加します |
 | キーペア | `hagistack-key`（Nova が生成）。秘密鍵は `/etc/hagistack/hagistack-key` に mode `0600` で置きます |
 
+## controller だけを導入し、あとでローカルにハイパーバイザを追加する
+
+```sh
+sudo ./hagistack controller --rpm-source build   # all-in-one と同じ設定もあわせて指定
+```
+
+`controller` は nova-compute 以外の all-in-one の phase をすべて実行します。
+Keystone、Glance、Placement、Nova API/scheduler/conductor、OVN 付きの Neutron（コントローラはゲートウェイシャーシ）、Horizon、初期リソースです。
+`openstack-nova-compute`、`libvirt`、`qemu-kvm` は入れません。**コンピュートノードができるまでゲストは起動できません**が、それが正常です。
+
+あとで同じホストにハイパーバイザを追加するには：
+
+```sh
+sudo ./hagistack compute-add --local
+```
+
+コントローラに記録された RPM セット・管理 IP・リージョンを使い、コントローラの phase は再実行しません（資格情報・設定・データはそのまま）。
+ハイパーバイザのパッケージを入れ、libvirt と nova-compute を起動し、このホストが `up` になるのを待って cell に登録します。
+その後、このホストは `all-in-one` として記録されます。
+
+導入済みホストで実行できるもの：
+
+| 記録済みの役割 | `all-in-one` | `controller` | `compute-add --local` | リモートの `compute-add` |
+|---|---|---|---|---|
+| controller | 可（ハイパーバイザを追加） | 可（再実行） | 可 | 拒否 |
+| all-in-one | 可（再実行） | 拒否 | 可（再実行） | 拒否 |
+| compute | 拒否 | 拒否 | 拒否 | 可（再実行） |
+
+役割は `/etc/hagistack/deployment.env` に記録します。Hagistack がサービスを取り除くことはありません。
+
 ## コンピュートノードの追加
 
-各手順は、書かれているマシンで実行します。
+各手順は、書かれているマシンで実行します。ノードごとに手順 1〜5 を繰り返します。
 
 **1. コントローラで：** コンピュートノードに必要な資格情報をファイルに書き出します。
 このコマンドは端末への出力を拒否します。
@@ -344,7 +445,7 @@ phase は次の順に実行されます。
 `compute-secrets.env` を作るのは `hagistack` ではなくシェルなので、mode は umask で決まります。
 上の `umask 077` によって、自分だけが読めるファイルになります。
 
-このファイルに入るのは、次の 5 つの資格情報だけです。
+このファイルに入るのは、次の 5 つの資格情報と、コントローラの RPM セット識別子（`RPM_SET_SHA256`、秘密情報ではない）だけです。
 
 - `RABBIT_PASS`
 - `NOVA_SERVICE_PASS`
@@ -362,7 +463,6 @@ shred -u compute-secrets.env
 ```
 
 **3. 新しいノードで：** 資格情報を配置します。
-RPM リポジトリも利用できるようにしておきます（「[リポジトリを利用可能にする](#リポジトリを利用可能にする)」を参照）。
 
 ```sh
 sudo install -d -m 0700 /etc/hagistack
@@ -374,15 +474,19 @@ shred -u /tmp/compute-secrets.env
 
 ```sh
 cd hagistack/rocky10.2
+# コントローラを公開リリース（github）で導入した場合
+sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP
+# コントローラをソースビルドで導入した場合：再ビルドせずコントローラの RPM を使う
+#   （コントローラで：sudo ./hagistack rpm-bundle --output /root/hagistack-rpms.tar）
 sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP \
-    --repo-url file:///opt/hagistack-repo
+    --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar
+# コントローラを --repo-url で導入した場合
+sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP --repo-url URL
 ```
 
 `compute-add` は資格情報を生成しません。`/etc/hagistack/secrets.env` がなければ停止します。
-
-リポジトリの設定と SELinux の permissive への切り替えは、
-コントローラのポートに到達できるかを確認する**前に**行います。
-この確認に失敗した場合、パッケージはインストールしませんが、この 2 つの変更はすでに行われています。
+ほかの変更より**前に**コントローラのポートへの到達性を確認し、
+このノードの RPM セットがコントローラと異なれば、パッケージをインストールする前に停止します。
 
 このノードには、データベースへのアクセス権はありません（`nova.conf` のデータベース接続のキーはコメントアウトします）。
 admin の資格情報も、provider ブリッジのマッピングもありません。
@@ -484,13 +588,21 @@ Hagistack は**ロールバックしません**。失敗したら原因を直し
 ## コマンドリファレンス
 
 ```text
-sudo ./hagistack all-in-one  --repo-url URL [options]
+sudo ./hagistack all-in-one  [rpm options] [options]
+sudo ./hagistack controller  [rpm options] [options]   ハイパーバイザなし
 sudo ./hagistack all-in-one  --check [options]         preflight のみ。何も変更しない
-sudo ./hagistack compute-add --controller-ip IP --repo-url URL [options]
+sudo ./hagistack compute-add --local                   コントローラで実行。ハイパーバイザを追加
+sudo ./hagistack compute-add --controller-ip IP [rpm options] [options]
 sudo ./hagistack compute-secrets > FILE                コントローラで実行。端末への出力は拒否
+sudo ./hagistack rpm-bundle --output FILE              コントローラで実行。RPM セットを tarball に
+sudo ./hagistack rpm-prepare [rpm options]             RPM の用意と検証のみ
 sudo ./hagistack discover-hosts                        コントローラで実行。新しいコンピュートホストを登録
-sudo ./hagistack status                                phase、SELinux、サービスの状態
+sudo ./hagistack status                                役割、RPM セット、phase、SELinux、サービスの状態
 ./hagistack --help | --version
+
+rpm options: --rpm-source github|build|bundle|repo-url, --repo-url URL,
+             --rpm-bundle FILE, --rpm-set-sha256 HEX, --rpm-lock-file PATH,
+             --build-image REF@sha256:...
 ```
 
 両方のモードで使えるオプションは次のとおりです。
@@ -519,14 +631,23 @@ sudo ./hagistack status                                phase、SELinux、サー�
 | `/etc/hagistack/secrets.env` | 生成したすべての資格情報（Horizon のシークレットキーを含む）。コンピュートノードでは、受け取った 5 つのキーだけ | `0600` |
 | `/etc/hagistack/admin-openrc` | `openstack` CLI 用の admin 資格情報 | `0600` |
 | `/etc/hagistack/hagistack-key` | キーペア `hagistack-key` の秘密鍵 | `0600` |
+| `/etc/hagistack/deployment.env` | このホストの役割、アドレス、RPM セット識別子。秘密情報なし | `0600` |
 | `/var/lib/hagistack/state/` | phase の完了マーカーと、SELinux に対して行ったことの記録 | — |
+| `/var/lib/hagistack/rpms/` | `github` と `bundle` の検証済み RPM セット | — |
+| `/var/lib/hagistack/rpm-build/` | ソースビルドの作業領域と、ビルド入力ごとの検証済み結果 | — |
 | `/etc/yum.repos.d/hagistack-*.repo` | Hagistack が追加したリポジトリ | — |
 | `/etc/selinux/config` | `SELINUX=permissive` に設定されます | — |
 | `./hagistack.env` | あなたの設定。パスワードを書いてはいけません | — |
 
 ## トラブルシューティング
 
-- **`--repo-url is required on Rocky` と出る、またはリポジトリが「does not offer openstack-keystone」と出る。**
+- **「no published RPM release is pinned」と出る。**
+  このチェックアウトに対応するリリースはまだ公開されていません。`--rpm-source build` を使うか、手元のリポジトリを `--repo-url` で指定してください。
+- **ダウンロードや検証に失敗する。**
+  何もインストールしていません。Hagistack はビルドへ切り替えません。ネットワークかミラーを直して再実行するか、自分で `--rpm-source build` を選んでください。
+- **「Switching the package set of a running cloud is an upgrade」と出る。**
+  このホストは別の RPM セットで導入されています。Hagistack はアップグレードを行いません。
+- **リポジトリが「does not offer openstack-keystone」と出る（`--repo-url`）。**
   URL は、`repodata/` を持つディレクトリ（`createrepo_c` を実行済みのもの）を指している必要があります。
   このノードから読めることも必要です。
 - **`delorean-component-*` のリポジトリが有効だという警告が出る。**
@@ -544,9 +665,6 @@ sudo ./hagistack status                                phase、SELinux、サー�
 - **`error:` の行が出ないまま実行が止まる。**
   Rocky 用スクリプトは、止まった行を表示しないことがあります。
   出力の最後にある `==>` の手順が、失敗した phase です。
-- **`status` が Horizon を未検証と表示し、`--help` が Horizon を扱わないと書いている。**
-  どちらも Horizon の作業より前の文言です。
-  Horizon の phase は実行され、サインインも検証済みです（「[Horizon](#horizon)」を参照）。
 - **`compute-add` が「the controller is not reachable on every port」で止まる。**
   パッケージはまだインストールしていません。
   コントローラで表示されたポートを確認し、2 台の間のファイアウォールも確認してください。
@@ -577,6 +695,13 @@ Google Compute Engine 上で、2026-09-29 に検証しました。
 
 Horizon は最後に追加しました。
 追加した後に node1 を確認し直し、ほかのサービスが引き続き応答すること、ゲストが引き続き ACTIVE になることを確かめました。
+
+**2026-11-09（0.2.0-rocky、実装者による受入。独立監査は未実施）：** GCE 上の Rocky 10.2 VM 4 台で、
+`--rpm-source build`（ホスト上のコンテナで 195 RPM をビルド）、`controller` の後の `compute-add --local`、
+`all-in-one --repo-url`、リモートの `compute-add` 2 台（`--rpm-source bundle` と、模擬リリースサーバに対する `--rpm-source github`）を検証しました。
+すべてのハイパーバイザでゲストが起動し、ノード間で疎通しました。再実行は exit 0 で、再起動はありませんでした。
+実際の GitHub Release は未公開で、未試験です。
+詳細：[acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md](../acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md)
 
 ## 既知の制約
 

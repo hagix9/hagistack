@@ -1,0 +1,19 @@
+# The GitHub Release that `hagistack --rpm-source github` installs from.
+#
+# This file is the trust anchor for downloaded RPMs. hagistack refuses an asset
+# whose SHA-256 or size differs from ASSET_SHA256 / ASSET_SIZE, and an RPM set
+# whose identity (SHA-256 of its RPM-SHA256SUMS) differs from RPM_SET_SHA256.
+# A checksum file published next to the asset is never trusted on its own: it
+# is as replaceable as the asset. What you trust is this file, from the Git
+# checkout you are running.
+#
+# It is parsed as KEY=VALUE data, never sourced. It is written by
+# rocky10.2/make-rpm-release.sh when a release is prepared, and committed only
+# after the release is actually published and audited.
+#
+# LOCK_STATUS=unpublished means no release is pinned: --rpm-source github stops
+# with an explanation and downloads nothing. Use --rpm-source build or
+# --repo-url until a release is published.
+LOCK_FORMAT=1
+LOCK_STATUS=unpublished
+BASE_URL=https://github.com/hagix9/hagistack/releases/download

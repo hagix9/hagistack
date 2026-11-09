@@ -4,22 +4,32 @@ English | [日本語](README.ja.md)
 
 [← Hagistack overview](../README.md)
 
-> **Build the OpenStack RPM repository first.**
-> Rocky Linux does not ship OpenStack. Nobody publishes OpenStack 2026.1 for
-> EL10, either as RDO release repositories or through the CentOS Cloud SIG. You
-> therefore build the 2026.1 RPMs yourself with `build-rpms.sh` (see
-> [Build the RPM repository](#build-the-rpm-repository)). You then point the
-> installer at the result with `--repo-url`. `hagistack` refuses to install
-> without that repository.
+> **Where the OpenStack RPMs come from.**
+> Rocky Linux does not ship OpenStack, and nobody publishes OpenStack 2026.1 for
+> EL10. `hagistack` therefore gets the 2026.1 RPMs itself, in one of four ways
+> chosen with `--rpm-source` (see [RPM sources](#rpm-sources)):
+> download a published, pinned release (`github`, the default), **build them
+> from source on this host** (`build`), reuse a controller's set (`bundle`), or
+> use a repository you already run (`--repo-url`). You do not need to build RPMs
+> or create a DNF repository by hand.
+>
+> **Status, 2026-11-09:** no RPM release has been published yet, so the
+> default `github` source stops with an explanation. Use `--rpm-source build`
+> (or `--repo-url`) until a release is published.
 
 ## Overview
 
 `hagistack` is a single Bash script. It installs OpenStack 2026.1 (Gazpacho) on
-Rocky Linux 10.2 from a repository of RPMs that you build from the released
-2026.1 tarballs. It has two modes:
+Rocky Linux 10.2 from RPMs built from the released 2026.1 tarballs. It supports
+four configurations:
 
 - **`all-in-one`** puts the whole control plane and a compute service on one host.
-- **`compute-add`** adds further compute nodes to that host.
+- **`controller`** installs the control plane only, with no hypervisor.
+- **`compute-add --local`** later adds the hypervisor to that controller, which
+  makes it equivalent to an all-in-one host. Nothing on the controller is
+  reconfigured.
+- **`compute-add --controller-ip IP`**, run on another host, adds a remote
+  compute node. Repeat it for each additional node.
 
 What gets installed:
 
@@ -54,7 +64,9 @@ What gets installed:
   - **Enforcing mode has not been verified.** The SELinux policy RDO ships for
     OpenStack (`openstack-selinux`) is published only in RDO's OpenStack
     component repositories, and Hagistack does not enable those.
-- **The 2026.1 RPM repository**, reachable from every node through `--repo-url`.
+- **The 2026.1 RPMs**: nothing to prepare. `hagistack` downloads, builds or
+  unpacks them (see [RPM sources](#rpm-sources)). `--rpm-source build` needs
+  about 30 GB of extra disk, internet access to the build inputs, and hours.
 - **Internet access for dependency repositories.** Hagistack adds the following:
   - EPEL 10, and it enables CRB;
   - the CentOS Stream 10 NFV SIG mirror, for Open vSwitch and OVN;
@@ -78,7 +90,8 @@ What gets installed:
 
 **For a second node**
 
-- Rocky Linux 10.2 x86_64, with access to the same RPM repository.
+- Rocky Linux 10.2 x86_64. It must run the **same RPM set** as the controller;
+  `compute-add` checks this and stops otherwise.
 - The ability to reach the controller's management IP on these TCP ports:
   - 5000 (Keystone)
   - 9292 (Glance)
@@ -93,23 +106,93 @@ What gets installed:
 ## Installation model
 
 ```text
- builder VM (disposable)                      each OpenStack node
- ─────────────────────────                    ───────────────────────────────
- build-rpms.sh + gazpacho.manifest            hagistack all-in-one / compute-add
-   → pinned distgit + tarballs                  --repo-url <your repository>
-   → rpmbuild                                   → dnf install from that repository
-   → createrepo_c  ──── copy or serve ────▶       + Rocky, EPEL, NFV SIG, RDO deps
+                         hagistack (one script, on each node)
+                         ─────────────────────────────────────
+ --rpm-source github ─┐
+ --rpm-source build  ─┼─▶ verified RPM set in /var/lib/hagistack ─▶ file:// repository
+ --rpm-source bundle ─┤                                              (priority=1)
+ --repo-url URL      ─┘─────────────────────────────────────────▶ your repository
+                                                                       │
+                     all-in-one │ controller │ compute-add ◀── dnf install
 ```
 
-**Every OpenStack package comes from your 2026.1 repository.** It is configured
-with `priority=1`. RDO's OpenStack component repositories (`delorean-component-*`)
-carry trunk snapshots, so Hagistack does not add them, and it warns if one is
-enabled.
+**Every OpenStack package comes from the 2026.1 RPM set.** Its repository is
+configured with `priority=1`. RDO's OpenStack component repositories
+(`delorean-component-*`) carry trunk snapshots, so Hagistack does not add them
+to a node, and it warns if one is enabled.
 
 The third-party Python libraries come from RDO's dependency tree, at whatever
-versions EL10 has. Those are not OpenStack deliverables.
+versions EL10 has. Those are not OpenStack deliverables. `python3-cliff` and
+`python3-requestsexceptions` come from EPEL 10, at the same upstream versions
+that 2026.1 pins.
+
+## RPM sources
+
+| `--rpm-source` | For | What happens |
+|---|---|---|
+| `github` (default) | normal installs | Downloads the release asset named in `rpm-release.lock` and verifies it against the SHA-256, size and RPM-set identity pinned in that file |
+| `build` | building from source | Runs `build-rpms.sh` in a disposable Rocky 10.2 container on this host, then verifies the result |
+| `bundle` | compute nodes of a controller that built from source | Verifies a tarball made by `hagistack rpm-bundle` against the controller's RPM-set identity |
+| `repo-url` | a repository you already run | Uses `--repo-url` as before. Hagistack verifies nothing in this mode |
+
+Rules common to all of them:
+
+- **No silent fallback.** A failed download never starts a build, a failed build
+  never downloads, and nothing falls back to "latest".
+- **Verified before use.** An RPM set is used only if every RPM matches its
+  listing (`RPM-SHA256SUMS`), the set identity (the SHA-256 of that listing)
+  is the expected one, the repository metadata matches the files, and
+  `rpm -K` passes for each RPM.
+- **Re-runs reuse the set.** A verified set is re-checked and reused; nothing is
+  downloaded or built twice. A cached set that no longer verifies is moved aside
+  (never deleted) and, for `github`, fetched again.
+- **One set per cloud.** Each node records its set. A later run with a
+  different set stops before installing anything, and a compute node stops if
+  its set differs from the controller's.
+
+**`github`: what you trust.** A checksum file published next to a download
+proves nothing, because whoever can replace the download can replace the
+checksum. The trust anchor is `rpm-release.lock` **in this Git checkout**. It
+pins the asset's SHA-256 and size, the identity of the RPM set inside it, and
+the `gazpacho.manifest` it was built from. The RPMs are not GPG-signed.
+
+**`build`: building from source.**
+
+```sh
+sudo ./hagistack all-in-one --rpm-source build   # plus your settings
+# or prepare the RPMs ahead of time, then install later without rebuilding:
+sudo ./hagistack rpm-prepare --rpm-source build
+```
+
+- No second machine is needed. The build runs in a container
+  (`quay.io/rockylinux/rockylinux:10.2`, pinned by digest), so build
+  dependencies and RDO's trunk repositories never reach the host. Hagistack
+  installs `podman` if it is missing.
+- It takes hours. Progress:
+  `/var/lib/hagistack/rpm-build/<id>/out/logs/pass1.log`.
+- It runs two passes: the manifest lists the services before the libraries they
+  need, so the services are built again once the libraries exist.
+- The result is kept in `/var/lib/hagistack/rpm-build/<id>/`, where `<id>`
+  identifies the build inputs. The same inputs are never rebuilt.
+
+**`bundle`: reusing a controller's set on compute nodes.**
+
+```sh
+# on the controller
+sudo ./hagistack rpm-bundle --output /root/hagistack-rpms.tar
+# copy the file to the node, then on the node
+sudo ./hagistack compute-add --controller-ip 10.0.0.10 \
+    --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar
+```
+
+The expected identity is read from the controller's `compute-secrets` file, so a
+bundle that is not the controller's set is refused.
 
 ## Build the RPM repository
+
+You normally do not run this yourself: `--rpm-source build` runs it for you in
+a container. This section describes `build-rpms.sh` for maintainers and for
+building on a separate machine.
 
 `build-rpms.sh` builds the packages listed in `gazpacho.manifest`:
 
@@ -118,8 +201,8 @@ versions EL10 has. Those are not OpenStack deliverables.
 - the OpenStack libraries and clients they need, at their 2026.1 versions;
 - ten static-asset and utility packages that Horizon needs and EL10 lacks.
 
-**Where to run it.** On a **disposable Rocky Linux 10.2 x86_64 VM or container**,
-never on an OpenStack node. It does the following as root:
+**Where to run it by hand.** On a **disposable Rocky Linux 10.2 x86_64 VM or
+container**, never directly on an OpenStack node. It does the following as root:
 
 - installs build dependencies (`sudo dnf builddep`);
 - writes `/etc/yum.repos.d/hagistack-gazpacho.repo`;
@@ -201,7 +284,7 @@ valid for 2025.1 specs. `probe-repos.sh` re-runs the read-only check for
 published EL10 OpenStack repositories. Its messages refer to sections of an
 earlier version of this README, which is available in the Git history.
 
-## Make the repository available
+## Use your own repository (`--repo-url`)
 
 `--repo-url` becomes the `baseurl` of `/etc/yum.repos.d/hagistack-gazpacho.repo`
 on each node. The node must be able to resolve `openstack-keystone` from it,
@@ -243,12 +326,17 @@ wins.
 
 | Option | Key | Required | Default |
 |---|---|---|---|
-| `--repo-url URL` | `REPO_URL` | all-in-one, compute-add | — |
-| `--ext-nic NAME` | `EXT_NIC` | all-in-one | — |
-| `--provider-cidr CIDR` | `PROVIDER_CIDR` | all-in-one | — |
-| `--provider-gateway IP` | `PROVIDER_GATEWAY` | all-in-one | — |
-| `--floating-start IP` | `FLOATING_START` | all-in-one | — |
-| `--floating-end IP` | `FLOATING_END` | all-in-one | — |
+| `--rpm-source SRC` | `RPM_SOURCE` | | `github`; `repo-url` if `--repo-url` is given; on a deployed host, the recorded source |
+| `--repo-url URL` | `REPO_URL` | with `--rpm-source repo-url` | — (`http(s)://…` or `file:///…`) |
+| `--rpm-bundle PATH` | `RPM_BUNDLE` | with `--rpm-source bundle` | — |
+| `--rpm-set-sha256 HEX` | `RPM_SET_EXPECTED` | | read from compute-secrets on `compute-add` |
+| `--rpm-lock-file PATH` | `RPM_LOCK_FILE` | | `rocky10.2/rpm-release.lock` (for testing a mirror) |
+| `--build-image REF@sha256:…` | `BUILD_IMAGE` | | the pinned Rocky 10.2 image |
+| `--ext-nic NAME` | `EXT_NIC` | all-in-one, controller | — |
+| `--provider-cidr CIDR` | `PROVIDER_CIDR` | all-in-one, controller | — |
+| `--provider-gateway IP` | `PROVIDER_GATEWAY` | all-in-one, controller | — |
+| `--floating-start IP` | `FLOATING_START` | all-in-one, controller | — |
+| `--floating-end IP` | `FLOATING_END` | all-in-one, controller | — |
 | `--tenant-cidr CIDR` | `TENANT_CIDR` | | `10.10.10.0/24` |
 | `--dns-server IP` | `DNS_SERVER` | | the provider gateway |
 | `--provider-physnet NAME` | `PROVIDER_PHYSNET` | | `physnet1` |
@@ -257,7 +345,8 @@ wins.
 | `--image-url URL` | `IMAGE_URL` | | the CirrOS 0.6.3 download URL |
 | `--image-sha256 HEX` | `IMAGE_SHA256` | set it whenever you change the URL | the published CirrOS digest |
 | `--image-file PATH` | `IMAGE_FILE` | | — (use a local file instead of downloading) |
-| `--controller-ip IP` | `CONTROLLER_IP` | compute-add | — |
+| `--controller-ip IP` | `CONTROLLER_IP` | remote compute-add | — |
+| `--local` | — | | add the hypervisor to this controller (compute-add only) |
 | `--mgmt-ip IP` | `MGMT_IP` | | autodetected |
 | `--virt-type kvm\|qemu` | `VIRT_TYPE` | | autodetected from `/dev/kvm` |
 | `--region-name NAME` | `REGION_NAME` | | `RegionOne` |
@@ -268,7 +357,7 @@ list them.
 An example `hagistack.env` (the values are placeholders):
 
 ```sh
-REPO_URL=file:///opt/hagistack-repo
+RPM_SOURCE=build
 EXT_NIC=eth1
 PROVIDER_CIDR=192.0.2.0/24
 PROVIDER_GATEWAY=192.0.2.1
@@ -280,7 +369,7 @@ FLOATING_END=192.0.2.200
 
 ```sh
 cd hagistack/rocky10.2
-sudo ./hagistack all-in-one --check --repo-url file:///opt/hagistack-repo \
+sudo ./hagistack all-in-one --check --rpm-source build \
     --ext-nic eth1 --provider-cidr 192.0.2.0/24 --provider-gateway 192.0.2.1 \
     --floating-start 192.0.2.100 --floating-end 192.0.2.200
 ```
@@ -293,6 +382,8 @@ sudo ./hagistack all-in-one --check --repo-url file:///opt/hagistack-repo \
 - the provider addresses (the gateway and the floating range inside the CIDR);
 - the tenant CIDR, the DNS server and the region;
 - `virt_type`;
+- the RPM source settings, and whether this command is allowed on this host's
+  recorded role;
 - disk and memory.
 
 It then prints every resolved setting and its source.
@@ -300,6 +391,8 @@ It then prints every resolved setting and its source.
 `--check` does **not** check the following, which are checked later when the
 installer reaches them:
 
+- whether the RPM set can be downloaded, built or unpacked: done in the RPM
+  source phase;
 - whether `--repo-url` works: checked in the repository phase;
 - for `compute-add`, whether the controller's ports are reachable: checked in
   the compute preflight.
@@ -307,28 +400,31 @@ installer reaches them:
 ## All-in-one installation
 
 ```sh
-sudo ./hagistack all-in-one --repo-url file:///opt/hagistack-repo   # plus your settings
+sudo ./hagistack all-in-one --rpm-source build   # plus your settings
+# once a release is published, simply:
+sudo ./hagistack all-in-one                      # plus your settings
 ```
 
 The phases run in this order:
 
 1. preflight
-2. repositories
-3. SELinux
-4. secrets
-5. packages
-6. MariaDB
-7. RabbitMQ
-8. memcached
-9. Keystone
-10. Glance
-11. Placement
-12. OVS/OVN
-13. Neutron
-14. Nova
-15. nova-compute
-16. initial resources
-17. Horizon
+2. RPM source (download, build or unpack, then verify)
+3. repositories
+4. SELinux
+5. secrets
+6. packages
+7. MariaDB
+8. RabbitMQ
+9. memcached
+10. Keystone
+11. Glance
+12. Placement
+13. OVS/OVN
+14. Neutron
+15. Nova
+16. nova-compute
+17. initial resources
+18. Horizon
 
 Where the APIs run:
 
@@ -353,9 +449,44 @@ and the exact commands for adding a compute node.
 | Security group rules | SSH and ICMP on the admin project's `default` group |
 | Keypair | `hagistack-key`, generated by Nova. The private key is `/etc/hagistack/hagistack-key`, mode `0600` |
 
+## Controller-only installation, then a local hypervisor
+
+```sh
+sudo ./hagistack controller --rpm-source build   # plus the same settings as all-in-one
+```
+
+`controller` runs every all-in-one phase except nova-compute: Keystone, Glance,
+Placement, Nova API/scheduler/conductor, Neutron with OVN (the controller is
+the gateway chassis), Horizon and the initial resources. It does not install
+`openstack-nova-compute`, `libvirt` or `qemu-kvm`. **Guests cannot boot until a
+compute node exists**; that is expected.
+
+To add the hypervisor to the same host later:
+
+```sh
+sudo ./hagistack compute-add --local
+```
+
+It uses the RPM set, management IP and region recorded on the controller, runs
+no controller phase again (credentials, configuration and data are untouched),
+installs the hypervisor packages, starts libvirt and nova-compute, waits for
+this host to be `up` and maps it into the cell. The host is then recorded as
+`all-in-one`.
+
+What may run on a host that is already deployed:
+
+| Recorded role | `all-in-one` | `controller` | `compute-add --local` | remote `compute-add` |
+|---|---|---|---|---|
+| controller | yes (adds the hypervisor) | yes (re-run) | yes | refused |
+| all-in-one | yes (re-run) | refused | yes (re-run) | refused |
+| compute | refused | refused | refused | yes (re-run) |
+
+The role is recorded in `/etc/hagistack/deployment.env`. Hagistack never
+removes a service.
+
 ## Add a compute node
 
-Run each step on the machine shown.
+Run each step on the machine shown. Repeat steps 1–5 for every node.
 
 **1. On the controller:** write the credentials a compute node needs to a file.
 The command refuses to write to a terminal.
@@ -367,7 +498,8 @@ The command refuses to write to a terminal.
 Your shell, not `hagistack`, creates `compute-secrets.env`, so its mode comes
 from your umask. The `umask 077` above makes it readable by you only.
 
-The file holds exactly these five credentials:
+The file holds exactly these five credentials, plus the controller's RPM-set
+identity (`RPM_SET_SHA256`, not a secret):
 
 - `RABBIT_PASS`
 - `NOVA_SERVICE_PASS`
@@ -385,9 +517,7 @@ scp compute-secrets.env NODE:/tmp/
 shred -u compute-secrets.env
 ```
 
-**3. On the new node:** install the credentials. Make the RPM repository
-available as well (see
-[Make the repository available](#make-the-repository-available)).
+**3. On the new node:** install the credentials.
 
 ```sh
 sudo install -d -m 0700 /etc/hagistack
@@ -399,16 +529,20 @@ shred -u /tmp/compute-secrets.env
 
 ```sh
 cd hagistack/rocky10.2
+# controller installed from the published release (github):
+sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP
+# controller built from source: reuse its RPMs instead of building again
+#   (on the controller: sudo ./hagistack rpm-bundle --output /root/hagistack-rpms.tar)
 sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP \
-    --repo-url file:///opt/hagistack-repo
+    --rpm-source bundle --rpm-bundle /root/hagistack-rpms.tar
+# controller installed with --repo-url:
+sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP --repo-url URL
 ```
 
 `compute-add` never generates secrets. It stops if `/etc/hagistack/secrets.env`
-is missing.
-
-It configures the repositories and switches SELinux to permissive **before** it
-checks that the controller's ports are reachable. If that check fails, it
-installs no packages, but those two changes have already been made.
+is missing. It checks that the controller's ports are reachable **before** it
+changes anything else, and it stops before installing packages if this node's
+RPM set is not the controller's.
 
 The node gets no database access: the database connection keys in `nova.conf`
 are commented out. It gets no admin credential and no provider bridge mapping.
@@ -520,13 +654,21 @@ exist are left in place.
 ## Command reference
 
 ```text
-sudo ./hagistack all-in-one  --repo-url URL [options]
+sudo ./hagistack all-in-one  [rpm options] [options]
+sudo ./hagistack controller  [rpm options] [options]   no hypervisor
 sudo ./hagistack all-in-one  --check [options]         preflight only; changes nothing
-sudo ./hagistack compute-add --controller-ip IP --repo-url URL [options]
+sudo ./hagistack compute-add --local                   on a controller: add the hypervisor
+sudo ./hagistack compute-add --controller-ip IP [rpm options] [options]
 sudo ./hagistack compute-secrets > FILE                controller; refuses a terminal
+sudo ./hagistack rpm-bundle --output FILE              controller; its RPM set as a tarball
+sudo ./hagistack rpm-prepare [rpm options]             prepare and verify the RPMs only
 sudo ./hagistack discover-hosts                        controller; map new compute hosts
-sudo ./hagistack status                                phases, SELinux, service state
+sudo ./hagistack status                                role, RPM set, phases, SELinux, services
 ./hagistack --help | --version
+
+rpm options: --rpm-source github|build|bundle|repo-url, --repo-url URL,
+             --rpm-bundle FILE, --rpm-set-sha256 HEX, --rpm-lock-file PATH,
+             --build-image REF@sha256:...
 ```
 
 Options for both modes:
@@ -556,17 +698,27 @@ The options for `all-in-one` and `compute-add` are listed under
 | `/etc/hagistack/secrets.env` | Every generated credential, including the Horizon secret key. On a compute node, only the five delivered keys | `0600` |
 | `/etc/hagistack/admin-openrc` | Admin credentials for the `openstack` CLI | `0600` |
 | `/etc/hagistack/hagistack-key` | Private key of the `hagistack-key` keypair | `0600` |
+| `/etc/hagistack/deployment.env` | This host's role, addresses and RPM-set identity. No secrets | `0600` |
 | `/var/lib/hagistack/state/` | Phase markers, plus the record of what was done to SELinux | — |
+| `/var/lib/hagistack/rpms/` | Verified RPM sets from `github` and `bundle` | — |
+| `/var/lib/hagistack/rpm-build/` | Source builds: work area and verified result per build-input id | — |
 | `/etc/yum.repos.d/hagistack-*.repo` | The repositories Hagistack added | — |
 | `/etc/selinux/config` | Set to `SELINUX=permissive` | — |
 | `./hagistack.env` | Your settings. It must not contain passwords | — |
 
 ## Troubleshooting
 
-- **`--repo-url is required on Rocky`, or the repository "does not offer
-  openstack-keystone".** The URL must point at a directory that has
-  `repodata/`, meaning `createrepo_c` has run over it. It must also be readable
-  from this node.
+- **"no published RPM release is pinned".** No release has been published for
+  this checkout yet. Use `--rpm-source build`, or `--repo-url` with a
+  repository you have.
+- **The download or a verification fails.** Nothing was installed. Hagistack
+  does not fall back to building; fix the network or the mirror and re-run, or
+  choose `--rpm-source build` yourself.
+- **"Switching the package set of a running cloud is an upgrade".** This host
+  was deployed from a different RPM set. Hagistack does not upgrade.
+- **The repository "does not offer openstack-keystone"** (`--repo-url`). The URL
+  must point at a directory that has `repodata/`, meaning `createrepo_c` has
+  run over it. It must also be readable from this node.
 - **A warning that `delorean-component-*` repositories are enabled.** Disable
   them:
 
@@ -582,9 +734,6 @@ The options for `all-in-one` and `compute-add` are listed under
 - **A run stops without an `error:` line.** The Rocky script does not always
   print the line where it stopped. The last `==>` step in the output is the
   phase that failed.
-- **`status` lists Horizon as unverified, and `--help` says Horizon is not
-  handled.** Both texts predate the Horizon work. The Horizon phase runs, and
-  the sign-in is verified (see [Horizon](#horizon)).
 - **`compute-add` stops: "the controller is not reachable on every port".**
   No packages were installed. Check the listed ports on the controller, and
   check any firewall between the two nodes.
@@ -616,6 +765,16 @@ Verified:
 
 Horizon was added last. After it was added, node1 was re-checked: the other
 services still answered, and a guest still reached ACTIVE.
+
+**2026-11-09 (0.2.0-rocky, implementer's acceptance, not yet independently
+audited):** on four Rocky 10.2 GCE VMs — `--rpm-source build` (195 RPMs built in
+a container on the host), `controller` followed by `compute-add --local`,
+`all-in-one --repo-url`, and two remote `compute-add` nodes (one with
+`--rpm-source bundle`, one with `--rpm-source github` against a mock release
+server). Guests booted on every hypervisor and pinged each other across nodes;
+re-runs exited 0 and restarted nothing. A real GitHub Release has not been
+published or tested. Details:
+[acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md](../acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md).
 
 ## Known limitations
 
