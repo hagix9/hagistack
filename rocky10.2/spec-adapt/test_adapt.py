@@ -290,7 +290,9 @@ class ManifestTests(unittest.TestCase):
         self.parse('PYPI python3-x x 1.0 x-1.0.tar.gz %s CC-BY-4.0,OFL-1.1,MIT x packaged\n' % SHA_A)
 
     def test_licence_files_are_checked_against_their_pins(self):
-        root = tempfile.mkdtemp(dir=os.environ.get('SPEC_ADAPT_INPUTS'))
+        os.makedirs(INPUTS, exist_ok=True)
+        root = tempfile.mkdtemp(dir=INPUTS)
+        self.addCleanup(shutil.rmtree, root)
         os.makedirs(os.path.join(root, 'third-party', 'licenses'))
         rel = 'third-party/licenses/LICENSE-x.txt'
         with open(os.path.join(root, rel), 'wb') as fh:

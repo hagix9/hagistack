@@ -200,7 +200,7 @@ else fail "collect: complete set" "rc=$RC $OUT"; fi
 
 # --- the real manifest ------------------------------------------------------
 n="$(BIC_LIB_ONLY=1 bash -c 'source "$1"; expected_packages "$2" | wc -l' _ "$BIC" "$HERE/../gazpacho.manifest")"
-rows="$(awk '$0 !~ /^[[:space:]]*($|#)/ && $1!="KEY" && $1!="SPEC" && $1!="PATCH"' "$HERE/../gazpacho.manifest" | wc -l)"
+rows="$(awk '$0 !~ /^[[:space:]]*($|#)/ && $1!="KEY" && $1!="SPEC" && $1!="PATCH" && $1!="LICENSE"' "$HERE/../gazpacho.manifest" | wc -l)"
 if [ "$n" -eq "$rows" ] && [ "$n" -eq 69 ]; then
     pass "gazpacho.manifest: 69 packages expected (59 distgit + 10 PYPI), as the 2026-11-09 build produced 69 SRPMs"
 else fail "gazpacho.manifest package count" "expected_packages=$n rows=$rows"; fi
