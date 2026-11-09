@@ -153,16 +153,33 @@ wsme                   wsme-distgit               93ceebf281683ea65785d306b9d72e
 #
 # fields: PYPI  rpm-name  pypi-name  version  sdist  sha256  license  summary...
 #
+# license is ONE field: SPDX identifiers joined by commas, written into the spec
+# joined by " AND " (CC-BY-4.0,OFL-1.1,MIT -> CC-BY-4.0 AND OFL-1.1 AND MIT).
+# A space would end the field: Font Awesome's row once read "OFL-1.1 AND MIT",
+# which made the License tag OFL-1.1 and put "AND MIT" into the summary.
+#
 PYPI python3-qrcode qrcode 8.2 qrcode-8.2.tar.gz 35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c BSD-3-Clause QR Code image generator
 PYPI python3-XStatic XStatic 1.0.3 XStatic-1.0.3.tar.gz 402544cc9e179489441054f09c807804e115ea246907de87c0355fb4f5a31268 MIT Base package for XStatic static file packages
 PYPI python3-XStatic-Angular XStatic-Angular 1.8.2.3 xstatic_angular-1.8.2.3.tar.gz 4ad638c12955e8146f5526fe19e08ef33fb63f901b503ec59ccb030bf268337e MIT AngularJS packaged for XStatic
-PYPI python3-XStatic-Font-Awesome XStatic-Font-Awesome 6.2.1.2 xstatic_font_awesome-6.2.1.2.tar.gz 9f3cb2f038fad7d352722375d3f25af346da9ee093ed9dc2c8c46bd911ab1971 OFL-1.1 AND MIT Font Awesome packaged for XStatic
+PYPI python3-XStatic-Font-Awesome XStatic-Font-Awesome 6.2.1.2 xstatic_font_awesome-6.2.1.2.tar.gz 9f3cb2f038fad7d352722375d3f25af346da9ee093ed9dc2c8c46bd911ab1971 CC-BY-4.0,OFL-1.1,MIT Font Awesome packaged for XStatic
 PYPI python3-XStatic-jQuery XStatic-jQuery 3.7.1.1 xstatic_jquery-3.7.1.1.tar.gz 0c2ac780d8388bfd8b94586f6a0f86541e8702b5fc96f1ded997866214809445 MIT jQuery packaged for XStatic
 PYPI python3-XStatic-JQuery-Migrate XStatic-JQuery-Migrate 3.3.2.2 xstatic_jquery_migrate-3.3.2.2.tar.gz 641ca995d838c151dfdcadbb0eb8d2e7d9855bcd398c77c36cc65c3e79f57228 MIT jQuery Migrate packaged for XStatic
 PYPI python3-XStatic-JQuery-quicksearch XStatic-JQuery.quicksearch 2.0.3.3 xstatic_jquery_quicksearch-2.0.3.3.tar.gz 71d7fc84a73fd5da4ae08d54ada83c6e1d809465c50106a94d72747f36023a3c MIT jQuery quicksearch packaged for XStatic
 PYPI python3-XStatic-JQuery-TableSorter XStatic-JQuery.TableSorter 2.14.5.3 xstatic_jquery_tablesorter-2.14.5.3.tar.gz e8a4f4900992fe87e2a41167a07fab0aaab39ef194090f58e0083892dc4bcc34 MIT jQuery TableSorter packaged for XStatic
 PYPI python3-XStatic-jquery-ui XStatic-jquery-ui 1.13.0.2 xstatic_jquery_ui-1.13.0.2.tar.gz 11b2aa7eaa1ad69c6e594cae11a817a8fa171cec9ceb82ae2ca4ba7e93d5ae43 MIT jQuery UI packaged for XStatic
 PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar.gz afda65f80b08fafb056ef216b47d2d1b31b2f607c956abb8c6b186d2727041ae MIT term.js packaged for XStatic
+#
+# Licence texts for the sdists above that carry none (see third-party/licenses/
+# NOTICE.md). Each file is added to that RPM as a %license document; the build
+# stops if the file is missing or its SHA-256 differs.
+#
+# fields: LICENSE  rpm-name  third-party/licenses/<file>  sha256
+#
+LICENSE python3-XStatic-jQuery              third-party/licenses/LICENSE-jquery-3.7.1.txt             d4db9ebe6f29f5168eac45ad713f055623ac5d0dcd5ba92da23d650ae012020d
+LICENSE python3-XStatic-JQuery-Migrate      third-party/licenses/LICENSE-jquery-migrate-3.3.2.txt     5cb3a35c5966f3715ccd4a8bcf1d70c921c76efd1af83a9fee66923ada36e29d
+LICENSE python3-XStatic-JQuery-quicksearch  third-party/licenses/LICENSE-jquery-quicksearch-2.0.3.txt a4b60f2086c2992c7d46c96c19cc74c63149f2f05bcde9331b8a2c7c96a8dfa7
+LICENSE python3-XStatic-JQuery-TableSorter  third-party/licenses/LICENSE-jquery-tablesorter-2.14.5.txt 38b85a91f2c8f2e556d028569a523e6b48ab35733f831e585b9f0ddb7cd0f37e
+LICENSE python3-XStatic-jquery-ui           third-party/licenses/LICENSE-jquery-ui-1.13.0.txt          de33fb695880d0b07615d4b86f78cd43796906959ade5fdfef70968827a0db78
 #
 # --- Hagistack's own adaptation of the pinned RDO specs ----------------------
 #
@@ -186,7 +203,7 @@ PYPI python3-XStatic-term-js XStatic-term.js 0.0.7.1 xstatic_term_js-0.0.7.1.tar
 # fields: PATCH  package  path-relative-to-this-directory  sha256
 #
 #DISABLED SPEC  cliff         python-cliff.spec            7569ea4219cbd317a1640fb708d0fd309b6b97186aa51ef6d36d42e886f54002 cb69acbb9b873d82304de29b970210149366927385fa79912c2502ca00df1cb2
-SPEC  horizon       python-django-horizon.spec   7f29e455a7f26384d2922b6adda920eeda06e3407ae59d5e556fd5788443dd12 29756e848c89672d411c17350b373b44eb8d3f2191673069c56411c7d3a07f86
+SPEC  horizon       python-django-horizon.spec   7f29e455a7f26384d2922b6adda920eeda06e3407ae59d5e556fd5788443dd12 0208a055fab1cf95d8e44713202869f1a0869896be619a804fd2d79b62229750
 SPEC  keystone      openstack-keystone.spec      27528b0241b48c856d1c138a5b30a63c1d3a3f4a7e9142d8659498b249f783fb 8669edf39ede8edc2d9d6e9cc5fcddd926330c11bd03daf64b6f62ef5ce7a693
 SPEC  neutron       openstack-neutron.spec       9869639694d3402720652a22c0488009091786b4954abf1e6e5eab017ab4b114 66c321ad0da346dc36140ca25fea650049f1791cbd737c4857983782c20ab41d
 SPEC  nova          openstack-nova.spec          63a748d1072ec5d63bb669d6fc5361b5054ba86827c5bd6dc896668e77a2bda6 b572431f216b7c2dc832f9235b35bafeec01254ce60760e01e007e799e87e9c2

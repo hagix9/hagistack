@@ -218,6 +218,12 @@ cd hagistack/rocky10.2
   ライセンス全文と通知とともに `third-party/neutron/` に置き、SHA-256（`PATCH` 行）で固定しています。
   そのため Neutron の RPM はリリース `2`（`28.0.2-2`）です。
   修正は `tests-neutron-maintenance-lock.py` で確認します。
+- PyPI の sdist のうち 5 つ（jQuery、jQuery Migrate、quicksearch、TableSorter、jQuery UI）にはライセンスファイルがありません。
+  上流のライセンス本文を `third-party/licenses/` に置き（詳細は同じディレクトリの `NOTICE.md`）、SHA-256（`LICENSE` 行）で固定して、
+  それらの RPM に `%license` として入れます。
+- `openstack-dashboard` には、ビルド時の `collectstatic` が作る XStatic ライブラリの写しと、それを圧縮したバンドルを入れません
+  （spec-adapt のルール `horizon`）。httpd の drop-in が、httpd の起動前に、導入済みの XStatic パッケージから両方を作り直します（以前から同じ動作です）。
+  リリース候補を作るスクリプトは、この 2 点をビルド済みの RPM で確認し、`THIRD_PARTY_NOTICES.md` を候補に含めます。
 
 **成果物。**
 

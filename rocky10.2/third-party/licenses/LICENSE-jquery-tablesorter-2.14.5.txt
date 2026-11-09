@@ -1,0 +1,30 @@
+jQuery TableSorter 2.14.5
+
+The upstream project states, in the header of jquery.tablesorter.js and in the
+"Licensing" section of its README at tag v2.14.5, that TableSorter is
+"Dual licensed under the MIT and GPL licenses" and points to
+http://www.opensource.org/licenses/mit-license.php for the MIT terms. Upstream
+ships no licence file at that tag, so the MIT terms are reproduced below with
+the copyright line upstream gives. Hagistack distributes TableSorter under the
+MIT License; the GPL option is not used.
+
+Copyright (c) 2007 Christian Bach
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

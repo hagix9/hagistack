@@ -95,6 +95,24 @@ RULES = {
             "find openstack_dashboard -name '*.mo' -print0 2>/dev/null \\",
             "  | tar --null -cf - -T - | tar -xf - -C %{buildroot}%{_datadir}/openstack-dashboard || :",
             ""], starts='%find_lang'),
+        # The build-time collectstatic copies every XStatic library (horizon/lib) into the
+        # dashboard's static tree, and the offline compressor bundles them into output.*.js
+        # and output.*.css. Neither copy is used at run time: the packaged httpd drop-in runs
+        # collectstatic --clear and compress --force before every start, rebuilding both from
+        # the XStatic packages the node has installed (python3-django-horizon requires all of
+        # them). So the copies are not shipped, and the third-party libraries reach a node
+        # only through their own XStatic packages, each with its own licence files.
+        insert('python-django-horizon.spec', '%install', 'after', [
+            "# Hagistack: do not ship the build-time copies of the XStatic libraries or the",
+            "# compressed bundles made from them. The httpd drop-in of this package rebuilds",
+            "# both from the installed XStatic packages before httpd starts, so nothing at run",
+            "# time reads these copies, and leaving them out means this package redistributes",
+            "# no third-party library of its own.",
+            "rm -rf %{buildroot}%{_datadir}/openstack-dashboard/static/horizon/lib",
+            "rm -f %{buildroot}%{_datadir}/openstack-dashboard/static/dashboard/js/output.*.js",
+            "rm -f %{buildroot}%{_datadir}/openstack-dashboard/static/dashboard/css/output.*.css",
+            "rm -f %{buildroot}%{_datadir}/openstack-dashboard/static/dashboard/manifest.json"],
+            starts='cp -a static/*'),
     ]),
 
     # keystone 29 dropped the generated WSGI scripts and wsgi-keystone.conf (release

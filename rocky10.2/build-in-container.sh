@@ -47,11 +47,11 @@ LOG_DIR="$OUT_DIR/logs"
 # ---------------------------------------------------------------------------
 
 # The packages build-rpms.sh will build from a manifest, in its own terms:
-# the first column, the rpm name for PYPI rows; KEY/SPEC/PATCH rows and
-# comments (including #DISABLED rows) are not packages.
+# the first column, the rpm name for PYPI rows; KEY/SPEC/PATCH/LICENSE rows
+# and comments (including #DISABLED rows) are not packages.
 expected_packages() {   # expected_packages <manifest>
     awk '$0 ~ /^[[:space:]]*($|#)/ {next}
-         $1=="KEY" || $1=="SPEC" || $1=="PATCH" {next}
+         $1=="KEY" || $1=="SPEC" || $1=="PATCH" || $1=="LICENSE" {next}
          $1=="PYPI" {print $2; next}
          {print $1}' "$1"
 }

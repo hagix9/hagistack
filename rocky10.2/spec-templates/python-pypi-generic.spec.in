@@ -22,6 +22,7 @@ Summary:        @SUMMARY@
 License:        @LICENSE@
 URL:            https://pypi.org/project/@PYPI_NAME@/
 Source0:        @SDIST@
+@EXTRA_LICENSE_SOURCES@
 BuildArch:      noarch
 
 BuildRequires:  python3-devel
@@ -63,9 +64,13 @@ rm -f %{buildroot}%{python3_sitelib}/*-nspkg.pth
 # NOTE: do not name a macro in a comment in this file. rpm expands macros inside
 # spec COMMENTS too, and the rest of the comment then becomes its arguments.
 ls %{buildroot}%{_bindir} 2>/dev/null | sed 's|^|%{_bindir}/|' >> %{pyproject_files} || :
-# Ship the upstream licence text with the package. Whatever licence files the
-# sdist carries at its top level are listed as licence documents; an sdist that
-# carries none adds nothing here (recorded in the release licence audit).
+# Some sdists carry no licence file. For those, the manifest names the upstream
+# licence text (LICENSE rows, third-party/licenses/), build-rpms.sh adds it as an
+# extra source, and the next line copies it here so the loop below lists it.
+@EXTRA_LICENSE_COPY@
+# Ship the upstream licence text with the package. Whatever licence files are at
+# the top level now (the sdist's own and any added above) are listed as licence
+# documents.
 for f in LICENSE* LICENCE* COPYING* NOTICE*; do
     [ -f "$f" ] && echo "%%license $f" >> %{pyproject_files}
 done

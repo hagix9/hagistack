@@ -19,7 +19,8 @@ usage:
   adapt.py --manifest FILE --check
   adapt.py --manifest FILE --package NAME --tree DIR [--root DIR]
 
---check validates every SPEC/PATCH row against the rules and the package rows.
+--check validates every SPEC/PATCH row against the rules and the package rows,
+and every LICENSE row against the PYPI rows and the licence file it pins.
 --package adapts the files of one package inside DIR (a staged copy of the pinned
 distgit) in place, and installs the package's PATCH files next to them.
 
@@ -47,6 +48,12 @@ HEX40 = re.compile(r'^[0-9a-f]{40}$')
 HEX64 = re.compile(r'^[0-9a-f]{64}$')
 KEYID = re.compile(r'^0x[0-9a-f]{40}$')
 PLAIN_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]*$')
+# A PYPI row's licence is ONE field: SPDX identifiers joined by commas, which
+# build-rpms.sh turns into " AND ". A space would end the field and push the rest
+# of the expression into the summary.
+LICENSE_FIELD = re.compile(r'^[A-Za-z0-9.+-]+(,[A-Za-z0-9.+-]+)*$')
+SPDX_OPERATORS = ('AND', 'OR', 'WITH')
+LICENCE_DIR = 'third-party/licenses/'
 
 
 def _need(cond, where, msg):
@@ -55,14 +62,26 @@ def _need(cond, where, msg):
 
 
 def parse_manifest(path):
-    """Strict reader. Returns (packages, specs, patches).
+    """Strict reader. Returns (packages, specs, patches); see _parse for LICENSE rows."""
+    return _parse(path)[:3]
+
+
+def licence_rows(path):
+    """LICENSE rows: rpm-name -> {relative path: sha256}."""
+    return _parse(path)[3]
+
+
+def _parse(path):
+    """Strict reader. Returns (packages, specs, patches, licences).
 
     packages: name -> dict(repo, commit, spec, version)
     specs:    name -> {file: (input_sha256, output_sha256)}
     patches:  name -> {relative path: sha256}
+    licences: PYPI rpm-name -> {relative path: sha256}
     Nothing is skipped: a row that is not one of the known kinds is an error.
     """
-    packages, specs, patches = {}, {}, {}
+    packages, specs, patches, licences = {}, {}, {}, {}
+    pypi, basenames = set(), {}
     with open(path, encoding='utf-8') as fh:
         rows = fh.read().splitlines()
     for n, raw in enumerate(rows, 1):
@@ -77,6 +96,11 @@ def parse_manifest(path):
         elif kind == 'PYPI':
             _need(len(f) >= 8 and HEX64.match(f[5]), where,
                   'PYPI needs: PYPI rpm-name pypi-name version sdist sha256 license summary...')
+            _need(LICENSE_FIELD.match(f[6]) and f[7] not in SPDX_OPERATORS, where,
+                  'PYPI licence must be one field of SPDX identifiers joined by commas '
+                  '(for example CC-BY-4.0,OFL-1.1,MIT), not %r followed by %r' % (f[6], f[7]))
+            _need(f[1] not in pypi, where, 'duplicate PYPI row for %s' % f[1])
+            pypi.add(f[1])
         elif kind == 'SPEC':
             _need(len(f) == 5 and PLAIN_NAME.match(f[1]) and PLAIN_NAME.match(f[2])
                   and HEX64.match(f[3]) and HEX64.match(f[4]), where,
@@ -93,16 +117,30 @@ def parse_manifest(path):
             slot = patches.setdefault(f[1], {})
             _need(p not in slot, where, 'duplicate PATCH row for %s %s' % (f[1], p))
             slot[p] = f[3]
+        elif kind == 'LICENSE':
+            _need(len(f) == 4 and PLAIN_NAME.match(f[1]) and HEX64.match(f[3]), where,
+                  'LICENSE needs: LICENSE rpm-name third-party/licenses/<file> sha256')
+            p = f[2]
+            base = p[len(LICENCE_DIR):]
+            _need(p.startswith(LICENCE_DIR) and PLAIN_NAME.match(base) and '/' not in base, where,
+                  'LICENSE path must be a plain file name directly under %s' % LICENCE_DIR)
+            # every licence file lands in the one shared SOURCES directory
+            _need(base not in basenames, where,
+                  'LICENSE file %s is already used by %s' % (base, basenames.get(base)))
+            basenames[base] = f[1]
+            licences.setdefault(f[1], {})[p] = f[3]
         else:
             # a package row: package repo commit spec version release tarball sha256 urlproj [key]
             _need(len(f) in (9, 10) and PLAIN_NAME.match(f[0]) and HEX40.match(f[2])
                   and HEX64.match(f[7]) and (len(f) == 9 or f[9] == '-' or KEYID.match(f[9])),
-                  where, 'not a KEY/PYPI/SPEC/PATCH row and not a valid package row: %r' % raw[:60])
+                  where, 'not a KEY/PYPI/SPEC/PATCH/LICENSE row and not a valid package row: %r' % raw[:60])
             _need(f[0] not in packages, where, 'duplicate package %s' % f[0])
             packages[f[0]] = dict(repo=f[1], commit=f[2], spec=f[3], version=f[4])
     for name in list(specs) + list(patches):
         _need(name in packages, os.path.basename(path), 'SPEC/PATCH row for unknown package %r' % name)
-    return packages, specs, patches
+    for name in licences:
+        _need(name in pypi, os.path.basename(path), 'LICENSE row for %r, which is not a PYPI rpm-name' % name)
+    return packages, specs, patches, licences
 
 
 # ---------------------------------------------------------------------------
@@ -371,14 +409,29 @@ def adapt_tree(manifest, pkg, tree, root, rules_table):
             pkg, os.path.basename(dest), sha256(data)[:12]))
 
 
-def check_manifest(manifest, rules_table):
-    packages, specs, patches = parse_manifest(manifest)
+def check_licences(licences, root):
+    for name, files in sorted(licences.items()):
+        for rel, want in sorted(files.items()):
+            p = os.path.join(root, rel)
+            if not os.path.isfile(p) or os.path.islink(p):
+                raise Stop('%s: licence file %s is missing (or a symlink)' % (name, rel))
+            with open(p, 'rb') as fh:
+                got = sha256(fh.read())
+            if got != want:
+                raise Stop('%s: licence file %s has SHA-256 %s, the manifest pins %s'
+                           % (name, rel, got[:16], want[:16]))
+
+
+def check_manifest(manifest, rules_table, root=None):
+    packages, specs, patches, licences = _parse(manifest)
     for pkg in sorted(set(specs) | set(patches)):
         if resolve(pkg, packages, specs, patches, rules_table) is None:
             raise Stop('%s: SPEC/PATCH rows without rules' % pkg)
-    print('manifest %s: %d package rows, %d adapted (%d SPEC, %d PATCH) - consistent with rules.py'
+    check_licences(licences, root or os.path.dirname(HERE))
+    print('manifest %s: %d package rows, %d adapted (%d SPEC, %d PATCH), %d LICENSE - consistent with rules.py'
           % (os.path.basename(manifest), len(packages), len(specs),
-             sum(map(len, specs.values())), sum(map(len, patches.values()))))
+             sum(map(len, specs.values())), sum(map(len, patches.values())),
+             sum(map(len, licences.values()))))
 
 
 def main(argv=None):
@@ -388,14 +441,14 @@ def main(argv=None):
     ap.add_argument('--package')
     ap.add_argument('--tree')
     ap.add_argument('--root', default=os.path.dirname(HERE),
-                    help='directory PATCH paths are relative to (default: the rocky10.2 directory)')
+                    help='directory PATCH and LICENSE paths are relative to (default: the rocky10.2 directory)')
     a = ap.parse_args(argv)
     try:
         import rules
         if a.check == bool(a.package) or (a.package and not a.tree):
             raise Stop('usage: --check, or --package NAME --tree DIR')
         if a.check:
-            check_manifest(a.manifest, rules.RULES)
+            check_manifest(a.manifest, rules.RULES, a.root)
         else:
             adapt_tree(a.manifest, a.package, a.tree, a.root, rules.RULES)
     except Stop as e:

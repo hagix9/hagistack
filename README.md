@@ -287,6 +287,9 @@ Third-party material keeps its own licence:
   Apache License 2.0. They are **not** covered by the MIT License. The licence text,
   the upstream attribution and the source commits are in the same directory
   (`LICENSE`, `NOTICE.md`).
+- `rocky10.2/third-party/licenses/` holds upstream licence texts (MIT) for five
+  XStatic packages whose PyPI sdists carry none. They are the licences of those
+  components, not Hagistack's; provenance is in `NOTICE.md` there.
 - Quotations from other projects in the records, such as upstream OpenStack commit
   identifiers and subjects in `acceptance/` or configuration excerpts in `ubuntu26.04/`, remain under
   their original licences.

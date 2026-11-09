@@ -258,6 +258,16 @@ falls back to "latest".
   Apache-2.0, kept in `third-party/neutron/` with the licence text and a notice,
   and pinned by SHA-256 (`PATCH` rows). The Neutron RPMs are therefore release
   `2` (`28.0.2-2`). `tests-neutron-maintenance-lock.py` checks the fix.
+- Five of the PyPI sdists (jQuery, jQuery Migrate, quicksearch, TableSorter,
+  jQuery UI) carry no licence file. Their upstream licence texts are kept in
+  `third-party/licenses/` (see its `NOTICE.md`), pinned by SHA-256 (`LICENSE`
+  rows) and installed in those RPMs as `%license` documents.
+- `openstack-dashboard` does not ship the copies of the XStatic libraries that
+  the build-time `collectstatic` makes, nor the compressed bundles made from
+  them (spec-adapt rule `horizon`). Its httpd drop-in rebuilds both from the
+  installed XStatic packages before httpd starts, as it always did. The
+  release-candidate script checks both points on the built RPMs, and copies
+  `THIRD_PARTY_NOTICES.md` into the candidate.
 
 **Outputs.**
 

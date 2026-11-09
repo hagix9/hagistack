@@ -19,6 +19,7 @@
 #                                          trust anchor is rpm-release.lock, not this)
 #   rpm-release.lock.candidate             the lock to commit IF this is published
 #   gazpacho.manifest, build-env.lock, LICENSE, third-party/   provenance
+#   THIRD_PARTY_NOTICES.md                 which licence covers what
 #
 # Runs on Rocky/EL (needs rpm, tar, sha256sum, python3). Exits non-zero on any
 # failed check; a candidate that fails a check is not written.
@@ -66,6 +67,26 @@ bad="$(cd "$SET_DIR/repo" && rpm -qp --nosignature --qf '%{BUILDHOST} %{NAME}\n'
 $bad"
 ok "every RPM header says BUILDHOST=$EXPECT_BUILDHOST"
 
+# Licence hygiene, checked on the RPMs themselves so a regression cannot ship:
+#   * openstack-dashboard must not carry the build-time copies of the XStatic
+#     libraries or the bundles made from them (spec-adapt rule 'horizon');
+#   * every RPM a LICENSE row names must install that licence file.
+dash="$(cd "$SET_DIR/repo" && ls openstack-dashboard-[0-9]*.rpm 2>/dev/null | head -1 || true)"
+[ -n "$dash" ] || die "openstack-dashboard is not in the set"
+leak="$(rpm -qpl --nosignature "$SET_DIR/repo/$dash" 2>/dev/null \
+        | grep -E '/static/horizon/lib/|/static/dashboard/(js/output\.|css/output\.|manifest\.json)' | head -3 || true)"
+[ -z "$leak" ] || die "$dash still ships third-party static copies:
+$leak"
+ok "$dash ships no copy of the XStatic libraries"
+while read -r _ rpmname rel _; do
+    f="$(cd "$SET_DIR/repo" && ls "$rpmname"-[0-9]*.rpm 2>/dev/null | head -1 || true)"
+    [ -n "$f" ] || die "$rpmname (LICENSE row) is not in the set"
+    lst="$(rpm -qpL --nosignature "$SET_DIR/repo/$f" 2>/dev/null || true)"
+    grep -q "/$(basename "$rel")\$" <<<"$lst" \
+        || die "$f does not install its licence file $(basename "$rel")"
+done < <(awk '$1=="LICENSE"' "$HERE/gazpacho.manifest")
+ok "every LICENSE row's RPM installs its licence file"
+
 echo "== package manifest =="
 {
     printf 'file\tname\tepoch\tversion\trelease\tarch\tlicense\tsourcerpm\tsha256\n'
@@ -94,6 +115,7 @@ cp -p "$HERE/gazpacho.manifest" "$OUT/"
 cp -p "$HERE/../LICENSE" "$OUT/LICENSE" 2>/dev/null || true
 [ -f "$SET_DIR/build-env.lock" ] && cp -p "$SET_DIR/build-env.lock" "$OUT/"
 cp -rp "$HERE/third-party" "$OUT/third-party"
+cp -p "$HERE/THIRD_PARTY_NOTICES.md" "$OUT/"
 
 ASHA="$(sha256sum "$OUT/$ASSET" | cut -d' ' -f1)"
 ASIZE="$(stat -c %s "$OUT/$ASSET")"

@@ -154,6 +154,11 @@ TEMPLATE="$HERE/spec-templates/python-pypi-generic.spec.in"
 build_pypi() {   # build_pypi <rpm-name> <pypi-name> <version> <sdist> <sha256> <license> <summary>
     local rpmname="$1" pypi="$2" version="$3" sdist="$4" tsha="$5" lic="$6"; shift 6
     local summary="$*"
+    # The licence is one manifest field: SPDX identifiers joined by commas. A space
+    # would have ended the field and pushed the rest into the summary.
+    [[ "$lic" =~ ^[A-Za-z0-9.+-]+(,[A-Za-z0-9.+-]+)*$ ]] \
+        || die "$rpmname: licence field '$lic' is not SPDX identifiers joined by commas"
+    local spdx="${lic//,/ AND }"
     say "$rpmname — PyPI $pypi $version (sha256-pinned, unsigned upstream)"
     [ -r "$TEMPLATE" ] || die "spec template not found: $TEMPLATE"
 
@@ -174,11 +179,35 @@ build_pypi() {   # build_pypi <rpm-name> <pypi-name> <version> <sdist> <sha256> 
         -e "s|@RELEASE@|1|g" \
         -e "s|@SDIST@|$sdist|g" \
         -e "s|@TOPDIR@|$topdir|g" \
-        -e "s|@LICENSE@|$lic|g" \
+        -e "s|@LICENSE@|$spdx|g" \
         -e "s|@SUMMARY@|$summary|g" \
         -e "s|@DATE@|$(LC_ALL=C date '+%a %b %d %Y')|g" \
         "$TEMPLATE" > "$spec"
-    ok "spec generated from the template (unpacks into $topdir)"
+
+    # Licence texts the sdist does not carry: LICENSE rows in the manifest, each
+    # pinned by SHA-256 and checked here again before it is handed to rpmbuild.
+    local rel lsha got lsrc="" lcopy="" n=1000 lnames=""
+    while read -r rel lsha; do
+        [ -f "$HERE/$rel" ] && [ ! -L "$HERE/$rel" ] \
+            || die "$rpmname: licence file $rel is missing (or a symlink)"
+        got="$(sha256sum "$HERE/$rel" | cut -d' ' -f1)"
+        [ "$got" = "$lsha" ] \
+            || die "$rpmname: licence file $rel has SHA-256 ${got:0:16}…, the manifest pins ${lsha:0:16}…"
+        install -m 0644 "$HERE/$rel" "$SRC/$(basename "$rel")"
+        n=$((n+1))
+        lsrc+="Source$n:     $(basename "$rel")\n"
+        lcopy+=" %{SOURCE$n}"
+        lnames+=" $(basename "$rel")"
+    done < <(awk -v r="$rpmname" '$1=="LICENSE" && $2==r {print $3, $4}' "$MANIFEST")
+    local copy=":"
+    [ -n "$lcopy" ] && copy="cp -p$lcopy ."
+    awk -v src="$lsrc" -v copy="$copy" '
+        $0 == "@EXTRA_LICENSE_SOURCES@" { printf "%s", src; next }
+        $0 == "@EXTRA_LICENSE_COPY@"    { print copy; next }
+        { print }' "$spec" > "$spec.tmp" && mv "$spec.tmp" "$spec"
+    ! grep -q '@[A-Z_]*@' "$spec" || die "$rpmname: unfilled placeholder left in $spec"
+    ok "spec generated from the template (unpacks into $topdir; License: $spdx)"
+    [ -n "$lnames" ] && ok "licence files added from the manifest:$lnames"
 
     say "$rpmname — build dependencies"
     sudo dnf -y builddep "$spec" > "$LOGDIR/$rpmname.builddep.log" 2>&1
@@ -487,7 +516,7 @@ if [ "${1:-}" = "--publish" ]; then publish_repo; exit $?; fi
 python3 "$ADAPT" --manifest "$MANIFEST" --check || die "manifest check failed: $MANIFEST"
 
 while read -r pkg repo commit specfile version release tarball tsha urlproj signkey _rest; do
-    case "$pkg" in ''|\#*|KEY|SPEC|PATCH) continue ;; esac
+    case "$pkg" in ''|\#*|KEY|SPEC|PATCH|LICENSE) continue ;; esac
     # PYPI <rpm-name> <pypi-name> <version> <sdist> <sha256> <license> <summary...>
     if [ "$pkg" = "PYPI" ]; then
         if [ ${#WANT[@]} -gt 0 ]; then

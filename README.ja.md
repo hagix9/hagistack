@@ -274,6 +274,9 @@ Copyright (c) 2026 Shiro Hagihara。
 - `rocky10.2/third-party/neutron/` には、Apache License 2.0 の OpenStack Neutron の patch が 2 つあります。
   これらは MIT License の**対象外**です。ライセンス全文、上流の帰属表示、元のコミットは
   同じディレクトリ（`LICENSE`、`NOTICE.md`）にあります。
+- `rocky10.2/third-party/licenses/` には、PyPI の sdist にライセンスファイルがない XStatic パッケージ 5 つについて、
+  上流のライセンス本文（MIT）を置いています。これらはそれぞれのコンポーネントのライセンスで、Hagistack のものではありません。
+  出典は同じディレクトリの `NOTICE.md` にあります。
 - `acceptance/` の記録にある上流 OpenStack のコミット ID と件名や、`ubuntu26.04/` の記録にある設定の抜粋など、
   他のプロジェクトからの引用は、元のライセンスのままです。
 - このスクリプトが導入またはビルドするソフトウェア（OpenStack、RDO のパッケージング、Python パッケージなど）は、

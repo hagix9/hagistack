@@ -31,6 +31,7 @@ gamma  gamma-distgit  c3 g.spec 1.0 1 gamma-1.0.tar.gz 00 gamma 0xabc
 PYPI python3-delta delta 1.0 delta-1.0.tar.gz 00 MIT a summary
 SPEC alpha a.spec 00 00
 PATCH beta x.patch 00
+LICENSE python3-delta third-party/licenses/LICENSE-delta.txt 00
 EOF
 
 # run_case <name> <scenario-body>
@@ -72,7 +73,7 @@ fake_pass1() { $DEP_BETA; printf 'PASS alpha (built)\nFAIL beta (rpmbuild exit 1
 fake_pass2() { printf 'PASS beta (built)\n' > \$L/pass2.results; echo ok > \$L/pass2.log; return 0; }"
 ok_case "two-pass: a build-dependency failure in pass 1 is rebuilt in pass 2"
 grep -qx 'RUN-PASS 2: beta' <<<"$CALLS" && pass "two-pass: pass 2 builds exactly the failed package" || fail "two-pass: pass 2 arguments" "$CALLS"
-grep -q "count=4" <<<"$OUT" && pass "two-pass: 4 expected packages (KEY/SPEC/PATCH/#DISABLED excluded, PYPI by rpm name)" || fail "expected count" "$OUT"
+grep -q "count=4" <<<"$OUT" && pass "two-pass: 4 expected packages (KEY/SPEC/PATCH/LICENSE/#DISABLED excluded, PYPI by rpm name)" || fail "expected count" "$OUT"
 
 run_case normal1 "
 fake_pass1() { $ALL4 > \$L/pass1.results; echo ok > \$L/pass1.log; return 0; }"

@@ -239,7 +239,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(pk['pkg']['commit'], COMMIT)
 
     def test_unknown_or_malformed_rows_are_errors_not_skipped(self):
-        self.rejects('SPECS pkg pkg.spec %s %s\n' % (SHA_A, SHA_B), 'not a KEY/PYPI/SPEC/PATCH row')
+        self.rejects('SPECS pkg pkg.spec %s %s\n' % (SHA_A, SHA_B), 'not a KEY/PYPI/SPEC/PATCH/LICENSE row')
         self.rejects(PKG_ROW + 'SPEC pkg pkg.spec %s\n' % SHA_A, 'SPEC needs')
         self.rejects(PKG_ROW + 'SPEC pkg pkg.spec %s %s extra\n' % (SHA_A, SHA_B), 'SPEC needs')
         self.rejects(PKG_ROW + 'SPEC pkg pkg.spec %s %s\n' % ('g' * 64, SHA_B), 'SPEC needs')
@@ -247,9 +247,74 @@ class ManifestTests(unittest.TestCase):
         self.rejects(PKG_ROW + 'PATCH pkg ../escape.patch %s\n' % SHA_A, 'stay inside')
         self.rejects(PKG_ROW + 'PATCH pkg /abs.patch %s\n' % SHA_A, 'stay inside')
         self.rejects(PKG_ROW + 'PATCH pkg x.patch\n', 'PATCH needs')
-        self.rejects(PKG_ROW.replace(COMMIT, COMMIT[:39]), 'not a KEY/PYPI/SPEC/PATCH row')
+        self.rejects(PKG_ROW.replace(COMMIT, COMMIT[:39]), 'not a KEY/PYPI/SPEC/PATCH/LICENSE row')
         self.rejects('KEY 0x1234 abc\n', 'KEY needs')
         self.rejects('PYPI only three fields\n', 'PYPI needs')
+
+    PYPI_ROW = 'PYPI python3-x x 1.0 x-1.0.tar.gz %s MIT x packaged\n' % SHA_A
+
+    def licences(self, text):
+        with tempfile.NamedTemporaryFile('w', suffix='.manifest', delete=False) as fh:
+            fh.write(text)
+        try:
+            return adapt.licence_rows(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_licence_rows_attach_to_a_pypi_package(self):
+        got = self.licences(self.PYPI_ROW + 'LICENSE python3-x third-party/licenses/LICENSE-x.txt %s\n' % SHA_B)
+        self.assertEqual(got, {'python3-x': {'third-party/licenses/LICENSE-x.txt': SHA_B}})
+        # the old three-value reader is unchanged for every other caller
+        self.assertEqual(len(self.parse(self.PYPI_ROW + 'LICENSE python3-x third-party/licenses/L.txt %s\n' % SHA_B)), 3)
+
+    def test_bad_licence_rows_stop(self):
+        ok = 'LICENSE python3-x third-party/licenses/LICENSE-x.txt %s\n' % SHA_B
+        self.rejects(ok, 'not a PYPI rpm-name')                                     # no such PYPI row
+        self.rejects(PKG_ROW + ok.replace('python3-x', 'pkg'), 'not a PYPI rpm-name')  # a distgit package
+        self.rejects(self.PYPI_ROW + ok.replace(SHA_B, 'g' * 64), 'LICENSE needs')
+        self.rejects(self.PYPI_ROW + ok.replace(' %s' % SHA_B, ''), 'LICENSE needs')
+        for bad in ('third-party/neutron/LICENSE', 'third-party/licenses/../neutron/LICENSE',
+                    'third-party/licenses/sub/LICENSE', '/etc/passwd', 'LICENSE-x.txt'):
+            self.rejects(self.PYPI_ROW + ok.replace('third-party/licenses/LICENSE-x.txt', bad),
+                         'directly under third-party/licenses/')
+        # one shared SOURCES directory: the same file name twice would overwrite
+        two = 'PYPI python3-y y 1.0 y-1.0.tar.gz %s MIT y packaged\n' % SHA_A
+        self.rejects(self.PYPI_ROW + two + ok + ok.replace('python3-x', 'python3-y'), 'already used by python3-x')
+
+    def test_pypi_licence_is_one_field(self):
+        self.rejects('PYPI python3-x x 1.0 x-1.0.tar.gz %s OFL-1.1 AND MIT x packaged\n' % SHA_A,
+                     'one field of SPDX identifiers')
+        self.rejects('PYPI python3-x x 1.0 x-1.0.tar.gz %s MIT;rm x packaged\n' % SHA_A,
+                     'one field of SPDX identifiers')
+        self.rejects(self.PYPI_ROW + self.PYPI_ROW, 'duplicate PYPI')
+        self.parse('PYPI python3-x x 1.0 x-1.0.tar.gz %s CC-BY-4.0,OFL-1.1,MIT x packaged\n' % SHA_A)
+
+    def test_licence_files_are_checked_against_their_pins(self):
+        root = tempfile.mkdtemp(dir=os.environ.get('SPEC_ADAPT_INPUTS'))
+        os.makedirs(os.path.join(root, 'third-party', 'licenses'))
+        rel = 'third-party/licenses/LICENSE-x.txt'
+        with open(os.path.join(root, rel), 'wb') as fh:
+            fh.write(b'licence text\n')
+        good = {'python3-x': {rel: sha(b'licence text\n')}}
+        adapt.check_licences(good, root)
+        with self.assertRaisesRegex(adapt.Stop, 'manifest pins'):
+            adapt.check_licences({'python3-x': {rel: SHA_A}}, root)
+        with self.assertRaisesRegex(adapt.Stop, 'missing'):
+            adapt.check_licences({'python3-x': {'third-party/licenses/nope.txt': SHA_A}}, root)
+        os.unlink(os.path.join(root, rel))
+        os.symlink('/etc/hosts', os.path.join(root, rel))
+        with self.assertRaisesRegex(adapt.Stop, 'missing'):
+            adapt.check_licences(good, root)
+
+    def test_the_real_manifest_licence_rows(self):
+        got = adapt.licence_rows(GAZPACHO)
+        self.assertEqual(sorted(got), ['python3-XStatic-JQuery-Migrate', 'python3-XStatic-JQuery-TableSorter',
+                                       'python3-XStatic-JQuery-quicksearch', 'python3-XStatic-jQuery',
+                                       'python3-XStatic-jquery-ui'])
+        with open(GAZPACHO) as fh:
+            fa = [l.split() for l in fh if l.startswith('PYPI python3-XStatic-Font-Awesome ')][0]
+        self.assertEqual(fa[6], 'CC-BY-4.0,OFL-1.1,MIT')
+        self.assertEqual(' '.join(fa[7:]), 'Font Awesome packaged for XStatic')
 
     def test_duplicates_and_orphans(self):
         self.rejects(PKG_ROW + PKG_ROW, 'duplicate package')
@@ -333,6 +398,20 @@ class PinnedInputTests(unittest.TestCase):
                 out = self.adapt_one(pkg)
                 for name, data in out.items():
                     self.assertEqual(sha(data), SPECS[pkg][name][1])
+
+    def test_horizon_does_not_ship_the_collected_xstatic_copies(self):
+        lines = self.adapt_one('horizon')['python-django-horizon.spec'].decode().splitlines()
+        cp = lines.index('cp -a static/* %{buildroot}%{_datadir}/openstack-dashboard/static')
+        self.assertLess(lines.index('%install'), cp)
+        removed = [l for l in lines[cp + 1:lines.index('%check')] if l.startswith('rm ')]
+        base = '%{buildroot}%{_datadir}/openstack-dashboard/static/'
+        self.assertEqual(removed, ['rm -rf ' + base + 'horizon/lib',
+                                   'rm -f ' + base + 'dashboard/js/output.*.js',
+                                   'rm -f ' + base + 'dashboard/css/output.*.css',
+                                   'rm -f ' + base + 'dashboard/manifest.json'])
+        # the comment above them names no macro: rpm expands macros in spec comments
+        for l in lines[cp + 1:cp + 6]:
+            self.assertTrue(l.startswith('# ') and '%' not in l, l)
 
     def test_adaptation_is_deterministic(self):
         for pkg in self.PACKAGES:
@@ -669,6 +748,48 @@ class ThirdPartyTests(unittest.TestCase):
 # ===========================================================================
 # 5. repository-level invariants of the migration
 # ===========================================================================
+LICENCES = os.path.join(ROOT, 'third-party', 'licenses')
+
+
+class LicenceTextTests(unittest.TestCase):
+    def test_layout_is_exactly_what_the_manifest_pins(self):
+        rows = {p: h for files in adapt.licence_rows(GAZPACHO).values() for p, h in files.items()}
+        self.assertEqual(sorted(os.listdir(LICENCES)),
+                         sorted(['NOTICE.md'] + [os.path.basename(p) for p in rows]))
+        adapt.check_licences(adapt.licence_rows(GAZPACHO), ROOT)
+        with open(os.path.join(LICENCES, 'NOTICE.md')) as fh:
+            notice = fh.read()
+        for p, h in rows.items():
+            self.assertIn(os.path.basename(p), notice)
+            self.assertIn(h, notice)
+        self.assertIn('not covered by Hagistack', notice)
+
+    def test_texts_are_upstream_licences_not_hagistacks(self):
+        for n in os.listdir(LICENCES):
+            if n == 'NOTICE.md':
+                continue
+            with open(os.path.join(LICENCES, n)) as fh:
+                t = fh.read()
+            self.assertIn('Permission is hereby granted', t, n)
+            self.assertNotIn('Hagihara', t, n)
+        with open(os.path.join(LICENCES, 'LICENSE-jquery-tablesorter-2.14.5.txt')) as fh:
+            t = fh.read()
+        self.assertIn('Copyright (c) 2007 Christian Bach', t)
+        self.assertIn('the GPL option is not used', t)
+
+    def test_template_has_each_licence_placeholder_once(self):
+        with open(os.path.join(ROOT, 'spec-templates', 'python-pypi-generic.spec.in')) as fh:
+            t = fh.read().splitlines()
+        self.assertEqual(t.count('@EXTRA_LICENSE_SOURCES@'), 1)
+        self.assertEqual(t.count('@EXTRA_LICENSE_COPY@'), 1)
+        self.assertLess(t.index('@EXTRA_LICENSE_COPY@'), t.index('for f in LICENSE* LICENCE* COPYING* NOTICE*; do'))
+        with open(os.path.join(ROOT, 'build-rpms.sh')) as fh:
+            b = fh.read()
+        self.assertIn('@EXTRA_LICENSE_SOURCES@', b)
+        self.assertIn('@EXTRA_LICENSE_COPY@', b)
+        self.assertIn('KEY|SPEC|PATCH|LICENSE) continue', b)
+
+
 class RepositoryTests(unittest.TestCase):
     def test_the_old_patches_are_gone(self):
         self.assertFalse(os.path.exists(os.path.join(ROOT, 'spec-patches')))
