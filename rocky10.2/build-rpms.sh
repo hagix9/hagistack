@@ -262,6 +262,28 @@ build_srpm() {   # build_srpm <spec> <name>
 }
 
 # ---------------------------------------------------------------------------
+# distgit sources into SOURCES, from the staged (adapted) copy
+#
+# Called before EVERY rpmbuild of a package, not once. rpmbuild runs %prep
+# again on each call (each -br round of the dynamic BuildRequires, then -bb),
+# and a spec may edit a file in SOURCES in place there. RDO's neutron spec does:
+# its %prep rewrites /usr/bin/python to /usr/bin/python3 in
+# neutron-destroy-patch-ports.service with sed -i. Applied to the same file four
+# times, that gave ExecStart=/usr/bin/python3333. Re-copying the staged files
+# first means every %prep, and the source RPM, start from the reviewed input.
+# For a spec that edits nothing in SOURCES this copies identical bytes.
+# ---------------------------------------------------------------------------
+stage_distgit_sources() {   # stage_distgit_sources <staged-dir> -> prints the file count
+    local dir="$1" f n=0
+    while IFS= read -r f; do
+        case "$f" in *.spec) continue ;; esac
+        install -D -m 0644 "$f" "$SRC/$(basename "$f")" || return 1
+        n=$((n+1))
+    done < <(find "$dir" -type f -not -path '*/.git/*' | sort)
+    printf '%s\n' "$n"
+}
+
+# ---------------------------------------------------------------------------
 # one package
 # ---------------------------------------------------------------------------
 build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <tarball> <sha256> <urlproj> <signing-key>
@@ -304,12 +326,7 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
         ok "spec version set to $version-${release:-1} (the spec shipped 'XXX', as DLRN expects)"
     fi
     # every other tracked file in the distgit is a Source/Patch
-    local f n=0
-    while IFS= read -r f; do
-        case "$f" in *.spec) continue ;; esac
-        install -D -m 0644 "$f" "$SRC/$(basename "$f")"
-        n=$((n+1))
-    done < <(find "$dir" -type f -not -path '*/.git/*' | sort)
+    local n; n="$(stage_distgit_sources "$dir")" || die "$pkg: staging the distgit sources failed"
     ok "spec + $n distgit source files staged"
 
     # tarballs.openstack.org groups by project name, which is the manifest's
@@ -383,6 +400,8 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
     # pyproject-rpm-macros emits more BuildRequires during %generate_buildrequires.
     local round
     for round in 1 2 3; do
+        # every %prep starts from the reviewed input (see stage_distgit_sources)
+        stage_distgit_sources "$dir" >/dev/null || die "$pkg: re-staging the distgit sources failed"
         rpmbuild -br --nodeps "$spec" > "$LOGDIR/$pkg.br.log" 2>&1
         local nosrc; nosrc="$(ls -t "$RPMTOP"/SRPMS/*.buildreqs.nosrc.rpm 2>/dev/null | head -1)"
         [ -n "$nosrc" ] || break
@@ -400,6 +419,7 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
         log_nocheck="yes"
         printf '  NOTE  building with --nocheck: the test suite is NOT run for %s\n' "$pkg"
     fi
+    stage_distgit_sources "$dir" >/dev/null || die "$pkg: re-staging the distgit sources failed"
     # shellcheck disable=SC2086
     rpmbuild -bb $checkflag "$spec" > "$LOGDIR/$pkg.rpmbuild.log" 2>&1
     local rc=$?
@@ -407,6 +427,8 @@ build_one() {   # build_one <pkg> <repo> <commit> <spec> <version> <release> <ta
         ok "rpmbuild exit=0"
         grep -aE "Good signature|gpgverify" "$LOGDIR/$pkg.rpmbuild.log" | head -3 | sed 's/^/      /'
         find "$RPMTOP/RPMS" -name "*.rpm" -newer "$spec" -printf '      %f\n' | sort
+        # the source RPM carries the reviewed inputs, not what %prep made of them
+        stage_distgit_sources "$dir" >/dev/null || die "$pkg: re-staging the distgit sources failed"
         build_srpm "$spec" "$pkg" || rc=1
     fi
     if [ "$rc" -eq 0 ]; then
