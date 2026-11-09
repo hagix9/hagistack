@@ -484,9 +484,10 @@ sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP \
 sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP --repo-url URL
 ```
 
-`compute-add` は資格情報を生成しません。`/etc/hagistack/secrets.env` がなければ停止します。
+`compute-add` は資格情報を生成しません。`/etc/hagistack/secrets.env` がない場合や、有効な `RPM_SET_SHA256` を含まない場合は停止します（コントローラでこのバージョンを使って作り直してください）。
 ほかの変更より**前に**コントローラのポートへの到達性を確認し、
 このノードの RPM セットがコントローラと異なれば、パッケージをインストールする前に停止します。
+また、このノードで Nova のデータベース接続設定が有効なまま残っている場合（`nova.conf` 以外に nova-compute が読むファイルも含む）は、nova-compute を起動せずに停止します。
 
 このノードには、データベースへのアクセス権はありません（`nova.conf` のデータベース接続のキーはコメントアウトします）。
 admin の資格情報も、provider ブリッジのマッピングもありません。

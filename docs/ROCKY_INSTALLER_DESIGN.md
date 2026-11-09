@@ -65,7 +65,7 @@ Nothing ever removes a service. The only transition is controller → all-in-one
 | packages | full set | full minus `openstack-nova-compute libvirt qemu-kvm` | compute set | compute set |
 | MariaDB … Nova (API, scheduler, conductor) | ✓ | ✓ | – | – |
 | OVN | central + chassis (gateway) | central + chassis (gateway) | – (already a chassis) | chassis only |
-| nova-compute | ✓, waits for this host `up`, discover_hosts | – | ✓, same | ✓, DB keys commented out |
+| nova-compute | ✓, waits for this host `up`, discover_hosts | – | ✓, same | ✓, DB keys commented out, then verified absent (see 2.4) |
 | metadata agent | ✓ | ✓ | – | ✓ |
 | initial resources, Horizon | ✓ | ✓ | – | – |
 
@@ -97,6 +97,19 @@ secrets.env". Several compute nodes are added by repeating 2–4 per node.
 No NIC or bridge is ever changed on any node except creating the empty OVS
 bridge `br-ex` on the controller; the provider NIC is never attached to it
 (unchanged limitation).
+
+### 2.4 Remote compute has no database (audit B-2)
+
+A remote compute node holds no database password. In `/etc/nova/nova.conf`
+hagistack comments out `connection` and `slave_connection` in `[database]` and
+`[api_database]`. Before nova-compute is started or restarted it then proves no
+database setting is in effect, by two readings: `nova.conf` itself (commented
+lines are not values), and the **effective** configuration as oslo.config
+resolves it for `nova-compute` (run as the nova user with Nova's own option
+definitions; the unit passes no `--config-file`, so this covers
+`nova-compute.conf`, `nova.conf.d/`, `nova-compute.conf.d/` and the nova
+user's home). Any key in effect, or a check that cannot run, stops the run
+without starting nova-compute. Files hagistack did not write are not edited.
 
 ## 3. RPM preparation
 
@@ -177,8 +190,22 @@ refused), with podman installed on the host if missing:
   their digests are logged), build tools; then `build-rpms.sh --nocheck` with
   `BUILD_SRPMS=1`. Pass 1 builds everything; the services fail on build order
   because the manifest lists them before their libraries; pass 2 rebuilds
-  exactly the packages pass 1 reported as failed (the recorded two-pass
-  procedure, automated). A `STOP` (pin/verification failure) is never retried.
+  exactly those packages (the recorded two-pass procedure, automated).
+  Every pass is judged fail-closed (audit B-1):
+  - each pass's exit status is taken explicitly; a `STOP` (pin, digest,
+    signature or fetch failure) ends the build and is never retried;
+  - the results file must exist, be non-empty, contain only
+    `PASS|FAIL <name> (<detail>)` lines and name every expected package
+    exactly once (expected = the manifest's package rows, PYPI rows by rpm
+    name; `#DISABLED` rows excluded) — missing, empty, malformed, truncated,
+    duplicated or extra entries stop the build;
+  - exit status and results must agree (0 if and only if no FAIL);
+  - only build-dependency failures (rpmbuild exit 11 with "is needed by" in
+    that package's log) go to pass 2; any other failure stops the build;
+  - pass 2 must build every one of them; a package failing twice stops;
+  - the number of SRPMs collected must equal the number of manifest packages;
+  - `logs/build.ok` is written last, and hagistack refuses a container that
+    exited 0 without it. A partial RPM set is never used.
 - `%_buildhost` is fixed to `hagistack-builder` so RPM headers carry no
   cloud-internal host name.
 - result: `repo/` (flat, gzip repodata), `srpms/`, `logs/`, `build-env.lock`;
@@ -189,9 +216,14 @@ the container. A second host is therefore not required.
 
 Work directory: `/var/lib/hagistack/rpm-build/<input-id>/`, where input-id is
 the SHA-256 over `gazpacho.manifest`, `build-rpms.sh`, `build-in-container.sh`,
-`spec-adapt/`, `spec-templates/`, `third-party/`. Same inputs → the verified
-result is reused, no rebuild. Old work directories are not deleted
-automatically.
+`spec-adapt/`, `spec-templates/`, `third-party/` **and the content digest of
+the build image** (audit N-1; the digest, not the name or tag, so
+`--build-image` with another digest never reuses a result built in another
+image). Same inputs and digest → the verified result is reused, no rebuild.
+After pulling, hagistack checks that the image carries the pinned digest.
+Work directories are never deleted automatically; those created before the
+digest was part of the identity are simply no longer matched (a deployed host
+is unaffected: it re-uses the set recorded in `deployment.env`).
 
 `build-rpms.sh` remains usable on its own exactly as before; the additions
 (`BUILD_SRPMS`, `RESULTS_FILE`) are opt-in environment variables.
@@ -201,12 +233,20 @@ automatically.
 - Every node records its set identity in `deployment.env` when packages are
   installed. A later run whose prepared set differs **stops** before installing
   anything (switching sets is an upgrade, and hagistack does not do upgrades).
-- `compute-secrets` carries the controller's `RPM_SET_SHA256`. `compute-add`
-  stops when the node's set differs from it.
+- `compute-secrets` carries the controller's `RPM_SET_SHA256`. It is
+  **required** for a new remote compute node (audit B-3): missing, malformed
+  (neither 64 hex nor `repo-url`) or different stops `compute-add` before
+  anything is downloaded or installed. The only exception is a re-run on a host
+  already recorded as a hagistack compute node with its own recorded set, which
+  is then held to that set. A controller deployed by hagistack 0.1.0 has no
+  record: re-run its command with this version first so compute-secrets
+  carries the identity.
 - Reuse without rebuilding: `github` nodes download the same pinned asset;
   for a controller that built from source, `rpm-bundle` + `--rpm-source bundle`
   ships the controller's set, verified against the identity in compute-secrets.
-- `repo-url` cannot be verified; both sides using it is accepted with a warning.
+- `repo-url` cannot be verified; both sides using it (identity `repo-url`) is
+  accepted with a warning that the RPMs are not proven identical. Mixing
+  `repo-url` with a verified set on the other side stops.
 
 ### 3.5 Cache and re-runs
 

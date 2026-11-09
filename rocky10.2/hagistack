@@ -1705,26 +1705,49 @@ rpm_prepare_github() {
 # Identity of the build inputs: every file in this checkout that decides what
 # the build produces. Same inputs, same work directory, so a re-run reuses the
 # finished result instead of building again.
+#
+# The build image is an input too: a different image can produce different
+# RPMs from the same sources. Its content digest (never its tag) is part of the
+# identity, so --build-image with another digest gets its own work directory
+# and never reuses a result built in another image. Work directories made by
+# an earlier hagistack, whose identity did not include the image, are simply
+# not matched any more; they are left on disk, not deleted. (A host that is
+# already deployed keeps using the set recorded in deployment.env, so this
+# never makes a re-run rebuild.)
+rpm_build_image() {
+    local image="${BUILD_IMAGE:-$DEFAULT_BUILD_IMAGE}"
+    [[ "$image" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]] \
+        || die "the build image must be pinned by digest (NAME@sha256:<64 hex>): $image"
+    printf '%s\n' "$image"
+}
+
 rpm_build_input_id() {
-    ( cd "$SELF_DIR" && find gazpacho.manifest build-rpms.sh build-in-container.sh \
-        spec-adapt spec-templates third-party -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
-        -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) | sha256sum | cut -d' ' -f1
+    local image; image="$(rpm_build_image)"
+    { ( cd "$SELF_DIR" && find gazpacho.manifest build-rpms.sh build-in-container.sh \
+          spec-adapt spec-templates third-party -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
+          -print0 | LC_ALL=C sort -z | xargs -0 sha256sum )
+      printf 'build-image-digest  %s\n' "${image##*@}"
+    } | sha256sum | cut -d' ' -f1
 }
 
 rpm_prepare_build() {
     local id; id="$(rpm_build_input_id)"
     local root="$RPM_BUILD_ROOT/${id:0:16}"
     local out="$root/out"
-    log_info "build inputs ${id:0:16}… (manifest, build scripts, spec rules, patches)"
+    log_info "build inputs ${id:0:16}… (manifest, build scripts, spec rules, patches, image digest)"
     if RPM_SET_SHA256="$(rpm_try_cached "$out")"; then
         log_ok "these inputs were already built and the result still verifies — not rebuilt"
         RPM_SET_DIR="$out"; return 0
     fi
 
     have podman || dnf_install "podman (for the disposable build container)" podman
-    local image="${BUILD_IMAGE:-$DEFAULT_BUILD_IMAGE}"
+    local image; image="$(rpm_build_image)"
     log_info "pulling the build image $image"
     $SUDO podman pull -q "$image" >/dev/null || die "could not pull the build image $image"
+    # The image that will run must be the one the identity was computed for.
+    $SUDO podman image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" 2>/dev/null \
+        | grep -qF "@${image##*@}" \
+        || die "the pulled build image does not carry the pinned digest ${image##*@}"
 
     $SUDO install -d -m 0755 "$root" "$root/build"
     # A fresh output every attempt, so a half-finished earlier attempt cannot
@@ -1743,6 +1766,11 @@ rpm_prepare_build() {
      Nothing was installed. hagistack does not fall back to a download."
     fi
     tail -n 3 "$root/container.log" | sed 's/^/    /'
+    # build-in-container.sh writes this last, only after every manifest package
+    # built and the result was collected. A zero exit without it is not a build.
+    $SUDO test -s "$out/logs/build.ok" \
+        || die "the build container exited 0 but did not confirm a complete build ($out/logs/build.ok).
+     A partial RPM set is never used. Nothing was installed."
     rpm_sums_of_dir "$out/repo" | $SUDO tee "$out/RPM-SHA256SUMS" >/dev/null
     RPM_SET_SHA256="$(rpm_verify_set "$out")" || die "the freshly built RPM set did not verify"
     rpm_mark_verified "$out" "$RPM_SET_SHA256" "build:${id:0:16}"
@@ -1834,6 +1862,38 @@ rpm_source_resolve() {
     log_ok "RPM source: $RPM_SOURCE"
 }
 
+# The controller's RPM set identity as delivered in compute-secrets
+# (RPM_SET_SHA256=). A remote compute node needs it to prove it installs the
+# controller's packages, so it is REQUIRED for a new node:
+#   - a 64-hex identity, or the literal "repo-url" when the controller was
+#     deployed with --repo-url (which nothing can verify; both sides must then
+#     use --repo-url, and that limitation is reported, not hidden);
+#   - anything else is refused.
+# The single exception is a RE-RUN on a node that is already a hagistack
+# compute node and records its own set: it keeps that set (checked by the
+# recorded-set rule) even if the secrets file predates this field.
+# Called before anything is downloaded or installed.
+controller_rpm_set_check() {
+    local want="${CONTROLLER_RPM_SET:-}"
+    if [ -z "$want" ]; then
+        if [ "${DEPLOY[ROLE]:-}" = "compute" ] && [ -n "${DEPLOY[RPM_SET_SHA256]:-}" ]; then
+            return 0
+        fi
+        die "$SECRETS_FILE has no RPM_SET_SHA256: the controller's RPM set identity is missing.
+     A new compute node must prove it installs the controller's RPMs, so it stops
+     here, before anything is downloaded or installed. Regenerate the file on the
+     controller with this hagistack version:
+       (umask 077; sudo ./hagistack compute-secrets > compute-secrets.env)
+     A controller deployed by an older hagistack has no deployment record; re-run
+     its own command (all-in-one or controller) with this version first."
+    fi
+    if [ "$want" != "repo-url" ] && ! valid_sha256 "$want"; then
+        die "$SECRETS_FILE has an RPM_SET_SHA256 that is neither a SHA-256 nor 'repo-url'
+     (the value is not shown). Regenerate it on the controller. Nothing was installed."
+    fi
+    return 0
+}
+
 # Nodes of one cloud run one RPM set, and a host never changes set by accident.
 rpm_guard_consistency() {
     local recorded="${DEPLOY[RPM_SET_SHA256]:-}"
@@ -1843,10 +1903,14 @@ rpm_guard_consistency() {
      does not do upgrades implicitly. Nothing was installed or changed."
     fi
     if [ "$REMOTE_COMPUTE" -eq 1 ]; then
+        controller_rpm_set_check
         local want="${CONTROLLER_RPM_SET:-}"
         if [ -z "$want" ]; then
-            log_warn "compute-secrets carries no RPM set identity (made by an older hagistack);"
-            log_warn "  this node cannot prove it runs the controller's RPMs"
+            # Reached only on a re-run of a compute node that already records
+            # its own set (controller_rpm_set_check allows nothing else), and
+            # that recorded set was compared above.
+            log_warn "compute-secrets carries no controller RPM set identity; this re-run relies on"
+            log_warn "  the set this node recorded when it was deployed (${recorded:0:16}…)"
         elif [ "$want" = "repo-url" ] || [ "$RPM_SET_SHA256" = "repo-url" ]; then
             [ "$want" = "$RPM_SET_SHA256" ] \
                 || die "the controller and this node use different kinds of RPM source ($want vs $RPM_SET_SHA256)"
@@ -2075,6 +2139,9 @@ phase_secrets() {
         fi
         [ -n "${!k:-}" ] || die "$SECRETS_FILE is missing $k"
     done
+    # A new compute node stops here, before any download or package, when the
+    # controller's RPM set identity is missing or malformed.
+    [ "$REMOTE_COMPUTE" -eq 1 ] && { deploy_load; controller_rpm_set_check; }
     if [ "$REMOTE_COMPUTE" -eq 1 ] && [ "$RPM_SOURCE" = "bundle" ] && [ -z "$RPM_SET_EXPECTED" ]; then
         RPM_SET_EXPECTED="$CONTROLLER_RPM_SET"
     fi
@@ -3028,6 +3095,79 @@ phase_compute_preflight() {
     phase_mark_done compute_preflight
 }
 
+# A remote compute node must not be able to open any Nova database: it holds no
+# database password by design, and a connection left in effect makes
+# nova-compute try the database on every start. These are the oslo.db keys
+# that open one, in the two groups Nova reads.
+COMPUTE_FORBIDDEN_DB_SECTIONS="database api_database"
+COMPUTE_FORBIDDEN_DB_KEYS="connection slave_connection"
+
+# The effective value, as nova-compute itself will see it. Its unit runs
+# /usr/bin/nova-compute with no --config-file, so oslo.config searches its
+# default locations (/etc/nova/nova.conf, /etc/nova/nova-compute.conf, the
+# *.conf.d directories, the nova user's home). Rather than re-implement that
+# search, ask oslo.config, as the nova user, with Nova's own option
+# definitions. Prints the keys that are set ("database.connection ..."),
+# nothing when none is. Exit 3 when the check itself could not run.
+nova_effective_db_keys() {
+    local home out line
+    home="$(getent passwd nova 2>/dev/null | cut -d: -f6)"
+    [ -n "$home" ] || { echo "there is no nova user"; return 3; }
+    # Only the marked line is the answer: anything else on the streams (a
+    # deprecation warning from an import, say) must never read as a key.
+    out="$($SUDO runuser -u nova -- env HOME="$home" python3 -I -c '
+import sys
+try:
+    import nova.conf
+    CONF = nova.conf.CONF
+    CONF([], project="nova", prog="nova-compute")
+    found = []
+    for group in sys.argv[1].split():
+        for key in sys.argv[2].split():
+            if getattr(getattr(CONF, group), key, None):
+                found.append(group + "." + key)
+except Exception as exc:
+    print("check failed: %s" % exc)
+    sys.exit(3)
+print("HS-DB-KEYS:" + " ".join(found))
+' "$COMPUTE_FORBIDDEN_DB_SECTIONS" "$COMPUTE_FORBIDDEN_DB_KEYS" 2>&1)" \
+        || { printf '%s\n' "$out" | tail -2; return 3; }
+    line="$(printf '%s\n' "$out" | grep '^HS-DB-KEYS:' | tail -1)"
+    [ -n "$line" ] || { echo "no result line from the check"; return 3; }
+    printf '%s\n' "${line#HS-DB-KEYS:}"
+}
+
+# Fail closed: a remote compute node either provably has no database
+# connection in effect, or the run stops. Two independent readings:
+#   1. nova.conf as written by this shell (commented lines are not values);
+#   2. the effective configuration as oslo.config resolves it for nova-compute,
+#      which also covers keys set in nova-compute.conf or a conf.d file.
+# Nothing is started or restarted when it fails, and no other file is edited:
+# hagistack does not rewrite configuration it did not write.
+compute_assert_no_db() {
+    local sec key left="" eff rc=0
+    for sec in $COMPUTE_FORBIDDEN_DB_SECTIONS; do
+        for key in $COMPUTE_FORBIDDEN_DB_KEYS; do
+            [ -n "$(ini_get "$NOVA_CONF" "$sec" "$key" 2>/dev/null || true)" ] \
+                && left="$left [$sec] $key"
+        done
+    done
+    [ -z "$left" ] || die "nova.conf still has an active database setting:$left
+     A remote compute node must not have one. hagistack commented these out but
+     they are still in effect. nova-compute was NOT started or restarted."
+    eff="$(nova_effective_db_keys)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        die "could not determine nova-compute's effective database settings (${eff:-no output}).
+     Refusing to start nova-compute without that proof. Nothing was started."
+    fi
+    [ -z "$eff" ] || die "nova-compute would still open a database: $eff is set.
+     nova.conf is clean, so the value comes from another file oslo.config reads
+     for nova-compute (/etc/nova/nova-compute.conf, /etc/nova/nova.conf.d/,
+     /etc/nova/nova-compute.conf.d/, or the nova user's home). Remove it there;
+     hagistack does not edit files it did not write. nova-compute was NOT started."
+    log_ok "no database connection in effect for nova-compute (checked in nova.conf and with oslo.config)"
+}
+
 phase_compute_nova() {
     log_step "nova-compute on this node"
     local changed=0
@@ -3039,16 +3179,17 @@ phase_compute_nova() {
     # A compute node must not open the cell database: nova-conductor does that
     # for it. The key is commented out rather than deleted, so the value stays
     # on the line and a re-run rewrites nothing.
-    local sec
-    for sec in database api_database; do
-        ini_comment_out "$NOVA_CONF" "$sec" connection \
-            "compute-only node; nova-compute reaches the cell through nova-conductor" \
-            && log_ok "[$sec] connection commented out in nova.conf (value kept on the line)"
+    local sec key
+    for sec in $COMPUTE_FORBIDDEN_DB_SECTIONS; do
+        for key in $COMPUTE_FORBIDDEN_DB_KEYS; do
+            ini_comment_out "$NOVA_CONF" "$sec" "$key" \
+                "compute-only node; nova-compute reaches the cell through nova-conductor" \
+                && log_ok "[$sec] $key commented out in nova.conf (value kept on the line)"
+        done
     done
-    local left
-    left="$(ini_get "$NOVA_CONF" database connection 2>/dev/null || true)$(ini_get "$NOVA_CONF" api_database connection 2>/dev/null || true)"
-    [ -z "$left" ] && log_ok "no active [database]/[api_database] connection: this node opens no database" \
-                   || log_warn "nova.conf STILL has an active database connection; remove it by hand"
+    # Stops the run here — before nova-compute is started or restarted — when
+    # any database connection is still in effect. See compute_assert_no_db.
+    compute_assert_no_db
 
     $SUDO chown root:nova "$NOVA_CONF"; $SUDO chmod 0640 "$NOVA_CONF"
     phase_nova_compute

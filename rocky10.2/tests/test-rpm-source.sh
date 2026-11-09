@@ -251,9 +251,9 @@ expect_ok "resolve: file:/// repository accepted"
 # 18. consistency guard
 run_hs c1 "deploy_set RPM_SET_SHA256 aaaa; deploy_load; RPM_SET_SHA256=bbbb; rpm_guard_consistency"
 expect_fail "guard: a deployed host refuses a different RPM set" "does not do upgrades implicitly"
-run_hs c2 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=aaaa RPM_SET_SHA256=bbbb; deploy_load; rpm_guard_consistency"
+run_hs c2 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=$SET_SHA RPM_SET_SHA256=5555555555555555555555555555555555555555555555555555555555555555; deploy_load; rpm_guard_consistency"
 expect_fail "guard: a compute node refuses a set different from the controller's" "not the controller's"
-run_hs c3 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=aaaa RPM_SET_SHA256=aaaa; deploy_load; rpm_guard_consistency"
+run_hs c3 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=$SET_SHA RPM_SET_SHA256=$SET_SHA; deploy_load; rpm_guard_consistency"
 expect_ok "guard: same set as the controller is accepted"
 run_hs c4 "deploy_set RPM_SOURCE build; deploy_load; rpm_source_resolve; echo SRC=\$RPM_SOURCE"
 grep -q "SRC=build" <<<"$OUT" && pass "resolve: a re-run keeps the recorded source" || fail "resolve: recorded source" "$OUT"
@@ -287,6 +287,121 @@ run_hs b1 "deploy_set RPM_SOURCE bundle RPM_SET_DIR $T/state-b1/var/rpms/bundle-
 expect_ok "re-run: bundle-deployed host needs no --rpm-bundle when its set still verifies"
 run_hs b5 "deploy_set RPM_SOURCE bundle RPM_SET_DIR $T/nonexistent RPM_SET_SHA256 $SET_SHA; deploy_load; RPM_SET_EXPECTED=$SET_SHA; rpm_source_resolve; phase_rpm_source"
 expect_fail "re-run: a bundle host whose set is gone asks for --rpm-bundle" "no\s*$|Pass --rpm-bundle"
+
+# ---------------------------------------------------------------- B-3: controller RPM set identity
+run_hs i1 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=''; deploy_load; controller_rpm_set_check"
+expect_fail "identity: a new compute node without the controller's RPM set identity stops" "has no RPM_SET_SHA256"
+run_hs i2 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=not-a-digest; deploy_load; controller_rpm_set_check"
+expect_fail "identity: a malformed controller identity stops (value not shown)" "neither a SHA-256 nor 'repo-url'"
+grep -q "not-a-digest" <<<"$OUT" && fail "identity: malformed value must not be echoed" "$OUT" || pass "identity: malformed value is not echoed"
+run_hs i3 "deploy_set ROLE compute RPM_SET_SHA256 $SET_SHA; deploy_load; REMOTE_COMPUTE=1 CONTROLLER_RPM_SET='' RPM_SET_SHA256=$SET_SHA; rpm_guard_consistency"
+expect_ok "identity: re-run of a recorded compute node with an old secrets file keeps its recorded set"
+run_hs i4 "deploy_set ROLE compute RPM_SET_SHA256 $SET_SHA; deploy_load; REMOTE_COMPUTE=1 CONTROLLER_RPM_SET='' RPM_SET_SHA256=4444444444444444444444444444444444444444444444444444444444444444; rpm_guard_consistency"
+expect_fail "identity: that re-run still refuses a different set" "does not do upgrades implicitly"
+run_hs i5 "deploy_set ROLE controller RPM_SET_SHA256 $SET_SHA; deploy_load; REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=''; controller_rpm_set_check"
+expect_fail "identity: the exception is limited to recorded compute nodes" "has no RPM_SET_SHA256"
+run_hs i6 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=repo-url RPM_SET_SHA256=repo-url; deploy_load; rpm_guard_consistency"
+expect_ok "identity: --repo-url on both sides is accepted"
+grep -q "cannot verify they install the same RPMs" <<<"$OUT" && pass "identity: --repo-url limitation is reported" || fail "identity: repo-url warning" "$OUT"
+run_hs i7 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=repo-url RPM_SET_SHA256=$SET_SHA; deploy_load; rpm_guard_consistency"
+expect_fail "identity: controller --repo-url vs node verified set stops" "different kinds of RPM source"
+run_hs i8 "REMOTE_COMPUTE=1 CONTROLLER_RPM_SET=$SET_SHA RPM_SET_SHA256=repo-url; deploy_load; rpm_guard_consistency"
+expect_fail "identity: controller verified set vs node --repo-url stops" "different kinds of RPM source"
+# phase_secrets: the stop happens before anything is downloaded or installed
+mkdir -p "$T/state-i9/etc"; printf 'RABBIT_PASS=x\nNOVA_SERVICE_PASS=x\nPLACEMENT_SERVICE_PASS=x\nNEUTRON_SERVICE_PASS=x\nMETADATA_PROXY_SECRET=x\n' > "$T/state-i9/etc/secrets.env"
+run_hs i9 "REMOTE_COMPUTE=1 SUBCOMMAND=compute-add RPM_SOURCE=github; phase_secrets"
+expect_fail "identity: phase_secrets stops a new node whose secrets lack the identity" "has no RPM_SET_SHA256"
+no_build_no_dnf "identity: missing identity"
+printf 'RPM_SET_SHA256=%s\n' "$SET_SHA" >> "$T/state-i9/etc/secrets.env"
+run_hs i9 "REMOTE_COMPUTE=1 SUBCOMMAND=compute-add RPM_SOURCE=bundle; phase_secrets; echo EXP=\$RPM_SET_EXPECTED"
+grep -q "EXP=$SET_SHA" <<<"$OUT" && pass "identity: a valid identity from secrets becomes the bundle's expected set" || fail "identity: bundle expected" "$OUT"
+
+# ---------------------------------------------------------------- B-2: remote compute database settings
+NOVA_STUBS='NOVA_CONF="$HAGISTACK_STATE/nova.conf"; CONTROLLER_IP=192.0.2.10; NOVA_SERVICE_PASS=x
+_write_nova_common() { :; }; write_authtoken() { :; }; chown() { :; }; chmod() { :; }
+phase_nova_compute() { echo SERVICE-TOUCHED; }; service_apply() { echo SERVICE-TOUCHED; }'
+seed_nova() {  # seed_nova <state> <content>
+    mkdir -p "$T/state-$1/var"; printf '%s\n' "$2" > "$T/state-$1/var/nova.conf"
+}
+no_service() { if grep -q SERVICE-TOUCHED <<<"$OUT"; then fail "$1: nova-compute must not be started" "$OUT"; else pass "$1: nova-compute not started or restarted"; fi; }
+
+seed_nova d1 $'[DEFAULT]\nhost = n\n[database]\nconnection = mysql+pymysql://nova:x@192.0.2.10/nova\nslave_connection = mysql+pymysql://nova:x@192.0.2.10/nova\n[api_database]\nconnection = mysql+pymysql://nova:x@192.0.2.10/nova_api'
+run_hs d1 "$NOVA_STUBS
+nova_effective_db_keys() { echo ''; }
+phase_compute_nova; echo; grep -nE '^[^#].*connection' \"\$NOVA_CONF\" || echo NO-ACTIVE-LINES"
+expect_ok "db: every database/api_database connection (incl. slave_connection) is commented out, then nova-compute starts"
+grep -q NO-ACTIVE-LINES <<<"$OUT" && pass "db: no active connection line remains in nova.conf" || fail "db: active lines remain" "$OUT"
+grep -q SERVICE-TOUCHED <<<"$OUT" && pass "db: the normal compute path still starts nova-compute" || fail "db: normal path" "$OUT"
+
+seed_nova d2 $'[database]\nconnection = mysql+pymysql://nova:x@192.0.2.10/nova'
+run_hs d2 "$NOVA_STUBS
+nova_effective_db_keys() { echo 'database.connection'; }
+phase_compute_nova"
+expect_fail "db: a connection still in effect elsewhere (oslo.config) stops the run" "would still open a database: database.connection"
+no_service "db: effective connection left"
+
+seed_nova d3 $'[database]\nconnection = mysql+pymysql://nova:x@192.0.2.10/nova'
+run_hs d3 "$NOVA_STUBS
+nova_effective_db_keys() { echo 'check failed: boom'; return 3; }
+phase_compute_nova"
+expect_fail "db: when the effective check cannot run, the run stops (fail closed)" "could not determine nova-compute's effective database settings"
+no_service "db: check unavailable"
+
+seed_nova d4 $'[database]\nconnection = mysql+pymysql://nova:x@192.0.2.10/nova'
+run_hs d4 "$NOVA_STUBS
+nova_effective_db_keys() { echo ''; }
+compute_assert_no_db"
+expect_fail "db: an active line in nova.conf itself stops the run" "nova.conf still has an active database setting: \[database\] connection"
+
+seed_nova d5 $'[database]\n# connection = mysql+pymysql://nova:x@192.0.2.10/nova\n;connection = old\n[DEFAULT]\ntransport_url = rabbit://x\n# commented out by hagistack: connection = whatever'
+run_hs d5 "$NOVA_STUBS
+nova_effective_db_keys() { echo ''; }
+compute_assert_no_db"
+expect_ok "db: commented-out lines and comment text are not mistaken for settings"
+
+run_hs d6 "getent() { echo 'nova:x:1:1::/var/lib/nova:/sbin/nologin'; }
+runuser() { printf 'Warning: connection is deprecated\\nHS-DB-KEYS:\\n'; }
+echo \"KEYS=[\$(nova_effective_db_keys)]\""
+grep -q 'KEYS=\[\]' <<<"$OUT" && pass "db: stray warning output from the check is never read as a key" || fail "db: warning parsing" "$OUT"
+run_hs d7 "getent() { echo 'nova:x:1:1::/var/lib/nova:/sbin/nologin'; }
+runuser() { printf 'HS-DB-KEYS:database.connection api_database.connection\\n'; }
+echo \"KEYS=[\$(nova_effective_db_keys)]\""
+grep -q 'KEYS=\[database.connection api_database.connection\]' <<<"$OUT" && pass "db: keys reported by the check are passed through" || fail "db: key pass-through" "$OUT"
+run_hs d8 "getent() { echo 'nova:x:1:1::/var/lib/nova:/sbin/nologin'; }
+runuser() { echo 'Traceback ...'; return 1; }
+nova_effective_db_keys || echo RC=\$?"
+grep -q 'RC=3' <<<"$OUT" && pass "db: a failing check returns 'could not check' (3)" || fail "db: check failure code" "$OUT"
+run_hs d9 "getent() { :; }
+nova_effective_db_keys || echo RC=\$?"
+grep -q 'RC=3' <<<"$OUT" && pass "db: no nova user means 'could not check' (3)" || fail "db: no nova user" "$OUT"
+
+# ---------------------------------------------------------------- N-1: build image digest in the cache identity
+DA="quay.io/rockylinux/rockylinux:10.2@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+DB="quay.io/rockylinux/rockylinux:10.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+DA2="registry.example/other-name:tag@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+run_hs n1 "BUILD_IMAGE=$DA; a=\$(rpm_build_input_id); BUILD_IMAGE=$DB; b=\$(rpm_build_input_id); BUILD_IMAGE=$DA; c=\$(rpm_build_input_id); BUILD_IMAGE=$DA2; d=\$(rpm_build_input_id); BUILD_IMAGE=''; e=\$(rpm_build_input_id); echo \"A=\$a B=\$b C=\$c D=\$d E=\$e\""
+A="$(grep -oE 'A=[0-9a-f]+' <<<"$OUT" | cut -d= -f2)"; B="$(grep -oE 'B=[0-9a-f]+' <<<"$OUT" | cut -d= -f2)"
+C="$(grep -oE 'C=[0-9a-f]+' <<<"$OUT" | cut -d= -f2)"; D="$(grep -oE 'D=[0-9a-f]+' <<<"$OUT" | cut -d= -f2)"
+E="$(grep -oE 'E=[0-9a-f]+' <<<"$OUT" | cut -d= -f2)"
+[ -n "$A" ] && [ "$A" != "$B" ] && pass "image: a different image digest gives a different build identity" || fail "image: digest change" "$OUT"
+[ -n "$A" ] && [ "$A" = "$C" ] && pass "image: the same digest gives the same build identity" || fail "image: same digest" "$OUT"
+[ "$A" = "$D" ] && pass "image: the identity follows the content digest, not the name or tag" || fail "image: name independence" "$OUT"
+[ -n "$E" ] && [ "$E" != "$A" ] && pass "image: the default pinned image has its own identity" || fail "image: default" "$OUT"
+run_hs n2 "BUILD_IMAGE=quay.io/rockylinux/rockylinux:10.2; rpm_build_input_id"
+expect_fail "image: a tag without a digest is refused when computing the identity" "pinned by digest"
+# cache: a verified result for digest A is reused for A and NOT for B
+run_hs n3 "BUILD_IMAGE=$DA; id=\$(rpm_build_input_id); mkdir -p \"\$RPM_BUILD_ROOT/\${id:0:16}\"; cp -a $T/set \"\$RPM_BUILD_ROOT/\${id:0:16}/out\"; rpm_mark_verified \"\$RPM_BUILD_ROOT/\${id:0:16}/out\" $SET_SHA build; rpm_prepare_build; echo SET=\$RPM_SET_SHA256"
+expect_ok "image: same digest and inputs reuse the verified build"
+grep -q "not rebuilt" <<<"$OUT" && ! grep -q PODMAN-CALLED <<<"$OUT" && pass "image: reuse did not start a build" || fail "image: reuse" "$OUT"
+run_hs n3 "BUILD_IMAGE=$DB; rpm_prepare_build"
+expect_fail "image: another digest does not reuse that result (a build is attempted)" "PODMAN-CALLED|could not pull"
+run_hs n3 "BUILD_IMAGE=$DA; rpm_prepare_build"
+grep -q "not rebuilt" <<<"$OUT" && pass "image: the result for the first digest is kept, not deleted, and still reused" || fail "image: earlier result kept" "$OUT"
+
+# ---------------------------------------------------------------- --repo-url behaviour unchanged
+run_hs u1 "RPM_SOURCE=repo-url REPO_URL=http://repo.example/hagistack/; deploy_load; rpm_source_resolve; phase_rpm_source; echo REPO=\$REPO_URL SET=\$RPM_SET_SHA256"
+grep -q "REPO=http://repo.example/hagistack/ SET=repo-url" <<<"$OUT" && pass "repo-url: the given repository is used as-is and nothing is downloaded" || fail "repo-url: phase" "$OUT"
+no_build_no_dnf "repo-url"
 
 echo
 echo "result: $PASS passed, $FAIL failed"

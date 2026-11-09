@@ -540,9 +540,12 @@ sudo ./hagistack compute-add --controller-ip CONTROLLER_MGMT_IP --repo-url URL
 ```
 
 `compute-add` never generates secrets. It stops if `/etc/hagistack/secrets.env`
-is missing. It checks that the controller's ports are reachable **before** it
-changes anything else, and it stops before installing packages if this node's
-RPM set is not the controller's.
+is missing, or if it lacks a valid `RPM_SET_SHA256` (regenerate it on the
+controller with this version). It checks that the controller's ports are
+reachable **before** it changes anything else, and it stops before installing
+packages if this node's RPM set is not the controller's. It also stops, without
+starting nova-compute, if any Nova database connection is still in effect on
+the node (in `nova.conf` or any other file nova-compute reads).
 
 The node gets no database access: the database connection keys in `nova.conf`
 are commented out. It gets no admin credential and no provider bridge mapping.
