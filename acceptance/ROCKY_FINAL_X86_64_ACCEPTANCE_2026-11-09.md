@@ -80,3 +80,46 @@ Both remaining items PASS on x86_64. Together with the earlier records, the
 Rocky 10.2 implementation and acceptance scope is complete pending the
 independent audit's own conclusion. RPM publication remains NO-GO
 (licence items U-1, U-2 unresolved, C-3 open); Ubuntu and Sinter untouched.
+
+## Correction (2026-11-10): the dnf NEVRA lines in the test-B log
+
+The test-B table above says the repodata's "195 NEVRAs equal the RPM headers
+(dnf repoquery)". The final audit found that the saved raw log
+(`testB-verification.log`, lines 55–64) does not show that literally: it shows
+`dnf sees 390 packages; files: 195`, `NEVRA in repodata == NEVRA in RPM
+headers: NO (390 entries)` and `unique NEVRA from dnf: 196; identical: NO`.
+That log is kept unchanged. The cause, now established by reproduction rather
+than inference:
+
+- **Measurement defect in the verification command, not in the artifacts.**
+  dnf 4.20 terminates every `--qf` record with its own newline; the command
+  added another `\n`, so each package produced its line plus an empty line:
+  390 = 195 + 195 empty lines (the per-repo breakdown in the log shows
+  "195 hsv" and "195" with an empty field), and 196 unique = 195 + one empty
+  line. The log's diff against the RPM headers shows exactly one difference,
+  an added empty line (`0a1` / `> `).
+- Re-running the identical commands with the same dnf 4.20.0 on the retained
+  release-candidate set reproduces the log byte-for-byte in pattern (390,
+  "195"/"195 hsv", 196, `0a1`/`> `); `--qf` without the trailing `\n` gives
+  195 lines and no empty line. Only the given repository was enabled; no
+  installed package (`@System`) appeared.
+- Independent comparison on that retained set, without dnf (RPM headers via
+  `rpm -qp` vs the primary metadata parsed directly, NEVRA as
+  `NAME-EPOCH:VERSION-RELEASE.ARCH` with explicit epoch): 195 RPM files, 195
+  header NEVRAs, primary declares and lists 195, no duplicates, nothing only on
+  either side, identical. The corrected dnf command is identical too.
+
+Scope of that confirmation: the RPMs and repodata of the test-B set
+(`c3379764…`) were not retained when the VMs were deleted, so they cannot be
+re-compared now. For that set the evidence is the run-time log: the same
+390/196 signature, whose only difference from the header list was the empty
+line, and hagistack's own verification at run time (every file matches
+`RPM-SHA256SUMS`; every primary entry's file exists with its checksum; no RPM
+missing from primary; declared count 195; `rpm -K` clean). The independent
+re-comparison was performed on the retained set `e62cb797…`, built from the
+same inputs by the same procedure, which is also the release candidate.
+
+hagistack's verification checks files and checksums (listing, identity,
+repomd and primary checksums, coverage, `rpm -K`); it does not compare
+primary's NEVRA text with the headers. No code change was made for this
+correction.
