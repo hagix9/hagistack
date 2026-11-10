@@ -254,7 +254,11 @@ def generate(src, pkgs):
     if src.get('check') == 'import':
         w('%check')
         excl = ' '.join(f"-e '{e}'" for e in src.get('check_import_exclude', []))
-        w(f'%pyproject_check_import {excl}'.rstrip())
+        # -t: top-level modules only. Importing every submodule pulls in test
+        # helpers and example plugins whose dependencies are test-only (stevedore
+        # ships example setup.py files inside the package; oslo_config.fixture
+        # needs fixtures).
+        w(f'%pyproject_check_import -t {excl}'.rstrip())
         w('')
 
     for p in pkgs:

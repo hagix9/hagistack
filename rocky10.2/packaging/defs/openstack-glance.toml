@@ -21,8 +21,9 @@ upstream OpenStack release, packaged by Hagistack.
 check = "import"
 check_import_exclude = ["glance.tests*", "glance.db.sqlalchemy.alembic_migrations*", "glance.cmd.*"]
 doc = "doc/source"
-buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc",
-                 "python3-reno", "python3-os-api-ref", "python3-whereto"]
+# The Sphinx extensions doc/source/conf.py loads; the rest of doc/requirements.txt
+# (os-api-ref, whereto) is for api-ref/ and the redirect test, not built here.
+buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc"]
 locale_domain = "glance"
 # The wheel's data-files land under /usr/etc; the files this package ships are
 # installed explicitly below instead.
