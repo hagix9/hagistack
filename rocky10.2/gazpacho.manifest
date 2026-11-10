@@ -205,7 +205,7 @@ LICENSE python3-XStatic-jquery-ui           third-party/licenses/LICENSE-jquery-
 #DISABLED SPEC  cliff         python-cliff.spec            7569ea4219cbd317a1640fb708d0fd309b6b97186aa51ef6d36d42e886f54002 cb69acbb9b873d82304de29b970210149366927385fa79912c2502ca00df1cb2
 SPEC  horizon       python-django-horizon.spec   7f29e455a7f26384d2922b6adda920eeda06e3407ae59d5e556fd5788443dd12 0208a055fab1cf95d8e44713202869f1a0869896be619a804fd2d79b62229750
 SPEC  keystone      openstack-keystone.spec      27528b0241b48c856d1c138a5b30a63c1d3a3f4a7e9142d8659498b249f783fb 8669edf39ede8edc2d9d6e9cc5fcddd926330c11bd03daf64b6f62ef5ce7a693
-SPEC  neutron       openstack-neutron.spec       9869639694d3402720652a22c0488009091786b4954abf1e6e5eab017ab4b114 66c321ad0da346dc36140ca25fea650049f1791cbd737c4857983782c20ab41d
+SPEC  neutron       openstack-neutron.spec       9869639694d3402720652a22c0488009091786b4954abf1e6e5eab017ab4b114 89d0dc479fa3c5d163433a8608824548c2811bf8cb97ca9aca6ab22c3ef0b662
 SPEC  nova          openstack-nova.spec          63a748d1072ec5d63bb669d6fc5361b5054ba86827c5bd6dc896668e77a2bda6 b572431f216b7c2dc832f9235b35bafeec01254ce60760e01e007e799e87e9c2
 SPEC  os-ken        python-os-ken.spec           74d12e18997a4482592000673f548709799493fcca28d9b58bcfe415218e2f44 fe1f1cee213d3a42659bae61f3528d72a1cf46c0fdaafca524aaac8e0f023e69
 SPEC  oslo-cache    python-oslo-cache.spec       9968fdab1e3c53216b4d4cae67c95b8cf0fe115c14199417911cb27993e8357c bfb9448fe9d42bdfda5249142c0c6acf218c291dcea7a1584aff35bf42c71e1b

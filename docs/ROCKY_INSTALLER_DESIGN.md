@@ -204,6 +204,12 @@ refused), with podman installed on the host if missing:
     that package's log) go to pass 2; any other failure stops the build;
   - pass 2 must build every one of them; a package failing twice stops;
   - the number of SRPMs collected must equal the number of manifest packages;
+  - no RPM or SRPM may contain one of the builder's own non-loopback
+    addresses (payload, scriptlets, triggers, changelog; source tarballs are
+    not unpacked). The container shares the host's network, so a build step
+    that asks for its own address gets the build machine's address. Neutron's
+    generated sample config did this, and spec-adapt now writes placeholders
+    there. A hit names the package and the file, never the address;
   - `logs/build.ok` is written last, and hagistack refuses a container that
     exited 0 without it. A partial RPM set is never used.
 - `%_buildhost` is fixed to `hagistack-builder` so RPM headers carry no

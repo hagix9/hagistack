@@ -171,6 +171,73 @@ build_all() {   # build_all <manifest>
 # Copy the result out. Every package builds exactly one source RPM, so the
 # number of SRPMs must equal the number of manifest packages: fewer means a
 # package is missing from the set, and the set is not complete.
+# ---------------------------------------------------------------------------
+# The build machine's own addresses must not ship.
+#
+# The builder runs with host networking, so a build step that asks for "my
+# address" gets the build machine's private address, and a generated file can
+# keep it (neutron's sample config did until spec-adapt replaced the value). So
+# every non-loopback address the builder has is searched for in every RPM and
+# SRPM: the unpacked payload plus the scriptlets, triggers and changelog. Source
+# tarballs inside the SRPMs are pinned upstream inputs and are not unpacked.
+# The addresses themselves are never printed or logged; a hit names only the
+# package and the file.
+PROC_NET="${BIC_PROC_NET:-/proc/net}"
+
+host_addresses() {   # host_addresses -> one address per line, in the form tools print
+    python3 -I - "$PROC_NET" <<'PY'
+import ipaddress, os, sys
+d, out, prev = sys.argv[1], set(), None
+with open(os.path.join(d, 'fib_trie')) as fh:       # IPv4: the LOCAL /32 entries
+    for ln in fh:
+        s = ln.strip()
+        if s.startswith(('|--', '+--')):
+            prev = s[3:].strip()
+        elif s == '/32 host LOCAL' and prev:
+            out.add(ipaddress.IPv4Address(prev))
+v6 = os.path.join(d, 'if_inet6')                    # absent when IPv6 is off
+if os.path.exists(v6):
+    with open(v6) as fh:
+        for ln in fh:
+            out.add(ipaddress.IPv6Address(int(ln.split()[0], 16)))
+for a in sorted(out, key=str):
+    if not (a.is_loopback or a.is_unspecified):
+        print(a.compressed)
+PY
+}
+
+extract_payload() {   # extract_payload <package> <empty-dir>
+    (cd "$2" && rpm2cpio "$1" | cpio -idm --quiet --no-absolute-filenames) || return 1
+    rpm -qp --nosignature --scripts --triggers --changelog "$1" > "$2/.rpm-header-text" || return 1
+}
+
+check_no_host_addresses() {   # check_no_host_addresses <package> ...
+    local work f hits rc n=0 bad=0
+    work="$(mktemp -d "$BUILD_DIR/addrscan.XXXXXX")" || die "could not create a scan directory"
+    _addrscan_stop() { rm -rf "$work"; die "$1"; }
+    host_addresses > "$work/addresses" 2>/dev/null \
+        || _addrscan_stop "could not read the builder's addresses from $PROC_NET"
+    if [ ! -s "$work/addresses" ]; then
+        rm -rf "$work"; echo "the builder has no non-loopback address; nothing to search for"; return 0
+    fi
+    for f in "$@"; do
+        rm -rf "$work/t"; mkdir "$work/t"
+        extract_payload "$f" "$work/t" >/dev/null 2>&1 || _addrscan_stop "could not unpack $(basename "$f") to search it"
+        # -w: 192.0.2.1 must not match inside 192.0.2.10; -F: addresses are literal text
+        hits="$(grep -rlwF -f "$work/addresses" -- "$work/t")"; rc=$?
+        [ "$rc" -le 1 ] || _addrscan_stop "searching $(basename "$f") failed (grep exit $rc)"
+        if [ -n "$hits" ]; then
+            bad=1
+            while IFS= read -r h; do printf '  ADDRESS IN %s: %s\n' "$(basename "$f")" "${h#"$work/t"}"; done <<<"$hits"
+        fi
+        n=$((n+1))
+    done
+    local na; na="$(wc -l < "$work/addresses")"
+    rm -rf "$work"
+    [ "$bad" -eq 0 ] || die "a build machine address is in the files listed above (the address is not printed); the set is not accepted"
+    printf 'no build machine address in %s packages (%s addresses searched)\n' "$n" "$na"
+}
+
 collect_result() {
     say "collecting the result"
     # Copy, never move: /build keeps its rpmbuild tree so a later run can reuse it.
@@ -183,6 +250,7 @@ collect_result() {
     [ "$nrpm" -gt 0 ] || die "the build produced no binary RPM"
     [ "$nsrpm" -eq "$EXPECTED_COUNT" ] \
         || die "$nsrpm source RPMs for $EXPECTED_COUNT manifest packages: the RPM set is incomplete"
+    check_no_host_addresses "$OUT_DIR"/repo/*.rpm "$OUT_DIR"/srpms/*.src.rpm
     # gzip metadata on purpose: hagistack verifies repodata with the Python
     # standard library on the node, which reads gzip but has no zstd.
     createrepo_c --quiet --general-compress-type=gz "$OUT_DIR/repo" \
@@ -228,7 +296,7 @@ sha256sum /etc/yum.repos.d/delorean.repo /etc/yum.repos.d/delorean-deps.repo \
 
 say "builder tools"
 dnf -y -q install git curl rpm-build rpmdevtools createrepo_c python3 sudo \
-    gnupg2 tar gzip findutils >/dev/null || die "builder tools did not install"
+    gnupg2 tar gzip findutils cpio >/dev/null || die "builder tools did not install"
 # build-rpms.sh calls sudo for dnf; root needs no password but sudo must exist.
 
 rm -f "$LOG_DIR/build.ok"

@@ -155,6 +155,20 @@ RULES = {
             "Patch0002:      0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch",
             ""], starts='BuildArch:'),
         replace_lines(NEUTRON, '%files', 2, ends=('/neutron-api', '/neutron-server')),
+        # The sample config is generated during the build, and neutron's my_ip and
+        # my_ipv6 options have no sample default: the generator writes the address
+        # of the machine that runs the build (the builder runs with host networking).
+        # That address would ship in /etc/neutron/neutron.conf. Put placeholders there
+        # instead: nova's own sample says <host_ipv4> for its my_ip, and <host_ipv6>
+        # follows the same form. Only the commented sample lines change; the running
+        # default is still worked out on the node. Stop if the lines are not there.
+        insert(NEUTRON, '%install', 'after', [
+            "# Hagistack: the generated sample carries the build machine's own addresses",
+            "# as the commented defaults of my_ip and my_ipv6. Replace them with placeholders.",
+            "sed -ri -e 's!^#my_ip = .*!#my_ip = <host_ipv4>!' -e 's!^#my_ipv6 = .*!#my_ipv6 = <host_ipv6>!' etc/neutron.conf",
+            "grep -qx '#my_ip = <host_ipv4>' etc/neutron.conf || exit 1",
+            "grep -qx '#my_ipv6 = <host_ipv6>' etc/neutron.conf || exit 1",
+            ], starts='done < %{SOURCE30}'),
     ]),
 
     # nova 33.0.2 has no generated API scripts either.

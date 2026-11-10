@@ -6,7 +6,7 @@
 #
 #   bash rocky10.2/tests/test-build-in-container.sh
 #
-# Needs bash 4+, awk, comm and (for the collect tests) createrepo_c. Changes
+# Needs bash 4+, awk, comm, python3 and (for the collect tests) createrepo_c. Changes
 # nothing outside a temporary directory.
 set -uo pipefail
 
@@ -176,14 +176,47 @@ fake_pass2() { : > \$L/pass2.results; echo ok > \$L/pass2.log; return 0; }"
 stop_case "pass 2 empty results stop" "is empty"
 
 # --- collecting: a partial RPM set is never published -------------------------
-collect_case() {  # collect_case <name> <number-of-srpms> <number-of-rpms>
+# A fake /proc/net for the address search. Documentation addresses only
+# (RFC 5737, RFC 3849).
+mkdir -p "$T/procnet"
+cat > "$T/procnet/fib_trie" <<'EOF'
+Main:
+  +-- 0.0.0.0/0 3 0 5
+     |-- 0.0.0.0
+        /0 universe UNICAST
+     +-- 192.0.2.0/24 2 0 2
+        |-- 192.0.2.0
+           /24 link UNICAST
+        |-- 192.0.2.10
+           /32 host LOCAL
+        |-- 192.0.2.255
+           /32 link BROADCAST
+     +-- 127.0.0.0/8 2 0 2
+        |-- 127.0.0.1
+           /32 host LOCAL
+Local:
+  +-- 0.0.0.0/0 3 0 5
+     +-- 192.0.2.0/24 2 0 2
+        |-- 192.0.2.10
+           /32 host LOCAL
+EOF
+cat > "$T/procnet/if_inet6" <<'EOF'
+00000000000000000000000000000001 01 80 10 80       lo
+20010db8000000000000000000000042 02 40 00 80     eth0
+fe80000000000000000000fffe123456 02 40 20 80     eth0
+EOF
+export BIC_PROC_NET="$T/procnet"
+
+collect_case() {  # collect_case <name> <number-of-srpms> <number-of-rpms> [text of the first RPM]
     local d="$T/collect-$1"; rm -rf "$d"
     mkdir -p "$d/out/logs" "$d/build/rpmbuild/RPMS/noarch" "$d/build/rpmbuild/SRPMS" "$d/build/work/logs"
     local i
     for i in $(seq 1 "$3"); do echo x > "$d/build/rpmbuild/RPMS/noarch/p$i-1.0-1.noarch.rpm"; done
+    [ -n "${4:-}" ] && echo "$4" > "$d/build/rpmbuild/RPMS/noarch/p1-1.0-1.noarch.rpm"
     for i in $(seq 1 "$2"); do echo x > "$d/build/rpmbuild/SRPMS/p$i-1.0-1.src.rpm"; done
     OUT="$(BIC_LIB_ONLY=1 BIC_SRC="$T/src" BIC_BUILD="$d/build" BIC_OUT="$d/out" bash -c '
         source "$1"; createrepo_c() { mkdir -p "${@: -1}/repodata"; }
+        extract_payload() { cp "$1" "$2/payload"; }
         EXPECTED_COUNT=4; collect_result && echo COLLECT-OK' _ "$BIC" 2>&1)"
     RC=$?; OKFILE="$d/out/logs/build.ok"
 }
@@ -197,6 +230,60 @@ collect_case full 4 6
 if [ "$RC" -eq 0 ] && grep -qx 'packages=4 rpms=6 srpms=4' "$OKFILE" 2>/dev/null; then
     pass "collect: complete set writes build.ok last"
 else fail "collect: complete set" "rc=$RC $OUT"; fi
+
+collect_case leak 4 6 '192.0.2.10'
+if [ "$RC" -ne 0 ] && [ ! -e "$OKFILE" ] && grep -q 'ADDRESS IN p1-1.0-1.noarch.rpm: /payload' <<<"$OUT"; then
+    pass "collect: an RPM holding a builder address is refused, build.ok not written"
+else fail "collect: address in an RPM" "rc=$RC $OUT"; fi
+grep -qF '192.0.2.10' <<<"$OUT" && fail "collect: the address itself was printed" \
+    || pass "collect: the refusal does not print the address"
+
+# --- the builder's own addresses ---------------------------------------------
+# bic <shell-code>: run code with build-in-container.sh's functions loaded
+bic() {
+    OUT="$(BIC_LIB_ONLY=1 BIC_SRC="$T/src" BIC_BUILD="$T/scanbuild" BIC_OUT="$T/scanout" \
+        bash -c 'source "$1"; eval "$2"' _ "$BIC" "$1" 2>&1)"; RC=$?
+}
+mkdir -p "$T/scanbuild"
+bic 'host_addresses'
+want="$(printf '%s\n' 192.0.2.10 2001:db8::42 fe80::ff:fe12:3456)"
+[ "$RC" -eq 0 ] && [ "$OUT" = "$want" ] \
+    && pass "host addresses: LOCAL IPv4 and every IPv6 but loopback, once each, as tools print them" \
+    || fail "host addresses" "rc=$RC $OUT"
+mkdir -p "$T/procnet4"; cp "$T/procnet/fib_trie" "$T/procnet4/"
+OUT="$(BIC_LIB_ONLY=1 BIC_PROC_NET="$T/procnet4" bash -c 'source "$1"; host_addresses' _ "$BIC" 2>&1)"
+[ "$OUT" = 192.0.2.10 ] && pass "host addresses: no if_inet6 (IPv6 off) is not an error" \
+    || fail "host addresses without IPv6" "$OUT"
+
+# scan_case <name> <payload text> [extract-fails]: one fake package
+scan_case() {
+    rm -rf "$T/pk"; mkdir -p "$T/pk"; printf '%s\n' "$2" > "$T/pk/x-1.0-1.noarch.rpm"
+    if [ -n "${3:-}" ]; then
+        bic 'extract_payload() { return 1; }; check_no_host_addresses "'"$T"'/pk/x-1.0-1.noarch.rpm"'
+    else
+        bic 'extract_payload() { mkdir -p "$2/etc"; cp "$1" "$2/etc/x.conf"; }; check_no_host_addresses "'"$T"'/pk/x-1.0-1.noarch.rpm"'
+    fi
+}
+scan_case clean '#my_ip = <host_ipv4>'
+[ "$RC" -eq 0 ] && grep -q 'no build machine address in 1 packages (3 addresses searched)' <<<"$OUT" \
+    && pass "scan: a clean package passes" || fail "scan: clean" "rc=$RC $OUT"
+scan_case v4 '#my_ip = 192.0.2.10'
+[ "$RC" -ne 0 ] && grep -q 'ADDRESS IN x-1.0-1.noarch.rpm: /etc/x.conf' <<<"$OUT" && ! grep -qF 192.0.2.10 <<<"$OUT" \
+    && pass "scan: the IPv4 address is found and named by file only" || fail "scan: IPv4" "rc=$RC $OUT"
+scan_case v6 '#my_ipv6 = 2001:db8::42'
+[ "$RC" -ne 0 ] && ! grep -qF '2001:db8::42' <<<"$OUT" \
+    && pass "scan: an IPv6 address is found and not printed" || fail "scan: IPv6" "rc=$RC $OUT"
+scan_case boundary 'a = 192.0.2.100, b = 2001:db8::420, c = 1192.0.2.10'
+[ "$RC" -eq 0 ] && pass "scan: longer addresses that only contain one are not hits" || fail "scan: boundary" "rc=$RC $OUT"
+scan_case unpack 'x' fail
+[ "$RC" -ne 0 ] && grep -q 'could not unpack x-1.0-1.noarch.rpm' <<<"$OUT" \
+    && pass "scan: a package that cannot be unpacked stops the build" || fail "scan: unpack failure" "rc=$RC $OUT"
+left="$(find "$T/scanbuild" -name 'addrscan.*' | wc -l | tr -d ' ')"
+[ "$left" = 0 ] && pass "scan: the address list is removed on success and on every stop" \
+    || fail "scan: scan directories left behind" "$left"
+OUT="$(BIC_LIB_ONLY=1 BIC_BUILD="$T/scanbuild" BIC_PROC_NET="$T/nonexistent" bash -c 'source "$1"; check_no_host_addresses /dev/null' _ "$BIC" 2>&1)"; RC=$?
+[ "$RC" -ne 0 ] && grep -q "could not read the builder's addresses" <<<"$OUT" \
+    && pass "scan: unreadable addresses stop the build (fail closed)" || fail "scan: no fib_trie" "rc=$RC $OUT"
 
 # --- the real manifest ------------------------------------------------------
 n="$(BIC_LIB_ONLY=1 bash -c 'source "$1"; expected_packages "$2" | wc -l' _ "$BIC" "$HERE/../gazpacho.manifest")"

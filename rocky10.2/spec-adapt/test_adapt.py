@@ -415,6 +415,25 @@ class PinnedInputTests(unittest.TestCase):
         for l in lines[cp + 1:cp + 6]:
             self.assertTrue(l.startswith('# ') and '%' not in l, l)
 
+    def test_neutron_sample_config_gets_address_placeholders(self):
+        lines = self.adapt_one('neutron')['openstack-neutron.spec'].decode().splitlines()
+        loop = lines.index('done < %{SOURCE30}')
+        self.assertLess(lines.index('%install'), loop)
+        self.assertLess(loop, lines.index('%check'))
+        added = lines[loop + 1:loop + 6]
+        self.assertEqual(added[2:], [
+            "sed -ri -e 's!^#my_ip = .*!#my_ip = <host_ipv4>!' "
+            "-e 's!^#my_ipv6 = .*!#my_ipv6 = <host_ipv6>!' etc/neutron.conf",
+            "grep -qx '#my_ip = <host_ipv4>' etc/neutron.conf || exit 1",
+            "grep -qx '#my_ipv6 = <host_ipv6>' etc/neutron.conf || exit 1"])
+        # the comment names no macro: rpm expands macros in spec comments
+        for l in added[:2]:
+            self.assertTrue(l.startswith('# ') and '%' not in l, l)
+        # it runs before the generated file is installed into the buildroot
+        moved = [i for i, l in enumerate(lines) if l.startswith('mv etc/%{service}.conf ')]
+        self.assertEqual(len(moved), 1)
+        self.assertGreater(moved[0], loop + 5)
+
     def test_adaptation_is_deterministic(self):
         for pkg in self.PACKAGES:
             self.assertEqual(self.adapt_one(pkg), self.adapt_one(pkg))
