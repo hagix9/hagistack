@@ -2,8 +2,11 @@
 
 This directory is the replacement for building from RDO distgit. Nothing here
 reads, translates or rephrases RDO's (or any distribution's) spec files or the
-files kept next to them. Status: phase 1 — three representative packages,
-specs generated and checked statically; not yet built on x86_64.
+files kept next to them. Status: phase 1 — three representative packages
+(python-stevedore, python-oslo-config, openstack-glance) built on x86_64 into
+7 RPMs and 3 SRPMs, compared with rc4, installed, removed, swapped in for rc4's
+packages and rebuilt from the SRPMs (acceptance/ROCKY_OWN_PACKAGING_PHASE1_2026-11-11.md).
+The RDO-based build is still the one that produces release sets.
 
 ## Inputs
 
