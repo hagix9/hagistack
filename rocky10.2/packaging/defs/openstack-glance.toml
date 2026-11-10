@@ -23,7 +23,7 @@ check_import_exclude = ["glance.tests*", "glance.db.sqlalchemy.alembic_migration
 doc = "doc/source"
 # The Sphinx extensions doc/source/conf.py loads; the rest of doc/requirements.txt
 # (os-api-ref, whereto) is for api-ref/ and the redirect test, not built here.
-buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc"]
+buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc", "python3-pyxattr"]
 locale_domain = "glance"
 # The wheel's data-files land under /usr/etc; the files this package ships are
 # installed explicitly below instead.
@@ -76,6 +76,9 @@ The glance Python package: the Image service API, stores integration,
 database models and command implementations.
 """
 modules = ["glance"]
+# glance/image_cache/drivers/xattr.py imports xattr (the xattr cache driver);
+# upstream metadata does not list it, so it is stated here.
+requires = ["python3-pyxattr"]
 docs = ["README.rst"]
 
 [[package]]

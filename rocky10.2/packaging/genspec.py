@@ -210,8 +210,13 @@ def generate(src, pkgs):
     w('')
     w('%install')
     w('%pyproject_install')
-    # Catalogues go to /usr/share/locale, and the site-packages copies are removed
-    # before the file list is saved; otherwise the list names files that are gone.
+    if python_pkgs:
+        mods = ' '.join(python_pkgs[0].get('modules', []))
+        need(mods, f'{src["name"]}: the python package needs modules = [...]')
+        w(f'%pyproject_save_files -l {mods}')
+    # Catalogues are compiled into /usr/share/locale (packaged through find_lang);
+    # the .po copies in site-packages are removed and dropped from the saved file
+    # list, which pyproject_save_files builds from the wheel RECORD, not the disk.
     if src.get('locale_domain'):
         dom = src['locale_domain']
         w(f'for po in {dom}/locale/*/LC_MESSAGES/{dom}.po; do')
@@ -220,10 +225,7 @@ def generate(src, pkgs):
         w(f'    msgfmt -o %{{buildroot}}%{{_datadir}}/locale/"$lang"/LC_MESSAGES/{dom}.mo "$po"')
         w('done')
         w(f'rm -rf %{{buildroot}}%{{python3_sitelib}}/{dom}/locale')
-    if python_pkgs:
-        mods = ' '.join(python_pkgs[0].get('modules', []))
-        need(mods, f'{src["name"]}: the python package needs modules = [...]')
-        w(f'%pyproject_save_files -l {mods}')
+        w(f"sed -i '\\#/{dom}/locale#d' %{{pyproject_files}}")
     if src.get('locale_domain'):
         w(f'%find_lang {src["locale_domain"]}')
     for d in src.get('drop_after_install', []):
