@@ -1,0 +1,4 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-glance.conf.
+g glance 161
+u glance 161:glance "OpenStack Glance image service" /var/lib/glance /usr/sbin/nologin

@@ -1,0 +1,98 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Names, modes and owners follow what rc4 published so the new build can replace
+# it; every file installed comes either from the upstream tarball or from
+# ../files/openstack-glance/ (Hagistack's own).
+[source]
+name = "openstack-glance"
+project = "glance"
+version = "32.0.0"
+release = "1"
+epoch = 1
+tarball = "glance-32.0.0.tar.gz"
+sha256 = "e92cce22edf09f573c7083cecb783f19b526a3be9bc34c4018e658962b9d98e5"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack Image service (Glance)"
+description = """
+Glance stores and serves virtual machine images for OpenStack. This package
+holds the daemons, their configuration and systemd units. This is the
+upstream OpenStack release, packaged by Hagistack.
+"""
+check = "import"
+check_import_exclude = ["glance.tests*", "glance.db.sqlalchemy.alembic_migrations*", "glance.cmd.*"]
+doc = "doc/source"
+buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc",
+                 "python3-reno", "python3-os-api-ref", "python3-whereto"]
+locale_domain = "glance"
+# The wheel's data-files land under /usr/etc; the files this package ships are
+# installed explicitly below instead.
+drop_after_install = ["%{_prefix}/etc"]
+
+[[package]]
+name = "openstack-glance"
+kind = "files"
+requires = ["python3-glance = %{epoch}:%{version}-%{release}", "qemu-img"]
+systemd_units = ["openstack-glance-api.service", "openstack-glance-scrubber.service"]
+sysusers = "openstack-glance.sysusers"
+bin = ["glance-api", "glance-cache-cleaner", "glance-cache-manage", "glance-cache-prefetcher",
+       "glance-cache-pruner", "glance-control", "glance-manage", "glance-replicator",
+       "glance-scrubber", "glance-status"]
+docs = ["README.rst"]
+dirs = [
+  { path = "%{_sysconfdir}/glance" },
+  { path = "%{_sysconfdir}/glance/rootwrap.d" },
+  { path = "%{_sysconfdir}/glance/metadefs" },
+  { path = "%{_sharedstatedir}/glance", mode = "0755", user = "glance", group = "nobody" },
+  { path = "%{_localstatedir}/log/glance", mode = "0750", user = "glance", group = "glance" },
+]
+symlinks = [
+  { path = "%{_sysconfdir}/glance/rootwrap.d/glance_cinder_store.filters", target = "%{_datadir}/glance_store/glance_cinder_store.filters" },
+  { path = "%{_sysconfdir}/glance/rootwrap.d/os-brick.filters", target = "%{_datadir}/os-brick/rootwrap/os-brick.filters" },
+]
+install = [
+  { src = "upstream:etc/glance-api-paste.ini",            dest = "%{_sysconfdir}/glance/glance-api-paste.ini",   mode = "0644", group = "glance", config = true },
+  { src = "upstream:etc/glance-api.conf",                 dest = "%{_sysconfdir}/glance/glance-api.conf",        mode = "0640", group = "glance", config = true },
+  { src = "upstream:etc/glance-cache.conf",               dest = "%{_sysconfdir}/glance/glance-cache.conf",      mode = "0640", group = "glance", config = true },
+  { src = "upstream:etc/glance-image-import.conf.sample", dest = "%{_sysconfdir}/glance/glance-image-import.conf", mode = "0644", group = "glance", config = true },
+  { src = "upstream:etc/glance-scrubber.conf",            dest = "%{_sysconfdir}/glance/glance-scrubber.conf",   mode = "0640", group = "glance", config = true },
+  { src = "upstream:etc/glance-swift.conf.sample",        dest = "%{_sysconfdir}/glance/glance-swift.conf",      mode = "0644", group = "glance", config = true },
+  { src = "upstream:etc/schema-image.json",               dest = "%{_sysconfdir}/glance/schema-image.json",      mode = "0640", group = "glance", config = true },
+  { src = "upstream:etc/metadefs/*",                      dest = "%{_sysconfdir}/glance/metadefs",               mode = "0640", group = "glance", config = true },
+  { src = "file:glance-rootwrap.conf",                    dest = "%{_sysconfdir}/glance/rootwrap.conf",          mode = "0640", group = "glance", config = true },
+  { src = "file:openstack-glance.logrotate",              dest = "%{_sysconfdir}/logrotate.d/openstack-glance",  mode = "0644", group = "glance", config = true },
+  { src = "file:openstack-glance.sudoers",                dest = "%{_sysconfdir}/sudoers.d/glance",              mode = "0440", config = true },
+  { src = "file:openstack-glance-api.service",            dest = "%{_unitdir}/openstack-glance-api.service" },
+  { src = "file:openstack-glance-scrubber.service",       dest = "%{_unitdir}/openstack-glance-scrubber.service" },
+  { src = "file:glance-wsgi-api",                         dest = "%{_bindir}/glance-wsgi-api",                   mode = "0755" },
+]
+
+[[package]]
+name = "python3-glance"
+kind = "python"
+summary = "Python modules of the OpenStack Image service"
+description = """
+The glance Python package: the Image service API, stores integration,
+database models and command implementations.
+"""
+modules = ["glance"]
+docs = ["README.rst"]
+
+[[package]]
+name = "python3-glance-tests"
+kind = "python-tests"
+summary = "Unit and functional tests of the OpenStack Image service"
+description = """
+The upstream test suite of glance.
+"""
+requires = ["openstack-glance = %{epoch}:%{version}-%{release}"]
+tests_path = "glance/tests"
+licenses = ["LICENSE"]
+
+[[package]]
+name = "openstack-glance-doc"
+kind = "sphinx-html"
+summary = "Documentation for the OpenStack Image service"
+description = """
+HTML documentation for glance, built from the upstream sources.
+"""
+requires = ["openstack-glance = %{epoch}:%{version}-%{release}"]

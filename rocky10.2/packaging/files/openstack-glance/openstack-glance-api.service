@@ -1,0 +1,18 @@
+# Written for Hagistack.
+# glance-api stays in the foreground and does not send sd_notify, so
+# Type=simple is used.
+[Unit]
+Description=OpenStack Image Service (Glance) API server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=glance
+Group=glance
+ExecStart=/usr/bin/glance-api --config-file /etc/glance/glance-api.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Install as /etc/sudoers.d/glance with mode 0440.
+Defaults:glance !requiretty
+
+glance ALL = (root) NOPASSWD: /usr/bin/glance-rootwrap /etc/glance/rootwrap.conf *, /usr/bin/privsep-helper *

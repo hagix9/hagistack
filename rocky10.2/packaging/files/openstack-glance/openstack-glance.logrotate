@@ -1,0 +1,13 @@
+# Written for Hagistack.
+# The Glance daemons keep their log files open and do not reopen them on a
+# signal, so the files are copied and truncated in place.
+/var/log/glance/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su glance glance
+}

@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+# Written for Hagistack.
+"""WSGI entry point for the Glance API.
+
+Load this file from a WSGI server (for example uwsgi --wsgi-file or
+mod_wsgi WSGIScriptAlias); it exposes the callable as ``application``.
+"""
+
+from glance.wsgi.api import application  # noqa: F401

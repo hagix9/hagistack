@@ -1,0 +1,18 @@
+# Written for Hagistack.
+# --daemon keeps glance-scrubber running and waking up every wakeup_time
+# seconds; without it the scrubber runs once and exits.
+[Unit]
+Description=OpenStack Image Service (Glance) scrubber
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=glance
+Group=glance
+ExecStart=/usr/bin/glance-scrubber --daemon --config-file /etc/glance/glance-scrubber.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

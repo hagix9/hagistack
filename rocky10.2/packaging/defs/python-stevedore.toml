@@ -1,0 +1,22 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+[source]
+name = "python-stevedore"
+project = "stevedore"
+version = "5.7.0"
+release = "1"
+tarball = "stevedore-5.7.0.tar.gz"
+sha256 = "31dd6fe6b3cbe921e21dcefabc9a5f1cf848cf538a1f27543721b8ca09948aa3"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Plugin management for Python applications (OpenStack stevedore)"
+description = """
+stevedore loads and manages plugins that Python applications declare as
+entry points. This is the upstream OpenStack release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-stevedore"
+kind = "python"
+modules = ["stevedore"]
+docs = ["README.rst"]

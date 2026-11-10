@@ -1,0 +1,39 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+[source]
+name = "python-oslo-config"
+project = "oslo.config"
+version = "10.3.0"
+release = "1"
+# rc4 published this package at epoch 2; keeping it lets the new build replace rc4.
+epoch = 2
+tarball = "oslo_config-10.3.0.tar.gz"
+sha256 = "c405a40a8b05aa97bb5c24bb0b849981a7a5b7d56304df40632722312c58eaca"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack configuration library (oslo.config)"
+description = """
+oslo.config parses command line options and INI-style configuration files
+for OpenStack services, and provides the sample generator and validator
+tools. This is the upstream OpenStack release, packaged by Hagistack.
+"""
+check = "import"
+doc = "doc/source"
+buildrequires = ["python3-sphinx", "python3-openstackdocstheme", "python3-sphinxcontrib-apidoc", "python3-reno"]
+
+[[package]]
+name = "python3-oslo-config"
+kind = "python"
+modules = ["oslo_config"]
+bin = ["oslo-config-generator", "oslo-config-validator"]
+# rc4 shipped these two names as well; other packages' build scripts may call them.
+bin_symlinks = { "oslo-config-generator-3" = "oslo-config-generator", "oslo-config-validator-3" = "oslo-config-validator" }
+docs = ["README.rst"]
+
+[[package]]
+name = "python-oslo-config-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.config"
+description = """
+HTML documentation for oslo.config, built from the upstream sources.
+"""
+licenses = ["LICENSE"]
