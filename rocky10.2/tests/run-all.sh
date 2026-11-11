@@ -3,6 +3,7 @@
 #   tests/test-rpm-source.sh          RPM sources, verification, guards
 #   tests/test-build-in-container.sh  pass control of the source build
 #   tests/test-build-rpms-staging.sh  sources re-staged before every rpmbuild
+#   tests/test-build-own.sh           own packaging: RDO exclusion, retries, final check
 #   spec-adapt/test_adapt.py          spec adaptation rules and licensing
 #
 #   bash rocky10.2/tests/run-all.sh
@@ -13,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 rc=0
-for t in test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh; do
+for t in test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh test-build-own.sh; do
     echo "######## $t"
     bash "$HERE/$t" || rc=1
 done

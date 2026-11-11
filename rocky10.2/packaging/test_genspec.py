@@ -65,9 +65,38 @@ class Definitions(unittest.TestCase):
                 for it in src.get('patches', []) + src.get('extra_licenses', []):
                     f = os.path.join(HERE, '..', it['path'])
                     self.assertTrue(os.path.isfile(f), it['path'])
+                    self.assertEqual(keys.get('files', {}).get(it['path']), it['sha256'],
+                                     f'{it["path"]}: pin differs from its LICENSE/PATCH row in gazpacho.manifest')
                     import hashlib
                     with open(f, 'rb') as fh:
                         self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), it['sha256'], it['path'])
+
+    def test_every_licence_and_patch_row_is_used(self):
+        _, keys = manifest_rows()
+        used = set()
+        for d in DEFS:
+            src, _ = genspec.load(d)
+            used |= {it['path'] for it in src.get('patches', []) + src.get('extra_licenses', [])}
+        self.assertEqual(set(keys.get('files', {})), used)
+
+    def test_package_names_are_unique_across_definitions(self):
+        seen = {}
+        for d in DEFS:
+            _, pkgs = genspec.load(d)
+            for p in pkgs:
+                with self.subTest(pkg=p['name']):
+                    self.assertNotIn(p['name'], seen, f'also in {seen.get(p["name"])}')
+                seen[p['name']] = os.path.basename(d)
+
+    def test_names_option_lists_every_package(self):
+        import contextlib
+        import io
+        for d in DEFS[:5]:
+            _, pkgs = genspec.load(d)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(genspec.main([d, '--names']), 0)
+            self.assertEqual(out.getvalue().split(), [p['name'] for p in pkgs])
 
     def test_sources_are_upstream_or_hagistack_only(self):
         for d in DEFS:
@@ -87,7 +116,7 @@ class Definitions(unittest.TestCase):
                     else:
                         self.assertEqual(m.group(1), 'Source')
                         self.assertTrue(os.path.isfile(os.path.join(HERE, 'files', src['name'], v)), v)
-                self.assertNotRegex(spec.lower(), r'\\brdo\\b|delorean|distgit|rdoproject')
+                self.assertNotRegex(spec.lower(), r'\brdo\b|delorean|distgit|rdoproject')
 
     def test_hagistack_files_are_used_and_marked(self):
         for d in DEFS:
@@ -116,10 +145,26 @@ class HagistackLicence(unittest.TestCase):
             src, pkgs = genspec.load(d)
             spec = genspec.generate(src, pkgs)
             self.assertIn('Source99:       HAGISTACK-LICENSE', spec)
+            ids = lambda e: set(re.findall(r'[A-Za-z0-9.+-]+', e)) - {'AND', 'OR', 'WITH'}
+            srpm_tag = re.search(r'^License:\s+(.+)$', spec, re.M).group(1)
             for p in pkgs:
                 if genspec.has_hagistack_files(p):
                     with self.subTest(pkg=p['name']):
-                        self.assertIn(' AND MIT', genspec.pkg_license(src, p))
+                        self.assertIn('MIT', ids(genspec.pkg_license(src, p)))
+                        # the source package's tag covers what the SRPM carries
+                        self.assertIn('MIT', ids(srpm_tag))
+            for tag in re.findall(r'^License:\s+(.+)$', spec, re.M):
+                with self.subTest(d=os.path.basename(d), tag=tag):
+                    terms = re.findall(r'[A-Za-z0-9.+-]+', tag)
+                    named = [t for t in terms if t not in ('AND', 'OR', 'WITH')]
+                    self.assertEqual(len(named), len(set(named)), 'a licence named twice')
+
+    def test_with_mit(self):
+        self.assertEqual(genspec.with_mit('Apache-2.0'), 'Apache-2.0 AND MIT')
+        self.assertEqual(genspec.with_mit('Apache-2.0 AND MIT'), 'Apache-2.0 AND MIT')
+        self.assertEqual(genspec.with_mit('MIT'), 'MIT')
+        self.assertEqual(genspec.with_mit('MIT-0'), 'MIT-0 AND MIT')
+        self.assertEqual(genspec.with_mit('CC-BY-4.0 AND OFL-1.1 AND MIT'), 'CC-BY-4.0 AND OFL-1.1 AND MIT')
 
 
 class Refusals(unittest.TestCase):

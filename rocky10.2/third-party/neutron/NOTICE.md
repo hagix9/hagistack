@@ -19,8 +19,12 @@ is fetched at build time from a pinned external source and never stored here (se
 | `0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch` | `83f1d8305651a0ab23629c88d70bfa237055158c` | Ensure MaintenanceWorker lock set before connect (Related-Bug #2155155) | `4f981103be17689f9186776b5059c55bb33950dae47740fd52575be7849387e4` |
 | `0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch` | `91abb5e720e1c515dbfbe9b2313fbdff92b2abbf` | Only set the maintenance worker lock on the worker (Closes-Bug #2156979) | `136ce37c86bf3ac8dd7f737b23c5e2b60bdb17326cac6876852ebc4bfb96d9cf` |
 
-They are pinned by SHA-256 in `../../gazpacho.manifest` (`PATCH` rows) and checked by
-`spec-adapt/adapt.py` before the build uses them.
+They are pinned by SHA-256 in `../../packaging/defs/openstack-neutron.toml`
+(`patches`), which `../../packaging/test_genspec.py` holds equal to the `PATCH`
+rows of `../../gazpacho.manifest`. `../../packaging/build-own.sh` stops the build
+before anything is built if either file is missing, is a symlink or differs.
+(The older RDO-distgit path, `HAGISTACK_PACKAGING=rdo`, checks the same rows with
+`spec-adapt/adapt.py`.)
 
 ## What Hagistack uses them for
 

@@ -4,12 +4,15 @@ This directory holds licence texts that Hagistack did **not** write and **does**
 redistribute. They are not covered by Hagistack's MIT License (the repository-root
 `LICENSE`); each file is the licence of the component it names.
 
-Five of the ten packages built from `spec-templates/python-pypi-generic.spec.in`
-come from PyPI sdists that carry no licence file at all, so the built RPMs carried
-none either. The texts below are added to those RPMs as `%license` documents:
-`LICENSE` rows in `../../gazpacho.manifest` name each file and its SHA-256, and
-`spec-adapt/adapt.py --check` and `build-rpms.sh` stop the build if a file is
-missing or differs.
+Five of the ten XStatic and other PyPI packages come from sdists that carry no
+licence file at all, so built as they are their RPMs would carry none either. The
+texts below are added to those RPMs as `%license` documents. Each is named with
+its SHA-256 by `extra_licenses` in the package's definition under
+`../../packaging/defs/`, which `../../packaging/test_genspec.py` holds equal to the
+`LICENSE` rows of `../../gazpacho.manifest`; `../../packaging/build-own.sh` stops
+the build before anything is built if a file is missing, is a symlink or differs.
+(The older RDO-distgit path, `HAGISTACK_PACKAGING=rdo`, checks the same rows with
+`spec-adapt/adapt.py --check` and `build-rpms.sh`.)
 
 | File | RPM | Component and version bundled | Source of the text | SHA-256 |
 |---|---|---|---|---|

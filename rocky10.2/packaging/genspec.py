@@ -173,8 +173,21 @@ def has_hagistack_files(p):
     return bool(p.get('sysusers')) or any(it['src'].startswith('file:') for it in p.get('install', []))
 
 
+def with_mit(expr):
+    """expr AND MIT, unless MIT is already one of its licences (no 'MIT AND MIT')."""
+    ids = set(re.findall(r'[A-Za-z0-9.+-]+', expr)) - {'AND', 'OR', 'WITH'}
+    return expr if 'MIT' in ids else expr + ' AND MIT'
+
+
 def pkg_license(src, p):
-    return src['license'] + (' AND MIT' if has_hagistack_files(p) else '')
+    return with_mit(src['license']) if has_hagistack_files(p) else src['license']
+
+
+def srpm_license(src, pkgs):
+    """The main package's tag is also the source package's: it names everything
+    the SRPM carries, so MIT whenever the SRPM holds Hagistack files, even when
+    the main package itself (a meta package, say) holds none."""
+    return with_mit(src['license']) if any(has_hagistack_files(p) for p in pkgs) else src['license']
 
 
 def pkg_header(src, p, main):
@@ -216,7 +229,7 @@ def generate(src, pkgs):
     w(f'Version:        {src["version"]}')
     w(f'Release:        {src["release"]}%{{?dist}}')
     w(f'Summary:        {(main or {}).get("summary", src["summary"])}')
-    w(f'License:        {pkg_license(src, main) if main else src["license"]}')
+    w(f'License:        {srpm_license(src, pkgs)}')
     if openstack:
         w(f'URL:            {src.get("url", "https://opendev.org/openstack/" + src["project"])}')
         w(f'Source0:        https://tarballs.openstack.org/{src["project"]}/{src["tarball"]}')
@@ -434,9 +447,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('definition')
     ap.add_argument('-o', '--output')
+    ap.add_argument('--names', action='store_true',
+                    help='print the binary package names the definition produces, one per line')
     a = ap.parse_args(argv)
     try:
         src, pkgs = load(a.definition)
+        if a.names:
+            sys.stdout.write(''.join(p['name'] + '\n' for p in pkgs))
+            return 0
         text = generate(src, pkgs)
     except (DefError, tomllib.TOMLDecodeError, OSError) as e:
         print(f'genspec: {e}', file=sys.stderr)
