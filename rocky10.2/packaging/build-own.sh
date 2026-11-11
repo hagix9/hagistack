@@ -147,6 +147,10 @@ say "staging ${#WANT[@]} definitions (fetch, verify, generate)"
 for n in "${WANT[@]}"; do stage "$n"; done
 ok "every input verified; specs generated"
 
+# RPMs already in this build area (a re-run, or a partial build being completed)
+# are published before the first round, so they can satisfy build dependencies.
+if find "$RPMTOP/RPMS" -name '*.rpm' -print -quit | grep -q .; then publish_repo; fi
+
 declare -A STATE
 todo=("${WANT[@]}")
 round=0
