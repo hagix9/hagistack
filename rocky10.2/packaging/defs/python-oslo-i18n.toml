@@ -26,6 +26,8 @@ kind = "python"
 modules = ["oslo_i18n"]
 docs = ["CONTRIBUTING.rst", "ChangeLog", "PKG-INFO", "README.rst"]
 licenses = ["LICENSE"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-i18n-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-i18n-lang"

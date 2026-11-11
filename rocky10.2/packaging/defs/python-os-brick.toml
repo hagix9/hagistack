@@ -28,3 +28,7 @@ docs = ["README.rst", "html"]
 licenses = ["LICENSE"]
 dirs = [{ path = "%{_datadir}/os-brick" }, { path = "%{_datadir}/os-brick/rootwrap" }]
 install = [{ src = "upstream:etc/os-brick/rootwrap.d/os-brick.filters", dest = "%{_datadir}/os-brick/rootwrap/os-brick.filters" }]
+# Commands os-brick runs to attach volumes (os_brick/initiator/connectors/*, privileged/*); rc4 required the same.
+requires = ["cryptsetup", "device-mapper-multipath", "iscsi-initiator-utils", "lsscsi >= 0.29", "lvm2", "nfs-utils", "nvme-cli", "sg3_utils", "systemd-udev"]
+# Name rc4 provided.
+provides = ["os-brick = %{?epoch:%{epoch}:}%{version}-%{release}"]

@@ -28,6 +28,8 @@ bin = ["oslopolicy-checker", "oslopolicy-convert-json-to-yaml", "oslopolicy-list
 bin_symlinks = { "oslopolicy-checker-3" = "oslopolicy-checker", "oslopolicy-list-redundant-3" = "oslopolicy-list-redundant", "oslopolicy-policy-generator-3" = "oslopolicy-policy-generator", "oslopolicy-sample-generator-3" = "oslopolicy-sample-generator" }
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-policy-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-policy-lang"

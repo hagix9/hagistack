@@ -23,6 +23,8 @@ kind = "python"
 modules = ["tooz"]
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# The redis backend installs with tooz, as in rc4.
+requires = ["python3-tooz+redis = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python3-tooz+etcd3gw"

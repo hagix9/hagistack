@@ -26,6 +26,8 @@ kind = "python"
 modules = ["oslo_privsep"]
 bin = ["privsep-helper"]
 docs = ["README.rst"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-privsep-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-privsep-lang"

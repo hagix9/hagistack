@@ -28,6 +28,8 @@ bin = ["lockutils-wrapper"]
 bin_symlinks = { "lockutils-wrapper-3" = "./lockutils-wrapper" }
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-concurrency-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-concurrency-lang"

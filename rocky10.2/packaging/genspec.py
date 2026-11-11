@@ -250,6 +250,11 @@ def generate(src, pkgs):
             w(f'%pyproject_extras_subpkg -n {base} {" ".join(p["extras"])}')
             w('')
             continue
+        if p['kind'] == 'python-tests' and python_pkgs:
+            # A tests package is useless without the code it tests.
+            req = f'{python_pkgs[0]["name"]} = %{{?epoch:%{{epoch}}:}}%{{version}}-%{{release}}'
+            if req not in p.get('requires', []):
+                p = dict(p, requires=[req] + p.get('requires', []))
         s.extend(pkg_header(src, p, False))
 
     srcidx = {f: 100 + i for i, f in enumerate(hfiles)}

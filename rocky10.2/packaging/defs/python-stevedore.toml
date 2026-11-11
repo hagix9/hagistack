@@ -20,3 +20,5 @@ name = "python3-stevedore"
 kind = "python"
 modules = ["stevedore"]
 docs = ["README.rst"]
+# Also in /usr/share/licenses, as rc4 had it.
+licenses = ["LICENSE"]

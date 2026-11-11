@@ -27,6 +27,8 @@ modules = ["os_ken"]
 licenses = ["LICENSE"]
 dirs = [{ path = "%{_sysconfdir}/os_ken" }]
 install = [{ src = "upstream:etc/os_ken/os_ken.conf", dest = "%{_sysconfdir}/os_ken/os_ken.conf", group = "neutron", config = true }]
+# os_ken.lib.ovs uses the ovs module; rc4 required it.
+requires = ["python3-openvswitch"]
 
 [[package]]
 name = "python-os-ken-doc"

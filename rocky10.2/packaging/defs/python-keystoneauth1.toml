@@ -29,6 +29,8 @@ kind = "python"
 modules = ["keystoneauth1"]
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# Names rc4 provided.
+provides = ["python-keystoneauth = %{?epoch:%{epoch}:}%{version}-%{release}", "python3.12-keystoneauth = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-keystoneauth1-doc"

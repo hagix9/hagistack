@@ -105,6 +105,8 @@ application module keystone.wsgi.api and the command implementations.
 """
 modules = ["keystone"]
 licenses = ["LICENSE"]
+# The LDAP identity backend installs with keystone, as in rc4.
+requires = ["python3-keystone+ldap = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python3-keystone+ldap"

@@ -28,6 +28,8 @@ bin = ["convert-json"]
 bin_symlinks = { "convert-json-3" = "./convert-json" }
 docs = ["AUTHORS", "ChangeLog", "README.rst"]
 licenses = ["LICENSE"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-log-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-log-lang"

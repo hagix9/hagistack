@@ -25,6 +25,8 @@ kind = "python"
 modules = ["ovsdbapp"]
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# ovsdbapp imports the ovs module (python3-openvswitch); rc4 required it.
+requires = ["python3-openvswitch"]
 
 [[package]]
 name = "python3-ovsdbapp-tests"

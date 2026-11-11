@@ -62,10 +62,13 @@ prep_extra = ["sed -i 's/^psutil>=[0-9.]*/psutil/' requirements.txt",
   # rpm refuses the ambiguous "#!/usr/bin/env python" shebang; one upstream test
   # helper (neutron/tests/fullstack/servers/metadata.py) carries it. Python 3 is meant.
   "grep -rlZ --include='*.py' -m1 '^#!/usr/bin/env python$' neutron | xargs -0 -r sed -i '1s|^#!/usr/bin/env python$|#!/usr/bin/python3|'"]
+
 [[package]]
 name = "openstack-neutron"
 kind = "files"
-requires = ["python3-neutron = %{epoch}:%{version}-%{release}",
+requires = [
+  # Tools the DHCP and L3 agents and the iptables/ipset managers run; rc4 required the same.
+  "conntrack-tools", "dibbler-client", "dnsmasq >= 2.76", "dnsmasq-utils >= 2.76", "haproxy >= 1.5.0", "iproute-tc", "ipset", "iptables", "iputils", "keepalived", "radvd","python3-neutron = %{epoch}:%{version}-%{release}",
             "openstack-neutron-common = %{epoch}:%{version}-%{release}"]
 # The DHCP and L3 agents start these (rootwrap.filters: dnsmasq, keepalived,
 # haproxy; bindep.txt lists haproxy and keepalived). Weak, because this package
@@ -176,7 +179,9 @@ summary = "OpenStack Networking (Neutron) metering agent"
 description = """
 The Neutron metering agent, its configuration and systemd unit.
 """
-requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+requires = [
+  # Meters with iptables; rc4 required it.
+  "iptables","openstack-neutron-common = %{epoch}:%{version}-%{release}"]
 systemd_units = ["neutron-metering-agent.service"]
 bin = ["neutron-metering-agent"]
 licenses = ["LICENSE"]
@@ -218,6 +223,8 @@ ml2ovn-trace, which runs ovn-trace for a Neutron port.
 requires = ["python3-neutron = %{epoch}:%{version}-%{release}"]
 bin = ["ml2ovn-trace"]
 licenses = ["LICENSE"]
+# Name rc4 provided.
+provides = ["python3-neutron-ml2ovn-trace = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "openstack-neutron-openvswitch"
@@ -227,7 +234,9 @@ description = """
 The Neutron ML2 Open vSwitch agent, its configuration, systemd units and the
 bridge netfilter settings its iptables-based firewall drivers need.
 """
-requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+requires = [
+  # The OVS agent drives Open vSwitch and the host firewall; rc4 required these.
+  "ipset", "iptables", "kmod", "openvswitch", "python3-openvswitch >= 2.10.0","openstack-neutron-common = %{epoch}:%{version}-%{release}",
             # neutron-destroy-patch-ports.service runs the module with it.
             "/usr/bin/python3"]
 bin = ["neutron-openvswitch-agent"]
@@ -257,7 +266,9 @@ summary = "OpenStack Networking (Neutron) OVN agent"
 description = """
 The Neutron OVN agent, its configuration and systemd unit.
 """
-requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+requires = [
+  # Talks to the local Open vSwitch; rc4 required it.
+  "openvswitch >= 2.10.0","openstack-neutron-common = %{epoch}:%{version}-%{release}"]
 systemd_units = ["neutron-ovn-agent.service"]
 bin = ["neutron-ovn-agent"]
 licenses = ["LICENSE"]
@@ -293,7 +304,9 @@ description = """
 The Neutron OVN metadata agent, which serves instance metadata through a
 haproxy in each network's namespace, its configuration and systemd unit.
 """
-requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+requires = [
+  # Talks to the local Open vSwitch; rc4 required it.
+  "openvswitch >= 2.10.0","openstack-neutron-common = %{epoch}:%{version}-%{release}",
             # The agent spawns haproxy per network (bindep.txt; rootwrap.filters
             # "METADATA PROXY").
             "haproxy"]
@@ -316,6 +329,8 @@ install = [
 # Created once by openstack-neutron-common (symlinks above); rc4 listed it in
 # both packages.
 files = ["%{_sysconfdir}/neutron/plugins/networking-ovn/networking-ovn.ini"]
+# Name rc4 provided.
+provides = ["python3-networking-ovn-metadata-agent = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "openstack-neutron-periodic-workers"
@@ -381,6 +396,8 @@ agents and the database models and migrations.
 """
 modules = ["neutron"]
 licenses = ["LICENSE"]
+# Name rc4 provided (networking-ovn was merged into neutron).
+provides = ["python3-networking-ovn = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python3-neutron-tests"

@@ -28,6 +28,8 @@ bin = ["oslo-config-generator", "oslo-config-validator"]
 # rc4 shipped these two names as well; other packages' build scripts may call them.
 bin_symlinks = { "oslo-config-generator-3" = "oslo-config-generator", "oslo-config-validator-3" = "oslo-config-validator" }
 docs = ["README.rst"]
+# Also in /usr/share/licenses, as rc4 had it.
+licenses = ["LICENSE"]
 
 [[package]]
 name = "python-oslo-config-doc"

@@ -26,6 +26,8 @@ kind = "python"
 modules = ["oslo_db"]
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# Hagistack connects with mysql+pymysql (installer), so the mysql extra (PyMySQL) comes with oslo.db, as in rc4; and the translations.
+requires = ["python3-oslo-db+mysql = %{?epoch:%{epoch}:}%{version}-%{release}", "python-oslo-db-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-db-lang"

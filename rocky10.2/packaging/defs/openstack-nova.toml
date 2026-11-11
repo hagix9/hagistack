@@ -151,6 +151,8 @@ nova-compute, the service that runs virtual machines on a hypervisor host
 through libvirt and QEMU/KVM.
 """
 requires = [
+  # libvirt drivers and QEMU parts the libvirt driver uses, config-drive (xorriso), image tools; rc4 required the same.
+  "libvirt-daemon-driver-nodedev >= 7.0.0", "libvirt-daemon-driver-nwfilter >= 7.0.0", "libvirt-daemon-driver-qemu >= 7.0.0", "libvirt-daemon-driver-secret >= 7.0.0", "libvirt-daemon-driver-storage-core >= 7.0.0", "qemu-kvm-core >= 5.2.0", "qemu-kvm-device-display-virtio-vga", "qemu-kvm-block-rbd >= 5.2.0", "python3-libguestfs", "libosinfo", "rsync", "xorriso",
   "openstack-nova-common = %{epoch}:%{version}-%{release}",
   # nova/virt/libvirt/host.py imports the libvirt binding (not in upstream metadata).
   "python3-libvirt",
@@ -270,6 +272,8 @@ run only Nova's own remote file commands as nova, the SSH client
 configuration of the nova user, and placeholder key files.
 """
 requires = [
+  # Migration is between compute hosts; rc4 required compute.
+  "openstack-nova-compute = %{?epoch:%{epoch}:}%{version}-%{release}",
   "openstack-nova-common = %{epoch}:%{version}-%{release}",
   # The login side (sshd) and the remote scp that nova's scp talks to.
   "openssh-server",
@@ -304,6 +308,8 @@ compute manager, virt drivers and database models.
 """
 modules = ["nova"]
 licenses = ["LICENSE"]
+# nova runs ssh and sudo (nova/utils.py, nova/privsep) and its memcache client; rc4 required these.
+requires = ["openssh", "sudo", "python3-memcached"]
 
 [[package]]
 name = "python3-nova-tests"

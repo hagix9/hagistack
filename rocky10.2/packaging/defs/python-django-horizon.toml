@@ -95,6 +95,8 @@ configuration in /etc/openstack-dashboard and the httpd configuration that
 serves it under /dashboard.
 """
 requires = [
+  # For the packaged logrotate file; rc4 required it.
+  "logrotate",
   "python3-django-horizon = %{epoch}:%{version}-%{release}",
   # rc4 pulled the (empty) theme package in this way; kept so the two install together.
   "openstack-dashboard-theme >= %{epoch}:%{version}-%{release}",
@@ -170,3 +172,5 @@ files = [
   "%{python3_sitelib}/horizon/locale/*/LC_MESSAGES/*.mo",
   "%{python3_sitelib}/openstack_auth/locale/*/LC_MESSAGES/*.mo",
 ]
+# Name rc4 provided.
+provides = ["django-horizon = %{?epoch:%{epoch}:}%{version}-%{release}"]

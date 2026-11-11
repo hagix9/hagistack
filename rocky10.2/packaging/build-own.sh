@@ -163,6 +163,10 @@ while [ "${#todo[@]}" -gt 0 ]; do
         if [ "$rc" -eq 0 ]; then
             STATE[$n]="PASS $n (built in round $round; %check $([ "$NOCHECK" -eq 1 ] && echo 'NOT run' || echo 'run'))"
             ok "$n"; built=$((built + 1))
+            # Published at once, not at the end of the round: a later package in the
+            # same round (a service generating its sample configuration from the
+            # libraries it imports) must see this build, not an RDO trunk version.
+            publish_repo
         elif [ "$rc" -eq 11 ] && grep -q 'is needed by' "$LOGDIR/$n.rpmbuild.log"; then
             STATE[$n]="FAIL $n (rpmbuild exit 11)"; next+=("$n")
             printf '  wait  %s (build dependencies not there yet)\n' "$n"

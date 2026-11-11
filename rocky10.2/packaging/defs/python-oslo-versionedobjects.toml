@@ -26,6 +26,8 @@ kind = "python"
 modules = ["oslo_versionedobjects"]
 docs = ["README.rst"]
 licenses = ["LICENSE"]
+# The translations (and for oslo.cache its dogpile and etcd3gw backends) install with the library, as in rc4.
+requires = ["python-oslo-versionedobjects-lang = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python-oslo-versionedobjects-lang"

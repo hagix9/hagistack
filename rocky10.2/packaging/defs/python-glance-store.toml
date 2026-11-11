@@ -28,6 +28,8 @@ licenses = ["LICENSE"]
 # upstream data_files; rc4 placed the cinder store filter under /usr/share
 dirs = [{ path = "%{_datadir}/glance_store" }]
 install = [{ src = "upstream:etc/glance/rootwrap.d/glance_cinder_store.filters", dest = "%{_datadir}/glance_store/glance_cinder_store.filters" }]
+# The cinder store installs with glance_store, as in rc4.
+requires = ["python3-glance-store+cinder = %{?epoch:%{epoch}:}%{version}-%{release}"]
 
 [[package]]
 name = "python3-glance-store+cinder"

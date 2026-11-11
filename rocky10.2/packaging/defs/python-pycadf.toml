@@ -30,3 +30,5 @@ install = [{ src = "upstream:etc/pycadf/*.conf", dest = "%{_sysconfdir}/pycadf",
 name = "python3-pycadf"
 kind = "python"
 modules = ["pycadf"]
+# The audit map files, as in rc4.
+requires = ["python-pycadf-common = %{?epoch:%{epoch}:}%{version}-%{release}"]
