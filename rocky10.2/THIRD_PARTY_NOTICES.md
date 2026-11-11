@@ -4,17 +4,34 @@ This file is copied into every release candidate by `make-rpm-release.sh`.
 
 ## What the licence of each file is
 
-- Hagistack's own work (the `hagistack` script, the build scripts, the
-  spec-adaptation rules) is under the MIT License in `LICENSE`.
-- **The RPMs are not.** Each RPM carries the licence of the software inside it:
-  its `License:` tag (also listed in `PACKAGE_MANIFEST.tsv`) and the licence
-  files it installs under `/usr/share/licenses/`. Almost all of them are
-  OpenStack projects under the Apache License 2.0.
-- The RPMs are built from the RDO distgit packaging (`https://github.com/rdo-packages`)
-  at the exact commits pinned in `gazpacho.manifest`, with Hagistack's edits
-  applied by rule. Those distgit repositories do not carry a licence statement
-  of their own; the `License:` tag of an RPM describes the packaged software,
-  not the packaging files.
+- Hagistack's own work is under the MIT License in `LICENSE`: the `hagistack`
+  script, the build scripts, and the RPM packaging in `packaging/` (the package
+  definitions `packaging/defs/*.toml`, the spec generator `packaging/genspec.py`
+  and the files in `packaging/files/`, such as systemd units, sudoers and
+  logrotate files). Every source RPM carries this licence as `HAGISTACK-LICENSE`.
+- **The software inside the RPMs is not.** Each piece of software is under its
+  own licence, as stated in the licence texts it ships; the RPMs install those
+  texts under `/usr/share/licenses/` (some subpackages rely on the copy in the
+  package they depend on, and a few carry the licence inside the packaged files,
+  as noted below). Almost all of it is OpenStack projects
+  under the Apache License 2.0. An RPM's `License:` tag (also listed in
+  `PACKAGE_MANIFEST.tsv`) is a summary of those licences; it does not replace
+  the licence texts.
+- The RPMs are generated from Hagistack's own package definitions. They are
+  **not** generated from RDO distgit packaging: no RDO spec file or other RDO
+  packaging file is used as an input. A comparison of the built packages with
+  RDO's packaging files found only two identical files: the two upstream Neutron
+  commits in `third-party/neutron/`, which RDO also carries. (Release candidates up to rc4 were built from RDO
+  distgit by the older path, `build-rpms.sh`.)
+- Sources: OpenStack release tarballs are checked against the SHA-256 pinned in
+  the definition and against their upstream GPG signature, with the OpenStack
+  release key pinned in `gazpacho.manifest`. The ten definitions built from PyPI
+  sdists are checked against their pinned SHA-256 only; they have no upstream
+  signature to check.
+- RDO's binary repositories are used, together with Rocky Linux and EPEL, to
+  install build dependencies on the builder and, on the nodes, to install the
+  dependencies the RPMs need. Packages from those repositories are not part of
+  this release.
 - `third-party/` holds the files Hagistack redistributes from other projects,
   each with its own licence: two upstream Neutron changes (`third-party/neutron/`,
   Apache-2.0) and licence texts for the XStatic RPMs (`third-party/licenses/`).

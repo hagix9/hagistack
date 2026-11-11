@@ -115,7 +115,7 @@ Hagistack はノードに追加しません。有効になっている場合は�
 | `--rpm-source` | 用途 | 動作 |
 |---|---|---|
 | `github`（既定） | 通常のインストール | `rpm-release.lock` が指すリリースアセットをダウンロードし、そのファイルに固定された SHA-256・サイズ・RPM セット識別子で検証 |
-| `build` | ソースからのビルド | このホスト上の使い捨て Rocky 10.2 コンテナで `build-rpms.sh` を実行し、結果を検証 |
+| `build` | ソースからのビルド | このホスト上の使い捨て Rocky 10.2 コンテナで、Hagistack 独自のパッケージ定義（`packaging/`）から RPM をビルドし、結果を検証 |
 | `bundle` | ソースビルドしたコントローラに追加するコンピュートノード | `hagistack rpm-bundle` で作った tarball を、コントローラの RPM セット識別子で検証 |
 | `repo-url` | 既存のリポジトリ | 従来どおり `--repo-url` を使う。このモードでは Hagistack は何も検証しない |
 
@@ -144,7 +144,7 @@ sudo ./hagistack rpm-prepare --rpm-source build
 - 別マシンは不要です。ビルドはコンテナ（`quay.io/rockylinux/rockylinux:10.2`、digest で固定）で行うため、
   ビルド依存パッケージや RDO のトランクリポジトリがホストに入ることはありません。`podman` がなければ導入します。
 - 数時間かかります。進捗：`/var/lib/hagistack/rpm-build/<id>/out/logs/pass1.log`
-- 2 パスで実行します。マニフェストはサービスをライブラリより先に並べているため、ライブラリができた後にサービスを再ビルドします。
+- `packaging/build-own.sh` は、必要なパッケージがビルドできた後に、その定義をもう一度ビルドします。2 回目のパスは、それでも残ったビルド依存の失敗に対してだけ実行します。
 - 結果は `/var/lib/hagistack/rpm-build/<id>/` に残ります。`<id>` はビルド入力の識別子で、同じ入力は再ビルドしません。
 
 **`bundle`：コントローラの RPM をコンピュートノードで再利用する**
@@ -161,8 +161,16 @@ sudo ./hagistack compute-add --controller-ip 10.0.0.10 \
 
 ## RPM リポジトリのビルド
 
-通常は自分で実行する必要はありません。`--rpm-source build` がコンテナ内で実行します。
-この節は、保守担当者向けと、別マシンでビルドする場合のための `build-rpms.sh` の説明です。
+通常は自分で実行する必要はありません。`--rpm-source build` がコンテナ内で RPM をビルドします。
+
+**現在の方式：Hagistack 独自のパッケージ定義。** 既定では `packaging/` を使います。
+`packaging/genspec.py` が `packaging/defs/` の定義から spec を作り、`packaging/build-own.sh` がビルドします。
+RDO の spec ファイルやその他のパッケージング用ファイルは使いません。詳しくは `packaging/README.md` を参照してください。
+
+**旧方式：RDO distgit（`build-rpms.sh`）。** この節の以下は、RDO distgit のパッケージングからビルドする `build-rpms.sh` の説明です。
+これは旧方式で、rc4 までのリリース候補はこの方式でビルドしました。独自定義でビルドしたセットが受け入れられるまで残しています。
+`hagistack --rpm-source build` はこの方式を使いません。`build-in-container.sh` は、環境変数 `HAGISTACK_PACKAGING=rdo` が設定されているときだけこの方式を使います。
+以下は、保守担当者向けと、別マシンでビルドする場合のための説明です。
 
 `build-rpms.sh` は、`gazpacho.manifest` に記載されたパッケージをビルドします。
 
@@ -718,6 +726,10 @@ Horizon は最後に追加しました。
   自分で NIC を接続するまで、provider ネットワークと Floating IP は物理 LAN に到達しません。
 - **その他のサービス。** Cinder（ボリューム）、Swift などの OpenStack サービスは導入しません。
 - **noVNC。** コンソールプロキシは導入しません。
+  `openstack-nova-novncproxy` を自分で導入する場合、このパッケージは `novnc` を Recommends（弱い依存）にしている点に注意してください。
+  通常の `dnf install` では `novnc` も一緒に入ることがありますが、`install_weak_deps=False` では入りません。
+  プロキシは既定で `/usr/share/novnc` を配信し、このディレクトリがないと終了するため、その場合は `novnc` も導入してください。
+  別のディレクトリを指定する構成（例：`/etc/sysconfig/openstack-nova-novncproxy` の `OPTIONS="--web <dir>"`）では、そのディレクトリの内容を配信します。
 - **SELinux ポリシー。** OpenStack 用の SELinux ポリシーは導入せず、ホストを permissive に切り替えます。
 - **ファイアウォール。** ホストファイアウォールは設定しません。
   API、RabbitMQ、OVN southbound データベース、memcached は管理ネットワーク上で待ち受けます。

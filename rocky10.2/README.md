@@ -131,7 +131,7 @@ that 2026.1 pins.
 | `--rpm-source` | For | What happens |
 |---|---|---|
 | `github` (default) | normal installs | Downloads the release asset named in `rpm-release.lock` and verifies it against the SHA-256, size and RPM-set identity pinned in that file |
-| `build` | building from source | Runs `build-rpms.sh` in a disposable Rocky 10.2 container on this host, then verifies the result |
+| `build` | building from source | Builds the RPMs from Hagistack's own package definitions (`packaging/`) in a disposable Rocky 10.2 container on this host, then verifies the result |
 | `bundle` | compute nodes of a controller that built from source | Verifies a tarball made by `hagistack rpm-bundle` against the controller's RPM-set identity |
 | `repo-url` | a repository you already run | Uses `--repo-url` as before. Hagistack verifies nothing in this mode |
 
@@ -170,8 +170,9 @@ sudo ./hagistack rpm-prepare --rpm-source build
   installs `podman` if it is missing.
 - It takes hours. Progress:
   `/var/lib/hagistack/rpm-build/<id>/out/logs/pass1.log`.
-- It runs two passes: the manifest lists the services before the libraries they
-  need, so the services are built again once the libraries exist.
+- `packaging/build-own.sh` builds a definition again once the packages it
+  needs have been built. A second pass runs only for build-dependency failures
+  left after that.
 - The result is kept in `/var/lib/hagistack/rpm-build/<id>/`, where `<id>`
   identifies the build inputs. The same inputs are never rebuilt.
 
@@ -190,9 +191,21 @@ bundle that is not the controller's set is refused.
 
 ## Build the RPM repository
 
-You normally do not run this yourself: `--rpm-source build` runs it for you in
-a container. This section describes `build-rpms.sh` for maintainers and for
-building on a separate machine.
+You normally do not run this yourself: `--rpm-source build` builds the RPMs
+for you in a container.
+
+**Current method: Hagistack's own package definitions.** By default the build
+uses `packaging/`: `packaging/genspec.py` writes each spec from a definition in
+`packaging/defs/`, and `packaging/build-own.sh` builds it. No RDO spec file or
+other RDO packaging file is used. See `packaging/README.md`.
+
+**Older method: RDO distgit (`build-rpms.sh`).** The rest of this section
+describes `build-rpms.sh`, which builds from RDO distgit packaging. It is the
+older method; release candidates up to rc4 were built with it. It is kept until
+the set built from the own definitions has been accepted. `hagistack
+--rpm-source build` does not use it; `build-in-container.sh` uses it only when
+`HAGISTACK_PACKAGING=rdo` is set in its environment. The description is for
+maintainers and for building on a separate machine.
 
 `build-rpms.sh` builds the packages listed in `gazpacho.manifest`:
 
@@ -799,6 +812,14 @@ published or tested. Details:
 - **Other services.** Cinder (volumes), Swift and other OpenStack services are
   not installed.
 - **noVNC.** The console proxy is not installed.
+  If you install `openstack-nova-novncproxy` yourself, note that it only
+  *recommends* `novnc` (a weak dependency). A plain `dnf install` may install
+  `novnc` with it, but with `install_weak_deps=False` it does not. The proxy
+  serves `/usr/share/novnc` by default and exits if that directory is missing,
+  so install `novnc` as well in that case. If you point the proxy at another
+  directory instead (for example `OPTIONS="--web <dir>"` in
+  `/etc/sysconfig/openstack-nova-novncproxy`), that directory's content is
+  served.
 - **SELinux policy.** No OpenStack SELinux policy is installed, and the host is
   switched to permissive.
 - **Firewall.** No host firewall is configured. The APIs, RabbitMQ, the OVN
