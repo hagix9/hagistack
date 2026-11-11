@@ -85,12 +85,15 @@ stage() {
 # build <name> -> 0 built, 11 build dependencies missing, other = failed
 build() {
     local name="$1" spec="$RPMTOP/SPECS/$1.spec" log="$LOGDIR/$1" nosrc round rc
-    $SUDO dnf -y builddep "$spec" > "$log.builddep.log" 2>&1
+    # --nobest: when the newest candidate of some dependency cannot be installed
+    # (a repository moved on: an EPEL build needing a library EL does not have yet),
+    # take the newest one that can. What was installed is recorded in build-env.lock.
+    $SUDO dnf -y --nobest builddep "$spec" > "$log.builddep.log" 2>&1
     for round in 1 2 3; do
         rpmbuild -br --nodeps "$spec" > "$log.br.log" 2>&1
         nosrc="$(ls -t "$RPMTOP"/SRPMS/*.buildreqs.nosrc.rpm 2>/dev/null | head -1)"
         [ -n "$nosrc" ] || break
-        $SUDO dnf -y builddep "$nosrc" >> "$log.builddep.log" 2>&1
+        $SUDO dnf -y --nobest builddep "$nosrc" >> "$log.builddep.log" 2>&1
         rm -f "$nosrc"
     done
     local flags=(-ba); [ "$NOCHECK" -eq 1 ] && flags+=(--nocheck)
