@@ -21,11 +21,14 @@
 # dependencies are not there yet (rpmbuild exit 11, "is needed by") is retried
 # after the packages built so far are published as a priority=1 repository. The
 # rounds stop when a round builds nothing new. Any other failure is final.
-# Every name the definitions produce is excluded from RDO's trunk repositories
-# before the first build, so such a dependency is only ever met by this build; a
-# later round retries a definition only once something it was missing is built.
-# At the end the run stops (STOP) if any installed package with one of our names
-# came from anywhere but this build.
+# Every name the definitions produce is excluded from every other repository
+# (RDO, EPEL, Rocky, any *.repo file, enabled or not) before the first build and
+# again before every dependency install, so such a dependency is only ever met by
+# this build; a later round retries a definition only once this build has
+# produced something new since its last attempt. The run stops (STOP) if a repository still offers one of our
+# names, if a package with one of our names is installed before the first build,
+# or if at the end any installed package with one of our names came from
+# anywhere but this build.
 # A verification failure (pin, signature, missing file) prints STOP and ends
 # the whole run: nothing is built from an input that did not verify.
 set -uo pipefail
@@ -44,6 +47,11 @@ bad(){ printf '  FAIL  %s\n' "$*" >&2; }
 die(){ printf '\nSTOP: %s\n' "$*" >&2; exit 1; }
 SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 REPO_DIR="${BUILD_OWN_REPO_DIR:-/etc/yum.repos.d}"   # tests point this elsewhere
+# Every directory DNF reads repository files from (its reposdir default), and
+# dnf.conf, which may define repositories too.
+if [ -n "${BUILD_OWN_REPO_DIR:-}" ]; then REPO_DIRS=("$REPO_DIR")
+else REPO_DIRS=(/etc/yum.repos.d /etc/yum/repos.d /etc/distro.repos.d); fi
+DNF_CONF="${BUILD_OWN_DNF_CONF:-/etc/dnf/dnf.conf}"
 field(){ python3 -I -c 'import sys,tomllib; v=tomllib.load(open(sys.argv[1],"rb"))["source"].get(sys.argv[2],""); print(v if isinstance(v,str) else "")' "$1" "$2"; }
 pinned(){ python3 -I -c 'import sys,tomllib; s=tomllib.load(open(sys.argv[1],"rb"))["source"]; [print(i["path"], i["sha256"]) for k in ("patches","extra_licenses") for i in s.get(k,[])]' "$1"; }
 
@@ -95,6 +103,10 @@ build() {
     # --nobest: when the newest candidate of some dependency cannot be installed
     # (a repository moved on: an EPEL build needing a library EL does not have yet),
     # take the newest one that can. What was installed is recorded in build-env.lock.
+    # A repository file added since the last check (a package dropping one into
+    # yum.repos.d) gets our names excluded before anything is installed from it.
+    exclude_own "$WORK/own-names.txt" > "$log.excludes.log" 2>&1 \
+        || die "$name: could not exclude our names from every repository (see $log.excludes.log)"
     $SUDO dnf -y --nobest builddep "$spec" > "$log.builddep.log" 2>&1
     for round in 1 2 3; do
         rpmbuild -br --nodeps "$spec" > "$log.br.log" 2>&1
@@ -124,26 +136,23 @@ own_names() {
     done | sort -u
 }
 
-# exclude_from_rdo <names-file>: one exclude line after every section header of
-# the RDO repository files (a section without "enabled=1" is enabled too, so the
-# header is the anchor, not that line). Idempotent.
-exclude_from_rdo() {
-    local f
-    for f in "$REPO_DIR/delorean.repo" "$REPO_DIR/delorean-deps.repo"; do
-        [ -f "$f" ] || continue
-        $SUDO python3 -I -c '
-import re, sys
-f, names = sys.argv[1], open(sys.argv[2]).read().split()
-out = []
-for line in open(f).read().splitlines():
-    if line.endswith("# hagistack-own"):
-        continue
-    out.append(line)
-    if re.fullmatch(r"\s*\[[^]]+\]\s*", line):
-        out.append("exclude=" + " ".join(names) + " # hagistack-own")
-open(f, "w").write("\n".join(out) + "\n")
-' "$f" "$1" || return 1
-    done
+# exclude_own <names-file>: every section of every repository file except
+# hagistack-own.repo, enabled or not, excludes our names; existing exclude= lines
+# are kept and extended; idempotent (own-excludes.py). Fails if a file cannot be
+# rewritten, or if anything is left uncovered (also a repository in dnf.conf).
+exclude_own() {
+    $SUDO python3 -I "$HERE/own-excludes.py" apply "$1" "$DNF_CONF" "${REPO_DIRS[@]}"
+}
+
+# repos_offering_own <names-file>: what DNF itself, with the configuration it
+# actually reads, still offers under one of our names from any repository but
+# hagistack-own, as "name repository". Empty output means none; a failed query
+# returns 2, never "none".
+repos_offering_own() {
+    local got
+    # shellcheck disable=SC2046
+    got="$(dnf -q repoquery --qf '%{name} %{repoid}\n' $(cat "$1") 2>/dev/null)" || return 2
+    awk 'NF && $2 != "hagistack-own" && $2 != "@System" && $2 != "installed"' <<<"$got"
 }
 
 # A local repository of what is built so far, ranked above everything else.
@@ -166,12 +175,21 @@ missing_deps() {
     awk '/ is needed by /{print $1}' "$LOGDIR/$1.rpmbuild.log" 2>/dev/null | sort -u
 }
 
-# ready <name>: worth another attempt — at least one dependency it was missing is
-# now provided by this build's repository (or nothing was recorded). A package
-# waiting only on names nothing here provides is not retried; it stays FAIL.
+# ready <name>: worth another attempt — nothing was recorded, or at least one
+# dependency it was missing is now provided by this build's repository, or this
+# build has produced a new package since its last attempt. The last case covers
+# a dependency missed indirectly: with our names excluded everywhere else, a
+# build dependency from another repository (python3-cliff from EPEL) cannot be
+# installed until a library of ours it requires (python3-stevedore) is built, and
+# rpmbuild names only the direct one. A package is never retried without new
+# packages, and the rounds end when a round builds nothing, so this is bounded.
+OWN_BUILT=0
 ready() {
-    local d any=0
+    local d any=0 since
     [ -f "$LOGDIR/$1.missing" ] || return 0
+    since="$(cat "$LOGDIR/$1.since" 2>/dev/null)"
+    [[ "$since" =~ ^[0-9]+$ ]] || since=-1
+    [ "$OWN_BUILT" -gt "$since" ] && return 0
     while read -r d; do
         [ -n "$d" ] || continue
         any=1
@@ -216,9 +234,16 @@ ok "every input verified; specs generated"
 
 own_names > "$WORK/own-names.txt" && [ -s "$WORK/own-names.txt" ] \
     || die "could not list the package names of the definitions"
-exclude_from_rdo "$WORK/own-names.txt" || die "could not exclude our names from the RDO repository files"
+exclude_own "$WORK/own-names.txt" > "$LOGDIR/excludes.log" 2>&1 \
+    || die "could not exclude our names from every repository (see $LOGDIR/excludes.log)"
 $SUDO dnf -q makecache >/dev/null 2>&1 || true
-ok "$(wc -l < "$WORK/own-names.txt") package names excluded from RDO's repositories before the first build"
+leak="$(repos_offering_own "$WORK/own-names.txt")" \
+    || die "could not ask DNF which repositories offer our names"
+[ -z "$leak" ] || die "a repository still offers packages with our names (name repository): $(echo $leak)"
+ok "$(wc -l < "$WORK/own-names.txt") package names excluded from every other repository (RDO, EPEL, Rocky, ...) before the first build"
+stray="$(env_not_own)" || die "could not list the installed packages to check where our names came from"
+[ -z "$stray" ] || die "before the first build, the build environment already holds packages with our names from elsewhere (name repository): $(echo $stray)"
+ok "no package with one of our names is installed from elsewhere before the first build"
 
 # RPMs already in this build area (a re-run, or a partial build being completed)
 # are published before the first round, so they can satisfy build dependencies.
@@ -239,7 +264,7 @@ while [ "${#todo[@]}" -gt 0 ]; do
         build "$n"; rc=$?
         if [ "$rc" -eq 0 ]; then
             STATE[$n]="PASS $n (built in round $round; %check $([ "$NOCHECK" -eq 1 ] && echo 'NOT run' || echo 'run'))"
-            ok "$n"; built=$((built + 1))
+            ok "$n"; built=$((built + 1)); OWN_BUILT=$((OWN_BUILT + 1))
             # Published at once, not at the end of the round: a later package in the
             # same round (a service generating its sample configuration from the
             # libraries it imports) must see this build, not an RDO trunk version.
@@ -247,6 +272,7 @@ while [ "${#todo[@]}" -gt 0 ]; do
         elif [ "$rc" -eq 11 ] && grep -q 'is needed by' "$LOGDIR/$n.rpmbuild.log"; then
             STATE[$n]="FAIL $n (rpmbuild exit 11)"; next+=("$n")
             missing_deps "$n" > "$LOGDIR/$n.missing"
+            echo "$OWN_BUILT" > "$LOGDIR/$n.since"
             printf '  wait  %s (build dependencies not there yet)\n' "$n"
         else
             STATE[$n]="FAIL $n (rpmbuild exit $rc)"; bad "$n — see $LOGDIR/$n.rpmbuild.log"
@@ -262,6 +288,9 @@ lines=(); for n in "${WANT[@]}"; do lines+=("${STATE[$n]:-FAIL $n (not built)}")
 printf '  %s\n' "${lines[@]}"
 [ -n "${RESULTS_FILE:-}" ] && printf '%s\n' "${lines[@]}" > "$RESULTS_FILE"
 write_lock
+leak="$(repos_offering_own "$WORK/own-names.txt")" \
+    || die "could not ask DNF which repositories offer our names"
+[ -z "$leak" ] || die "at the end, a repository offers packages with our names (name repository): $(echo $leak)"
 # Fail closed: a package of ours that did not come from this build was in the
 # build environment, so what was built from it is not this build's own.
 stray="$(env_not_own)" || die "could not list the installed packages to check where our names came from"

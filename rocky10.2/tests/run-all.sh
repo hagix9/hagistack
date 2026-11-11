@@ -3,7 +3,7 @@
 #   tests/test-rpm-source.sh          RPM sources, verification, guards
 #   tests/test-build-in-container.sh  pass control of the source build
 #   tests/test-build-rpms-staging.sh  sources re-staged before every rpmbuild
-#   tests/test-build-own.sh           own packaging: RDO exclusion, retries, final check
+#   tests/test-build-own.sh           own packaging: our names excluded from every other repository, retries, origin checks
 #   spec-adapt/test_adapt.py          spec adaptation rules and licensing
 #
 #   bash rocky10.2/tests/run-all.sh
