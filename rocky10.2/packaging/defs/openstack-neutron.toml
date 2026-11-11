@@ -58,7 +58,10 @@ build_extra = [
 # Rocky Linux 10 ships psutil 5.9.8; upstream asks for >= 6.1.0. rc4 depended on
 # psutil without a version and passed acceptance with 5.9.8, so the version is
 # dropped from the requirement (it becomes an unversioned dependency).
-prep_extra = ["sed -i 's/^psutil>=[0-9.]*/psutil/' requirements.txt"]
+prep_extra = ["sed -i 's/^psutil>=[0-9.]*/psutil/' requirements.txt",
+  # rpm refuses the ambiguous "#!/usr/bin/env python" shebang; one upstream test
+  # helper (neutron/tests/fullstack/servers/metadata.py) carries it. Python 3 is meant.
+  "grep -rlZ --include='*.py' -m1 '^#!/usr/bin/env python$' neutron | xargs -0 -r sed -i '1s|^#!/usr/bin/env python$|#!/usr/bin/python3|'"]
 [[package]]
 name = "openstack-neutron"
 kind = "files"
