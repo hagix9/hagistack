@@ -17,6 +17,8 @@ The upstream XStatic-term.js 0.0.7.1 release, packaged by Hagistack.
 """
 check = "import"
 
+# The sdist metadata names no licence file (PEP 639); see licenses below.
+license_metadata = false
 [[package]]
 name = "python3-XStatic-term-js"
 kind = "python"

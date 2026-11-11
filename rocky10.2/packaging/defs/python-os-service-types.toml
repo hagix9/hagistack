@@ -23,7 +23,7 @@ buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
 name = "python3-os-service-types"
 kind = "python"
 modules = ["os_service_types"]
-docs = ["README.rst", "readme.rst"]
+docs = ["README.rst", "doc/source/readme.rst"]
 licenses = ["LICENSE"]
 
 [[package]]

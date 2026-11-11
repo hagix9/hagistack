@@ -19,6 +19,10 @@ doc = "doc/source"
 check = "import"
 buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
 
+# The doc extension ext.list_plugins fails with the Sphinx in the builder
+# repositories (report_load_failure() signature); the HTML build runs without it,
+# losing only the generated plugin list.
+prep_extra = ["sed -i \"/'ext.list_plugins',/d\" doc/source/conf.py"]
 [[package]]
 name = "python3-keystoneauth1"
 kind = "python"

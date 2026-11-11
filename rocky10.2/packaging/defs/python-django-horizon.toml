@@ -81,6 +81,10 @@ install_extra = [
   "install -p -D -m 0644 README.rst %{buildroot}%{_docdir}/python3-django-horizon/README.rst",
 ]
 
+# The PyPI tzdata package is a fallback for systems without a time zone database;
+# EL has one (the tzdata RPM), which zoneinfo uses. The requirement is dropped and
+# the system package required instead (python3-django-horizon requires tzdata).
+prep_extra = ["sed -i '/^tzdata[>=]/d' requirements.txt"]
 [[package]]
 name = "openstack-dashboard"
 kind = "files"
@@ -154,6 +158,8 @@ with its static files and translations) and openstack_auth (the Keystone
 authentication backend for Django).
 """
 modules = ["horizon", "openstack_auth"]
+# Django uses zoneinfo, which reads the system time zone database (see prep_extra).
+requires = ["tzdata"]
 licenses = ["LICENSE"]
 install = [
   { src = "file:openstack-dashboard-httpd-logging.conf", dest = "%{_docdir}/python3-django-horizon/openstack-dashboard-httpd-logging.conf" },

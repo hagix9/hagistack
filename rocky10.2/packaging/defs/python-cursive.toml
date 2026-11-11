@@ -23,7 +23,7 @@ buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
 name = "python3-cursive"
 kind = "python"
 modules = ["cursive"]
-docs = ["README.rst", "readme.rst"]
+docs = ["README.rst", "doc/source/readme.rst"]
 licenses = ["LICENSE"]
 
 [[package]]

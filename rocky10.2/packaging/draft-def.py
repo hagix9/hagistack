@@ -31,7 +31,6 @@ DOC_EXT = {
     'oslo_policy.': 'python3dist(oslo-policy)',
     'reno.': 'python3dist(reno)',
     'sphinxcontrib.apidoc': 'python3dist(sphinxcontrib-apidoc)',
-    'sphinxcontrib.rsvgconverter': 'python3dist(sphinxcontrib-svg2pdfconverter)',
     'sphinx_feature_classification': 'python3dist(sphinx-feature-classification)',
     'stevedore.': 'python3dist(stevedore)',
     'cliff.': 'python3dist(cliff)',

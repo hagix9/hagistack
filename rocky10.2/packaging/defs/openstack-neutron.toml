@@ -55,6 +55,10 @@ build_extra = [
   "for v in $ids; do case \"$v\" in None|127.0.0.1|::1|localhost|localhost.localdomain|localhost6|localhost6.localdomain6) continue ;; esac; for f in $gen; do if grep -qwF -- \"$v\" \"$f\"; then exit 1; fi; done; done",
 ]
 
+# Rocky Linux 10 ships psutil 5.9.8; upstream asks for >= 6.1.0. rc4 depended on
+# psutil without a version and passed acceptance with 5.9.8, so the version is
+# dropped from the requirement (it becomes an unversioned dependency).
+prep_extra = ["sed -i 's/^psutil>=[0-9.]*/psutil/' requirements.txt"]
 [[package]]
 name = "openstack-neutron"
 kind = "files"

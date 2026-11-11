@@ -21,5 +21,7 @@ check = "import"
 name = "python3-wsme"
 kind = "python"
 modules = ["wsme", "wsmeext"]
+# setuptools writes a namespace .pth for the wsmeext namespace, as in rc4.
+files = ["%{python3_sitelib}/WSME-*-nspkg.pth"]
 docs = ["README.rst", "examples"]
 licenses = ["LICENSE"]

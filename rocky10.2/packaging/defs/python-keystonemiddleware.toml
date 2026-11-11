@@ -19,6 +19,9 @@ doc = "doc/source"
 check = "import"
 buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)", "python3dist(sphinxcontrib-apidoc)", "python3dist(sphinxcontrib-svg2pdfconverter)"]
 
+# sphinxcontrib.rsvgconverter is only for PDF output and its module is not in the
+# builder repositories; the HTML build does not need it.
+prep_extra = ["sed -i \"/'sphinxcontrib.rsvgconverter',/d\" doc/source/conf.py"]
 [[package]]
 name = "python3-keystonemiddleware"
 kind = "python"

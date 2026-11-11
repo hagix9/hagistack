@@ -41,7 +41,7 @@ SOURCE_KEYS = {'name', 'origin', 'project', 'version', 'release', 'epoch', 'tarb
                'sha256', 'signing_key', 'license', 'url', 'summary', 'description',
                'buildrequires', 'check', 'doc', 'doc_env', 'locale_domain', 'locale_path',
                'drop_after_install', 'patches', 'extra_licenses', 'prep_extra', 'build_extra',
-               'install_extra'}
+               'install_extra', 'license_metadata'}
 PACKAGE_KEYS = {'name', 'kind', 'summary', 'description', 'requires', 'recommends',
                 'provides', 'obsoletes', 'conflicts', 'modules', 'tests_path', 'bin',
                 'bin_symlinks', 'install', 'dirs', 'symlinks', 'systemd_units', 'sysusers',
@@ -287,7 +287,9 @@ def generate(src, pkgs):
     if python_pkgs:
         mods = ' '.join(python_pkgs[0].get('modules', []))
         need(mods, f'{src["name"]}: the python package needs modules = [...]')
-        w(f'%pyproject_save_files -l {mods}')
+        # -l asserts that upstream metadata names its licence files (PEP 639); a few
+        # sdists do not, and then -L is used and the definition lists the files.
+        w(f'%pyproject_save_files {"-l" if src.get("license_metadata", True) else "-L"} {mods}')
     # Catalogues are compiled into /usr/share/locale (packaged through find_lang);
     # the .po copies in site-packages are removed and dropped from the saved file
     # list, which pyproject_save_files builds from the wheel RECORD, not the disk.
