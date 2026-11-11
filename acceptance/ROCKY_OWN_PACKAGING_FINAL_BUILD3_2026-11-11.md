@@ -2,7 +2,8 @@
 
 This is the one full build the Owner approved with the R-2 fix
 ("Hagistack：R-2修正・独自RPM最終ビルド"). The implementer self-tested it.
-**No independent audit was done.**
+**No independent audit was done.** (A read-only audit followed on 2026-11-12; see
+"Stage 5 close" at the end, which also corrects the dependency-install counts.)
 
 Nothing was pushed or released. Stage 6 (real-machine acceptance) was not started.
 No further full build was started after this one.
@@ -69,7 +70,8 @@ No further full build was started after this one.
 
 - Classified by the repository DNF installed it from and by its EVR, not by name.
 - All 69 dependency-install transactions held 458 install rows. 75 of them have one
-  of our names, and all 75 came from `hagistack-own`.
+  of our names, and all 75 came from `hagistack-own`. **(Corrected in "Stage 5
+  close": the saved logs hold only each definition's last attempt.)**
   - 0 came from RDO, EPEL, Rocky or any other repository.
 - All 75 have the EVR of the RPM this build made. The first comparison reported 4
   mismatches; they came from a scripting error that dropped the epoch on one side.
@@ -116,6 +118,7 @@ No further full build was started after this one.
 - **B (functional effect not verified):**
   - **B-1:** `openstack-nova-novncproxy` has `novnc` as Recommends, where rc4 had
     Requires. This is unchanged and still awaits the Owner's decision.
+    (Resolved by the Owner on 2026-11-12: keep Recommends. See "Stage 5 close".)
 - **B-2 of run 1 is resolved.** The generated sample configurations now follow
   this build's own oslo libraries.
   - `nova.conf`, `keystone.conf` and `placement.conf` no longer list oslo.log's
@@ -177,7 +180,8 @@ No further full build was started after this one.
   - Also state there that installing needs RDO's dependency repository: a fresh
     install takes 87 packages from `delorean-master-testing`, none with one of our
     names.
-  - This is not fixed here; it needs the Owner's go-ahead.
+  - This is not fixed here; it needs the Owner's go-ahead. (Fixed on 2026-11-12;
+    see "Stage 5 close".)
 
 ## Install, replace and rebuild (clean pinned containers)
 
@@ -241,3 +245,134 @@ No further full build was started after this one.
   residual logs.
 - `scripts/`: the verification scripts that were used.
 - `tree-b46fe31.tar`: the exact tree that was built.
+
+## Stage 5 close (2026-11-12)
+
+Done under the Owner's instruction "Hagistack：段階5最終クローズ（B-1確定・L-4修正）".
+Documents only: no RPM was rebuilt, no GCE resource was used, nothing was pushed or
+released, and stage 6 was not started.
+
+Before this close, a read-only audit was run by a separate agent. Its brief did not
+include the implementer's conclusions. It was started from the implementer's
+session, so it is not a third-party audit. The implementer re-checked its main
+findings in the files.
+
+### B-1: resolved by Owner decision (option B)
+
+- `openstack-nova-novncproxy` keeps `Recommends: novnc`. It is not changed to
+  Requires. The definition and the 195 RPMs and 69 SRPMs are unchanged.
+- The Owner decided this knowing the difference. The dependency is **not** the same
+  as rc4's, which had `Requires: novnc`.
+- What the weak dependency means:
+  - `nova-novncproxy` serves `/usr/share/novnc` by default
+    (`nova/cmd/novncproxy.py`) and exits when the directory is missing
+    (`nova/cmd/baseproxy.py`).
+  - A plain `dnf install` may install `novnc` with the proxy. With
+    `install_weak_deps=False` it does not, and `novnc` has to be installed
+    separately, unless the proxy is pointed at another directory (`--web`, for
+    example in `OPTIONS` of `/etc/sysconfig/openstack-nova-novncproxy`).
+  - The Hagistack installer does not install `openstack-nova-novncproxy`, so it is
+    not affected. Its own installs use `install_weak_deps=False`.
+- Documented in `rocky10.2/README.md` and `README.ja.md` (Known limitations, noVNC),
+  commit `1f34a99`.
+- Not verified: that `novnc` can be installed from the RDO dependency repository
+  (no repository was queried for this close).
+
+### L-4: fixed (commit `1f34a99`)
+
+- `rocky10.2/THIRD_PARTY_NOTICES.md`, "What the licence of each file is", now says:
+  - Hagistack's own work, including `packaging/defs/*.toml`, `packaging/genspec.py`
+    and `packaging/files/`, is under the MIT License. Every SRPM carries it as
+    `HAGISTACK-LICENSE`.
+  - OpenStack release tarballs are checked by pinned SHA-256 and upstream GPG
+    signature. The ten PyPI definitions are checked by pinned SHA-256 only, with no
+    upstream signature.
+  - The RPMs are not generated from RDO distgit specs or other RDO packaging files.
+    The two upstream Neutron commits are the only files found identical to RDO's.
+  - RDO's binary repositories, with Rocky and EPEL, are used for build dependencies
+    and for the nodes' runtime dependencies.
+  - Each piece of software is under its own licence texts. A `License:` tag only
+    summarises them.
+- `rocky10.2/README.md` and `README.ja.md` now describe the own definitions as the
+  current method. `build-rpms.sh` is described as the older RDO distgit method
+  (rc4 and earlier; `build-in-container.sh` selects it only with
+  `HAGISTACK_PACKAGING=rdo`), not removed.
+- `rocky10.2/make-rpm-release.sh` was checked and left unchanged. Its header lists
+  `gazpacho.manifest` among the provenance files, which still holds: the manifest
+  pins the release keys. It does not describe RDO distgit as the build method.
+
+### Correction: the dependency-install counts
+
+- `packaging/build-own.sh` line 110 writes each definition's `builddep.log` with
+  `>`. A definition that waits and is tried again in a later round overwrites the
+  log of its earlier attempt. The saved logs therefore hold only the last attempt
+  of each definition.
+- So "All 69 dependency-install transactions held 458 install rows. 75 ..." above is
+  wrong. Those are not all the transactions of the build, and the count also missed
+  rows that DNF wrapped over two lines.
+  - A recount of the saved logs that includes the wrapped rows gives 461 install
+    rows, 77 of them with our names, all from `hagistack-own`. This also covers
+    only the saved logs.
+  - The number for all attempts is not known and is not given here.
+- Example: `python3-stevedore` is in `build-env.lock`, but appears in no saved
+  install table. The saved logs only say it is already installed.
+- What supports "0 packages with our names from an external repository"
+  (requirements 4 to 6):
+  - the exclusion applied before the first build and before every dependency
+    install, which stops the build if it fails;
+  - DNF's own answer, before the first build and at the end, that no other
+    repository offers one of our names;
+  - the end check that every installed package with one of our names came from this
+    build;
+  - `build-env.lock`: all 79 packages with our names have the EVR.arch of this
+    build's RPMs.
+- The saved transaction logs support it only for the last attempts they hold. Read
+  "DNF transaction logs" in the table of required results with that limit.
+- `build-own.sh` is not changed here. Appending (`>>`) would keep every attempt,
+  but it is a code change and would change the build input id. It is left for a
+  later change.
+
+### Unchanged
+
+- RPM set identity `6c43da51144ca01c413f5c7dbbc44be70b66f03df69e77b3e632c2d55b8a1313`:
+  recomputed from the saved `RPM-SHA256SUMS`.
+- Build input id `384eee75bb32ce5e…`:
+  - recomputed from the working tree after the change;
+  - no file it hashes differs from `b46fe31`.
+
+### Result: stage 5 GO
+
+- B-1 is decided and recorded.
+- L-4 is fixed.
+- The English and Japanese READMEs agree with the current method.
+- The counts are corrected.
+- The RPM set is unchanged.
+- No new BLOCKER was found.
+
+### Carried to stage 6 (non-blocking)
+
+- **N3:** the 15 scriptlet contents that differ from rc4. Check upgrades
+  from rc4.
+- **N4:** the unit differences:
+  - glance: `LimitNOFILE`, `LimitNPROC` and `PrivateTmp` removed;
+  - nova: `Type=notify` changed to `simple`, `Restart=always` to `on-failure`,
+    and `LIBGUESTFS_ATTACH_METHOD` removed;
+  - neutron: `--log-file` removed;
+  - the OVN metadata agent now reads `neutron.conf`;
+  - the RPC server now reads `ml2_conf.ini`.
+- **N5:** `openstack-nova-migration` supports cold migration only. The installer
+  does not install it.
+- **N6:** the 13 rebuild differences are documentation only. The cause is presumed
+  to be environment-dependent Sphinx output and is not verified.
+- **N7:** the fresh-install test ran with weak dependencies on, unlike the
+  installer.
+- **N8:** rc4 and this set share every NEVR, so replacing rc4 needs
+  `dnf reinstall`.
+
+### Still not verified
+
+- `novnc` availability from the RDO dependency repository.
+- How the RDO packaging-file hash list used by the licence scan was made.
+- The clean-room records (`files/*/AUTHORING.md`).
+- `%check`.
+- Real machines (stage 6).
