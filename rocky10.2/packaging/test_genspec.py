@@ -82,7 +82,7 @@ class Definitions(unittest.TestCase):
                     pinned = {os.path.basename(it['path']) for it in src.get('patches', []) + src.get('extra_licenses', [])}
                     if '/' in v:
                         self.assertRegex(v, r'^https://(tarballs\.openstack\.org|releases\.openstack\.org|files\.pythonhosted\.org)/')
-                    elif v in pinned:
+                    elif v in pinned or v == 'HAGISTACK-LICENSE':
                         pass
                     else:
                         self.assertEqual(m.group(1), 'Source')
@@ -101,6 +101,25 @@ class Definitions(unittest.TestCase):
                 self.assertEqual(used, present, 'every file in files/<name>/ is used, and only those')
                 for f in present:
                     self.assertIn('Hagistack', open(os.path.join(fdir, f)).read(), f)
+
+
+class HagistackLicence(unittest.TestCase):
+    def test_licence_copy_matches_the_repository_licence(self):
+        root = os.path.join(HERE, '..', '..', 'LICENSE')
+        if not os.path.exists(root):        # builder mounts rocky10.2/ only
+            self.skipTest('repository LICENSE not visible here')
+        with open(root, 'rb') as a, open(os.path.join(HERE, 'HAGISTACK-LICENSE'), 'rb') as b:
+            self.assertEqual(a.read(), b.read())
+
+    def test_packages_with_hagistack_files_say_mit_and_ship_the_text(self):
+        for d in DEFS:
+            src, pkgs = genspec.load(d)
+            spec = genspec.generate(src, pkgs)
+            self.assertIn('Source99:       HAGISTACK-LICENSE', spec)
+            for p in pkgs:
+                if genspec.has_hagistack_files(p):
+                    with self.subTest(pkg=p['name']):
+                        self.assertIn(' AND MIT', genspec.pkg_license(src, p))
 
 
 class Refusals(unittest.TestCase):

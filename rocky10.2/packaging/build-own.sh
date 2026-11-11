@@ -76,6 +76,7 @@ stage() {
         [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sha" ] || die "$name: $rel does not match its pinned SHA-256"
         install -m 0644 "$f" "$SRCDIR/$(basename "$rel")"
     done < <(pinned "$def")
+    install -m 0644 "$HERE/HAGISTACK-LICENSE" "$SRCDIR/HAGISTACK-LICENSE"
     if [ -d "$HERE/files/$name" ]; then
         find "$HERE/files/$name" -maxdepth 1 -type f ! -name AUTHORING.md -exec cp -p {} "$SRCDIR/" \;
     fi

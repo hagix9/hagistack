@@ -169,12 +169,21 @@ def tags(p):
     return out
 
 
+def has_hagistack_files(p):
+    return bool(p.get('sysusers')) or any(it['src'].startswith('file:') for it in p.get('install', []))
+
+
+def pkg_license(src, p):
+    return src['license'] + (' AND MIT' if has_hagistack_files(p) else '')
+
+
 def pkg_header(src, p, main):
     """%package block (or the main package's tags and %description)."""
     out = []
     if not main:
         out.append(f'%package -n {p["name"]}')
         out.append(f'Summary:        {p.get("summary", src["summary"])}')
+        out.append(f'License:        {pkg_license(src, p)}')
     out.extend(tags(p))
     out.append('')
     out.append(f'%description{"" if main else " -n " + p["name"]}')
@@ -207,7 +216,7 @@ def generate(src, pkgs):
     w(f'Version:        {src["version"]}')
     w(f'Release:        {src["release"]}%{{?dist}}')
     w(f'Summary:        {(main or {}).get("summary", src["summary"])}')
-    w(f'License:        {src["license"]}')
+    w(f'License:        {pkg_license(src, main) if main else src["license"]}')
     if openstack:
         w(f'URL:            {src.get("url", "https://opendev.org/openstack/" + src["project"])}')
         w(f'Source0:        https://tarballs.openstack.org/{src["project"]}/{src["tarball"]}')
@@ -217,6 +226,9 @@ def generate(src, pkgs):
         p = src['project']
         w(f'URL:            {src.get("url", "https://pypi.org/project/" + p + "/")}')
         w(f'Source0:        https://files.pythonhosted.org/packages/source/{p[0]}/{p}/{src["tarball"]}')
+    # Hagistack's own work in this source package (the spec, and any files under
+    # files/<name>/) is under the MIT License; its text travels in every SRPM.
+    w('Source99:       HAGISTACK-LICENSE')
     for i, f in enumerate(hfiles):
         w(f'Source{100 + i}:      {f}')
     for i, it in enumerate(src.get('extra_licenses', [])):
@@ -268,6 +280,8 @@ def generate(src, pkgs):
         w(line)
     if src.get('extra_licenses'):
         w('cp -p ' + ' '.join(f'%{{SOURCE{900 + i}}}' for i in range(len(src['extra_licenses']))) + ' .')
+    if any(has_hagistack_files(p) for p in pkgs):
+        w("cp -p '%{SOURCE99}' HAGISTACK-LICENSE")
     w('')
     w('%generate_buildrequires')
     # -r adds the runtime requirements too: the import check and Sphinx autodoc
@@ -386,6 +400,8 @@ def generate(src, pkgs):
             w(f'%doc {p.get("doc_dir", "html")}')
         for lic in p.get('licenses', []):
             w(f'%license {lic}')
+        if has_hagistack_files(p):
+            w('%license HAGISTACK-LICENSE')
         for doc in p.get('docs', []):
             w(f'%doc {doc}')
         for b in p.get('bin', []):
