@@ -1,0 +1,22 @@
+# Written for Hagistack.
+# nova-novncproxy (websockify) stays in the foreground; Type=simple.
+# Extra arguments can be given in OPTIONS in /etc/sysconfig/openstack-nova-novncproxy.
+# No --config-file is passed: oslo.config then reads its default files for
+# project "nova" and this program (/etc/nova/nova.conf, then
+# /etc/nova/nova-novncproxy.conf if present, and the matching .conf.d directories).
+[Unit]
+Description=OpenStack Compute (Nova) noVNC console proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nova
+Group=nova
+EnvironmentFile=-/etc/sysconfig/openstack-nova-novncproxy
+ExecStart=/usr/bin/nova-novncproxy $OPTIONS
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

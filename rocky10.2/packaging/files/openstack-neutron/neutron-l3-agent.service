@@ -1,0 +1,28 @@
+# Written for Hagistack.
+# Reads the distribution defaults, neutron.conf and l3_agent.ini, then the
+# *.conf files in conf.d/common and conf.d/neutron-l3-agent (later wins).
+# KillMode=process: the helper processes it starts (keepalived,
+# neutron-keepalived-state-change, haproxy, radvd) must outlive a restart of
+# the agent, which finds them again through their pid files under
+# /var/lib/neutron; stopping the unit therefore leaves them running.
+[Unit]
+Description=OpenStack Networking (Neutron) L3 agent
+Wants=network-online.target
+After=network-online.target openvswitch.service neutron-netns-cleanup.service neutron-ovs-cleanup.service
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-l3-agent \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/l3_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-l3-agent
+KillMode=process
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-nova-compute.conf.
+# nova-compute runs as nova and opens qemu:///system without root: access to
+# the system libvirt daemon is granted to members of group libvirt.
+m nova libvirt
+# libvirt's QEMU driver hands instance disk images to user/group qemu while a
+# guest runs; nova-compute reads them unprivileged (qemu-img info).
+m nova qemu

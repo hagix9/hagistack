@@ -1,0 +1,26 @@
+# Written for Hagistack.
+# One-shot, pulled in by neutron-openvswitch-agent.service: removes the patch
+# ports between br-int and the physical bridges while br-int has no flows yet,
+# so that no traffic is bridged before the agent has programmed the flows.
+# neutron.cmd.destroy_patch_ports has no console script; it is run as a
+# module by the system interpreter in isolated mode (-I).
+[Unit]
+Description=OpenStack Networking (Neutron) OVS patch port removal before the agent
+Wants=network-online.target
+After=network-online.target openvswitch.service
+Before=neutron-openvswitch-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/python3 -I -m neutron.cmd.destroy_patch_ports \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/plugins/ml2/openvswitch_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-openvswitch-agent
+
+[Install]
+WantedBy=multi-user.target

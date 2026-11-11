@@ -1724,7 +1724,7 @@ rpm_build_image() {
 rpm_build_input_id() {
     local image; image="$(rpm_build_image)"
     { ( cd "$SELF_DIR" && find gazpacho.manifest build-rpms.sh build-in-container.sh \
-          spec-adapt spec-templates third-party -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
+          spec-adapt spec-templates third-party packaging -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
           -print0 | LC_ALL=C sort -z | xargs -0 sha256sum )
       printf 'build-image-digest  %s\n' "${image##*@}"
     } | sha256sum | cut -d' ' -f1
@@ -1734,7 +1734,7 @@ rpm_prepare_build() {
     local id; id="$(rpm_build_input_id)"
     local root="$RPM_BUILD_ROOT/${id:0:16}"
     local out="$root/out"
-    log_info "build inputs ${id:0:16}… (manifest, build scripts, spec rules, patches, image digest)"
+    log_info "build inputs ${id:0:16}… (manifest, build scripts, package definitions, patches, image digest)"
     if RPM_SET_SHA256="$(rpm_try_cached "$out")"; then
         log_ok "these inputs were already built and the result still verifies — not rebuilt"
         RPM_SET_DIR="$out"; return 0

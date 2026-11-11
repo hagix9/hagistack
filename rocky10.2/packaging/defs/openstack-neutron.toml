@@ -1,0 +1,387 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Names, modes and owners follow what rc4 published so the new build can replace
+# it; every file installed comes either from the upstream tarball (including the
+# config samples generated from it at build time) or from
+# ../files/openstack-neutron/ (Hagistack's own). How those files were written:
+# ../files/openstack-neutron/AUTHORING.md.
+[source]
+name = "openstack-neutron"
+project = "neutron"
+version = "28.0.2"
+release = "2"
+epoch = 1
+tarball = "neutron-28.0.2.tar.gz"
+sha256 = "cdaf45a2100de5233e4c1cc7c01c9df2b634510a0f0436913f73f29d42d325ee"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "OpenStack Networking (Neutron)"
+description = """
+Neutron provides networking as a service for OpenStack: networks, subnets,
+routers, security groups and their agents. This package holds the agents
+that run on network nodes and the database and maintenance tools. This is the
+upstream OpenStack release, packaged by Hagistack.
+"""
+check = "import"
+# Two upstream changes from master (not in stable/2026.1) that fix the OVN
+# maintenance worker losing its OVSDB lock; see third-party/neutron/NOTICE.md.
+patches = [
+  { path = "third-party/neutron/0001-Ensure-MaintenanceWorker-lock-set-before-connect.patch", sha256 = "4f981103be17689f9186776b5059c55bb33950dae47740fd52575be7849387e4" },
+  { path = "third-party/neutron/0002-Only-set-the-maintenance-worker-lock-on-the-worker.patch", sha256 = "136ce37c86bf3ac8dd7f737b23c5e2b60bdb17326cac6876852ebc4bfb96d9cf" },
+]
+# oslo-config-generator writes the config samples in %build (build_extra).
+buildrequires = ["python3dist(oslo-config)"]
+locale_domain = "neutron"
+# The wheel's data-files (api-paste.ini, rootwrap.conf, rootwrap.d) land under
+# /usr/etc; the files this package ships are installed explicitly below.
+drop_after_install = ["%{_prefix}/etc"]
+# Config samples: one oslo-config-generator run per upstream generator file
+# (etc/oslo-config-generator/*, the same loop as upstream's
+# tools/generate_config_file_samples.sh). The egg-info in the source tree
+# carries the oslo.config.opts entry points, so PYTHONPATH=$PWD is enough.
+# my_ip and my_ipv6 have no sample default, so the generator writes the build
+# machine's addresses: they are replaced by placeholders and checked. Then no
+# generated file may name the build machine (its host names, or the addresses
+# the generator saw), and every "host" line must be upstream's sample default.
+build_extra = [
+  "for g in etc/oslo-config-generator/*; do PYTHONPATH=\"$PWD\" oslo-config-generator --config-file \"$g\" || exit 1; done",
+  "gen='etc/neutron.conf.sample etc/dhcp_agent.ini.sample etc/l3_agent.ini.sample etc/metadata_agent.ini.sample etc/metering_agent.ini.sample etc/neutron_ovn_metadata_agent.ini.sample etc/neutron/plugins/ml2/macvtap_agent.ini.sample etc/neutron/plugins/ml2/ml2_conf.ini.sample etc/neutron/plugins/ml2/openvswitch_agent.ini.sample etc/neutron/plugins/ml2/ovn_agent.ini.sample etc/neutron/plugins/ml2/sriov_agent.ini.sample'",
+  "for f in $gen; do test -s \"$f\" || exit 1; sed -i -e 's/^#my_ip = .*$/#my_ip = <host_ipv4>/' -e 's/^#my_ipv6 = .*$/#my_ipv6 = <host_ipv6>/' \"$f\" || exit 1; done",
+  "grep -qx '#my_ip = <host_ipv4>' etc/neutron.conf.sample || exit 1",
+  "grep -qx '#my_ipv6 = <host_ipv6>' etc/neutron.conf.sample || exit 1",
+  "grep -qx '#host = example.domain' etc/neutron.conf.sample || exit 1",
+  "for f in $gen; do if grep -E '^#?my_ip(v6)? ?=' \"$f\" | grep -Evx '#my_ip = <host_ipv4>|#my_ipv6 = <host_ipv6>' | grep -q .; then exit 1; fi; if grep -E '^#?host ?=' \"$f\" | grep -vx '#host = example.domain' | grep -q .; then exit 1; fi; done",
+  "ids=\"$(%{python3} -c 'import socket; from oslo_utils import netutils; n = socket.gethostname(); print(n); print(n.split(\".\")[0]); print(socket.getfqdn()); print(netutils.get_my_ipv4()); print(netutils.get_my_ipv6())')\" || exit 1",
+  "test -n \"$ids\" || exit 1",
+  "for v in $ids; do case \"$v\" in None|127.0.0.1|::1|localhost|localhost.localdomain|localhost6|localhost6.localdomain6) continue ;; esac; for f in $gen; do if grep -qwF -- \"$v\" \"$f\"; then exit 1; fi; done; done",
+]
+
+[[package]]
+name = "openstack-neutron"
+kind = "files"
+requires = ["python3-neutron = %{epoch}:%{version}-%{release}",
+            "openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+# The DHCP and L3 agents start these (rootwrap.filters: dnsmasq, keepalived,
+# haproxy; bindep.txt lists haproxy and keepalived). Weak, because this package
+# is also installed on hosts that run none of these agents.
+recommends = ["dnsmasq", "haproxy", "keepalived"]
+systemd_units = ["neutron-dhcp-agent.service", "neutron-l3-agent.service",
+                 "neutron-metadata-agent.service", "neutron-netns-cleanup.service",
+                 "neutron-ovs-cleanup.service"]
+bin = ["neutron-db-manage", "neutron-dhcp-agent", "neutron-ipset-cleanup",
+       "neutron-keepalived-state-change", "neutron-l3-agent", "neutron-metadata-agent",
+       "neutron-netns-cleanup", "neutron-ovn-agent", "neutron-ovn-db-sync-util",
+       "neutron-ovn-maintenance-worker", "neutron-ovn-metadata-agent", "neutron-ovs-cleanup",
+       "neutron-periodic-workers", "neutron-remove-duplicated-port-bindings",
+       "neutron-sanitize-port-binding-profile-allocation", "neutron-sanitize-port-mac-addresses",
+       "neutron-sanity-check", "neutron-status", "neutron-usage-audit"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-dhcp-agent" },
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-l3-agent" },
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-metadata-agent" },
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-netns-cleanup" },
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-ovs-cleanup" },
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-server" },
+  { path = "%{_sysconfdir}/neutron/kill_scripts" },
+  { path = "%{_datadir}/neutron/l3_agent" },
+  { path = "%{_datadir}/neutron/server" },
+]
+symlinks = [
+  { path = "%{_datadir}/neutron/l3_agent/l3_agent.conf", target = "%{_sysconfdir}/neutron/l3_agent.ini" },
+]
+install = [
+  { src = "upstream:etc/neutron/api-paste.ini",     dest = "%{_sysconfdir}/neutron/api-paste.ini",     mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/dhcp_agent.ini.sample",     dest = "%{_sysconfdir}/neutron/dhcp_agent.ini",    mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/l3_agent.ini.sample",       dest = "%{_sysconfdir}/neutron/l3_agent.ini",      mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/metadata_agent.ini.sample", dest = "%{_sysconfdir}/neutron/metadata_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-dhcp-agent.service",        dest = "%{_unitdir}/neutron-dhcp-agent.service" },
+  { src = "file:neutron-l3-agent.service",          dest = "%{_unitdir}/neutron-l3-agent.service" },
+  { src = "file:neutron-metadata-agent.service",    dest = "%{_unitdir}/neutron-metadata-agent.service" },
+  { src = "file:neutron-netns-cleanup.service",     dest = "%{_unitdir}/neutron-netns-cleanup.service" },
+  { src = "file:neutron-ovs-cleanup.service",       dest = "%{_unitdir}/neutron-ovs-cleanup.service" },
+]
+# The compatibility link is created once, by openstack-neutron-ovn-metadata-agent
+# below; rc4 listed it in both packages.
+files = ["%{_bindir}/networking-ovn-metadata-agent"]
+
+[[package]]
+name = "openstack-neutron-common"
+# kind lang: the compiled catalogues go in this package, as in rc4.
+kind = "lang"
+summary = "OpenStack Networking (Neutron) common files"
+description = """
+Files every Neutron service needs: neutron.conf, the neutron user, rootwrap
+and its sudoers rule, the distribution defaults, log rotation and the
+message catalogues.
+"""
+requires = ["python3-neutron = %{epoch}:%{version}-%{release}",
+            # /etc/sudoers.d/neutron: the agents reach root through sudo.
+            "sudo"]
+sysusers = "openstack-neutron.sysusers"
+bin = ["neutron-ovn-migration-mtu", "neutron-rootwrap", "neutron-rootwrap-daemon"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/neutron" },
+  { path = "%{_sysconfdir}/neutron/conf.d" },
+  { path = "%{_sysconfdir}/neutron/conf.d/common" },
+  { path = "%{_sysconfdir}/neutron/plugins" },
+  { path = "%{_datadir}/neutron" },
+  { path = "%{_datadir}/neutron/rootwrap" },
+  { path = "%{_sharedstatedir}/neutron", mode = "0755", user = "neutron", group = "neutron" },
+  { path = "%{_localstatedir}/log/neutron", mode = "0750", user = "neutron", group = "neutron" },
+]
+symlinks = [
+  { path = "%{_sysconfdir}/neutron/ovn.ini", target = "%{_sysconfdir}/neutron/plugins/ml2/ml2_conf.ini" },
+  { path = "%{_sysconfdir}/neutron/plugins/networking-ovn/networking-ovn.ini", target = "%{_sysconfdir}/neutron/ovn.ini" },
+]
+install = [
+  { src = "upstream:etc/neutron.conf.sample",                 dest = "%{_sysconfdir}/neutron/neutron.conf",                mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/neutron/rootwrap.conf",               dest = "%{_sysconfdir}/neutron/rootwrap.conf",               mode = "0644", config = true },
+  { src = "upstream:etc/neutron/rootwrap.d/rootwrap.filters", dest = "%{_datadir}/neutron/rootwrap/rootwrap.filters",      mode = "0644" },
+  { src = "file:neutron-dist.conf",                           dest = "%{_datadir}/neutron/neutron-dist.conf",              mode = "0640", group = "neutron" },
+  { src = "file:openstack-neutron.logrotate",                 dest = "%{_sysconfdir}/logrotate.d/openstack-neutron",       mode = "0644", config = true },
+  { src = "file:openstack-neutron.sudoers",                   dest = "%{_sysconfdir}/sudoers.d/neutron",                   mode = "0440" },
+  { src = "file:neutron-enable-bridge-firewall.sh",           dest = "%{_bindir}/neutron-enable-bridge-firewall.sh",       mode = "0755" },
+  { src = "file:conf.d-README",                               dest = "%{_sysconfdir}/neutron/conf.d/README",               mode = "0644" },
+]
+
+[[package]]
+name = "openstack-neutron-macvtap-agent"
+kind = "files"
+summary = "OpenStack Networking (Neutron) macvtap agent"
+description = """
+The Neutron ML2 macvtap agent and its systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-macvtap-agent.service"]
+bin = ["neutron-macvtap-agent"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/neutron/conf.d/neutron-macvtap-agent" }]
+install = [
+  { src = "file:neutron-macvtap-agent.service", dest = "%{_unitdir}/neutron-macvtap-agent.service" },
+]
+
+[[package]]
+name = "openstack-neutron-metering-agent"
+kind = "files"
+summary = "OpenStack Networking (Neutron) metering agent"
+description = """
+The Neutron metering agent, its configuration and systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-metering-agent.service"]
+bin = ["neutron-metering-agent"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/neutron/conf.d/neutron-metering-agent" }]
+install = [
+  { src = "upstream:etc/metering_agent.ini.sample",  dest = "%{_sysconfdir}/neutron/metering_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-metering-agent.service",     dest = "%{_unitdir}/neutron-metering-agent.service" },
+]
+
+[[package]]
+name = "openstack-neutron-ml2"
+kind = "files"
+summary = "OpenStack Networking (Neutron) ML2 plugin configuration"
+description = """
+Configuration of the Neutron Modular Layer 2 (ML2) core plugin, including
+its OVN driver, and the OVN and SR-IOV agent configuration samples.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/neutron/plugins/ml2" },
+  { path = "%{_docdir}/openstack-neutron-ml2" },
+]
+# ml2-README sits under %{_docdir}, where rpm marks files as documentation.
+install = [
+  { src = "upstream:etc/neutron/plugins/ml2/ml2_conf.ini.sample",   dest = "%{_sysconfdir}/neutron/plugins/ml2/ml2_conf.ini",   mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/neutron/plugins/ml2/ovn_agent.ini.sample",  dest = "%{_sysconfdir}/neutron/plugins/ml2/ovn_agent.ini",  mode = "0640", group = "neutron", config = true },
+  { src = "upstream:etc/neutron/plugins/ml2/sriov_agent.ini.sample", dest = "%{_sysconfdir}/neutron/plugins/ml2/sriov_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:ml2-README",                                         dest = "%{_docdir}/openstack-neutron-ml2/README",            mode = "0644" },
+]
+
+[[package]]
+name = "openstack-neutron-ml2ovn-trace"
+kind = "files"
+summary = "OpenStack Networking (Neutron) ML2/OVN trace tool"
+description = """
+ml2ovn-trace, which runs ovn-trace for a Neutron port.
+"""
+requires = ["python3-neutron = %{epoch}:%{version}-%{release}"]
+bin = ["ml2ovn-trace"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "openstack-neutron-openvswitch"
+kind = "files"
+summary = "OpenStack Networking (Neutron) Open vSwitch agent"
+description = """
+The Neutron ML2 Open vSwitch agent, its configuration, systemd units and the
+bridge netfilter settings its iptables-based firewall drivers need.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+            # neutron-destroy-patch-ports.service runs the module with it.
+            "/usr/bin/python3"]
+bin = ["neutron-openvswitch-agent"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-openvswitch-agent" },
+  { path = "%{_sysconfdir}/neutron/plugins/ml2" },
+]
+install = [
+  { src = "upstream:etc/neutron/plugins/ml2/openvswitch_agent.ini.sample", dest = "%{_sysconfdir}/neutron/plugins/ml2/openvswitch_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-openvswitch-agent.service",   dest = "%{_unitdir}/neutron-openvswitch-agent.service" },
+  { src = "file:neutron-destroy-patch-ports.service", dest = "%{_unitdir}/neutron-destroy-patch-ports.service" },
+  { src = "file:99-neutron-openvswitch-agent.conf",   dest = "%{_sysctldir}/99-neutron-openvswitch-agent.conf" },
+  { src = "file:neutron-openvswitch-agent.modules",   dest = "%{_sysconfdir}/sysconfig/modules/neutron-openvswitch-agent.modules", mode = "0755" },
+]
+# As in rc4: install/erase handling of the units, but no restart on upgrade
+# (%systemd_postun without _with_restart), so an upgrade does not restart the
+# agent that programs the data plane.
+[package.scriptlets]
+post = ["%systemd_post neutron-openvswitch-agent.service neutron-destroy-patch-ports.service"]
+preun = ["%systemd_preun neutron-openvswitch-agent.service neutron-destroy-patch-ports.service"]
+
+[[package]]
+name = "openstack-neutron-ovn-agent"
+kind = "files"
+summary = "OpenStack Networking (Neutron) OVN agent"
+description = """
+The Neutron OVN agent, its configuration and systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-ovn-agent.service"]
+bin = ["neutron-ovn-agent"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/neutron/conf.d/neutron-ovn-agent" }]
+install = [
+  { src = "upstream:etc/neutron/plugins/ml2/ovn_agent.ini.sample", dest = "%{_sysconfdir}/neutron/plugins/ml2/ovn_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-ovn-agent.service",                        dest = "%{_unitdir}/neutron-ovn-agent.service" },
+]
+
+[[package]]
+name = "openstack-neutron-ovn-maintenance-worker"
+kind = "files"
+summary = "OpenStack Networking (Neutron) ML2/OVN maintenance worker"
+description = """
+The ML2/OVN maintenance worker (Neutron/OVN database synchronisation at start
+and periodic repair of inconsistencies) and its systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+            # The unit reads /etc/neutron/plugins/ml2/ml2_conf.ini.
+            "openstack-neutron-ml2 = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-ovn-maintenance-worker.service"]
+bin = ["neutron-ovn-maintenance-worker"]
+licenses = ["LICENSE"]
+install = [
+  { src = "file:neutron-ovn-maintenance-worker.service", dest = "%{_unitdir}/neutron-ovn-maintenance-worker.service" },
+]
+
+[[package]]
+name = "openstack-neutron-ovn-metadata-agent"
+kind = "files"
+summary = "OpenStack Networking (Neutron) OVN metadata agent"
+description = """
+The Neutron OVN metadata agent, which serves instance metadata through a
+haproxy in each network's namespace, its configuration and systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+            # The agent spawns haproxy per network (bindep.txt; rootwrap.filters
+            # "METADATA PROXY").
+            "haproxy"]
+systemd_units = ["neutron-ovn-metadata-agent.service"]
+bin = ["neutron-ovn-metadata-agent"]
+bin_symlinks = { "networking-ovn-metadata-agent" = "%{_bindir}/neutron-ovn-metadata-agent" }
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/neutron/conf.d/neutron-ovn-metadata-agent" },
+  { path = "%{_sysconfdir}/neutron/plugins/networking-ovn" },
+]
+symlinks = [
+  { path = "%{_sysconfdir}/neutron/plugins/networking-ovn/networking-ovn-metadata-agent.ini", target = "%{_sysconfdir}/neutron/neutron_ovn_metadata_agent.ini" },
+  { path = "%{_unitdir}/networking-ovn-metadata-agent.service", target = "%{_unitdir}/neutron-ovn-metadata-agent.service" },
+]
+install = [
+  { src = "upstream:etc/neutron_ovn_metadata_agent.ini.sample", dest = "%{_sysconfdir}/neutron/neutron_ovn_metadata_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-ovn-metadata-agent.service",            dest = "%{_unitdir}/neutron-ovn-metadata-agent.service" },
+]
+# Created once by openstack-neutron-common (symlinks above); rc4 listed it in
+# both packages.
+files = ["%{_sysconfdir}/neutron/plugins/networking-ovn/networking-ovn.ini"]
+
+[[package]]
+name = "openstack-neutron-periodic-workers"
+kind = "files"
+summary = "OpenStack Networking (Neutron) periodic workers"
+description = """
+The Neutron periodic workers, which run the server's periodic tasks now that
+the API runs under httpd, and their systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+            # The unit reads /etc/neutron/plugins/ml2/ml2_conf.ini.
+            "openstack-neutron-ml2 = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-periodic-workers.service"]
+bin = ["neutron-periodic-workers"]
+licenses = ["LICENSE"]
+install = [
+  { src = "file:neutron-periodic-workers.service", dest = "%{_unitdir}/neutron-periodic-workers.service" },
+]
+
+[[package]]
+name = "openstack-neutron-rpc-server"
+kind = "files"
+summary = "OpenStack Networking (Neutron) RPC server"
+description = """
+The Neutron RPC server, which answers the agents over the message bus, and
+its systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}",
+            # The unit reads /etc/neutron/plugins/ml2/ml2_conf.ini.
+            "openstack-neutron-ml2 = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-rpc-server.service"]
+bin = ["neutron-rpc-server"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/neutron/conf.d/neutron-rpc-server" }]
+install = [
+  { src = "file:neutron-rpc-server.service", dest = "%{_unitdir}/neutron-rpc-server.service" },
+]
+
+[[package]]
+name = "openstack-neutron-sriov-nic-agent"
+kind = "files"
+summary = "OpenStack Networking (Neutron) SR-IOV NIC agent"
+description = """
+The Neutron ML2 SR-IOV NIC agent, its configuration and systemd unit.
+"""
+requires = ["openstack-neutron-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["neutron-sriov-nic-agent.service"]
+bin = ["neutron-sriov-nic-agent"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/neutron/conf.d/neutron-sriov-nic-agent" }]
+install = [
+  { src = "upstream:etc/neutron/plugins/ml2/sriov_agent.ini.sample", dest = "%{_sysconfdir}/neutron/plugins/ml2/sriov_agent.ini", mode = "0640", group = "neutron", config = true },
+  { src = "file:neutron-sriov-nic-agent.service",                    dest = "%{_unitdir}/neutron-sriov-nic-agent.service" },
+]
+
+[[package]]
+name = "python3-neutron"
+kind = "python"
+summary = "Python modules of OpenStack Networking (Neutron)"
+description = """
+The neutron Python package: the API, the ML2 plugin and its drivers, the
+agents and the database models and migrations.
+"""
+modules = ["neutron"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-neutron-tests"
+kind = "python-tests"
+summary = "Unit and functional tests of OpenStack Networking (Neutron)"
+description = """
+The upstream test suite of neutron.
+"""
+requires = ["python3-neutron = %{epoch}:%{version}-%{release}"]
+tests_path = "neutron/tests"
+licenses = ["LICENSE"]

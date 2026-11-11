@@ -1,0 +1,4 @@
+# Written for Hagistack. Placeholder, not a key.
+# Replace this file with the private SSH key nova uses to reach the
+# nova_migration account on the other compute nodes (owner nova, mode 0600).
+# The matching public key goes into /etc/nova/migration/authorized_keys there.

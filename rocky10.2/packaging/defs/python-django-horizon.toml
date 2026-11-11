@@ -1,0 +1,166 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Names, epoch, modes and owners follow what rc4 published so the new build can
+# replace it; every file installed comes either from the upstream tarball or
+# from ../files/python-django-horizon/ (Hagistack's own). How each file and each
+# step below was worked out: ../files/python-django-horizon/AUTHORING.md.
+#
+# Layout (as rc4): the wheel installs horizon, openstack_auth and
+# openstack_dashboard into site-packages. horizon and openstack_auth stay there
+# (python3-django-horizon); the Django project openstack_dashboard is installed
+# from the upstream tree under /usr/share/openstack-dashboard with manage.py and
+# the collected static files (openstack-dashboard), and its configuration lives
+# in /etc/openstack-dashboard.
+[source]
+name = "python-django-horizon"
+project = "horizon"
+version = "25.7.3"
+release = "1"
+epoch = 1
+tarball = "horizon-25.7.3.tar.gz"
+sha256 = "0a9a1d90475bc290d4af934ff53b9ed4c2cbe063150ca48a17c64c03447c5117"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+# Apache-2.0: Horizon itself. MIT: horizon/static/horizon/lib/jquery/jquery.bootstrap.wizard.js,
+# the one third-party file left in the upstream tree, dual licensed MIT/GPL by
+# its authors and distributed under MIT (rocky10.2/THIRD_PARTY_NOTICES.md). All
+# other JavaScript libraries come from the python3-XStatic-* packages.
+license = "Apache-2.0 AND MIT"
+summary = "OpenStack Dashboard (Horizon)"
+description = """
+Horizon is the web dashboard of OpenStack, a Django application. This is the
+upstream OpenStack release, packaged by Hagistack.
+"""
+check = "import"
+# msgfmt compiles the Django catalogues in place (install_extra below);
+# bindep.txt lists gettext for the translations. systemd-rpm-macros defines
+# %{_unitdir} for the httpd.service drop-in (no unit of its own, so the
+# generator does not add it).
+buildrequires = ["gettext", "systemd-rpm-macros"]
+
+install_extra = [
+  # The Django project: from the upstream tree, not from the wheel, into
+  # /usr/share/openstack-dashboard; the wheel's site-packages copy is dropped.
+  "cp -pr openstack_dashboard %{buildroot}%{_datadir}/openstack-dashboard/",
+  "find %{buildroot}%{_datadir}/openstack-dashboard -name __pycache__ -prune -exec rm -rf {} +",
+  "rm -rf %{buildroot}%{python3_sitelib}/openstack_dashboard",
+  # conf/ goes to /etc/openstack-dashboard (package install lines); the example
+  # settings are replaced by the packaged local_settings and the local_settings.d
+  # directory by a symlink (below).
+  "rm -rf %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/conf",
+  "rm -f %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.py.example",
+  "rm -rf %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.d",
+  "install -p -m 0755 manage.py %{buildroot}%{_datadir}/openstack-dashboard/manage.py",
+  "sed -i '1s|^#!.*$|#!%{python3}|' %{buildroot}%{_datadir}/openstack-dashboard/manage.py",
+  # Translations, upstream layout: Django reads <package>/locale/<lang>/LC_MESSAGES/*.mo,
+  # so each catalogue is compiled where it is and the .po source is not shipped.
+  "for po in %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/locale/*/LC_MESSAGES/*.po %{buildroot}%{python3_sitelib}/horizon/locale/*/LC_MESSAGES/*.po %{buildroot}%{python3_sitelib}/openstack_auth/locale/*/LC_MESSAGES/*.po; do msgfmt -o \"${po%%.po}.mo\" \"$po\" && rm -f \"$po\" || exit 1; done",
+  "sed -i '\\#/LC_MESSAGES/[^/]*\\.po\"\\?$#d' %{pyproject_files}",
+  # The static tree, collected once at build time the way the dashboard does
+  # it at run time, with a build-only settings module (removed again; no key
+  # store is written because SECRET_KEY is set). -B: no bytecode with
+  # build-root paths. The python3-XStatic-* copies (and Horizon's own lib/) under
+  # static/horizon/lib are not shipped: the httpd.service drop-in collects them
+  # from the installed packages before httpd starts. css/ and js/ are the
+  # (empty) output directories of compress.
+  "echo \"SECRET_KEY = 'hagistack-build-only-not-a-secret'\" > %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.py",
+  "PYTHONPATH=%{buildroot}%{python3_sitelib} %{python3} -B %{buildroot}%{_datadir}/openstack-dashboard/manage.py collectstatic --noinput",
+  "rm -f %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.py",
+  "test ! -e %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/.secret_key_store || exit 1",
+  "rm -rf %{buildroot}%{_datadir}/openstack-dashboard/static/horizon/lib",
+  "install -d -m 0755 %{buildroot}%{_datadir}/openstack-dashboard/static/dashboard/css %{buildroot}%{_datadir}/openstack-dashboard/static/dashboard/js",
+  "test -f %{buildroot}%{_datadir}/openstack-dashboard/static/app/_app.scss || exit 1",
+  "test -f %{buildroot}%{_datadir}/openstack-dashboard/static/themes/material/_styles.scss || exit 1",
+  "find %{buildroot}%{_datadir}/openstack-dashboard -type d -exec chmod 0755 {} +",
+  "find %{buildroot}%{_datadir}/openstack-dashboard -type f -exec chmod 0644 {} +",
+  "chmod 0755 %{buildroot}%{_datadir}/openstack-dashboard/manage.py",
+  # settings.py imports local/local_settings.py and execs local/local_settings.d/*.py:
+  # both point into /etc/openstack-dashboard (relative links, as rc4).
+  "ln -s ../../../../../etc/openstack-dashboard/local_settings %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.py",
+  "ln -s ../../../../../etc/openstack-dashboard/local_settings.d %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard/local/local_settings.d",
+  # Bytecode for the project outside site-packages (rc4 shipped .pyc and .opt-1.pyc).
+  "%py_byte_compile %{python3} %{buildroot}%{_datadir}/openstack-dashboard/openstack_dashboard",
+  "install -p -D -m 0644 README.rst %{buildroot}%{_docdir}/python3-django-horizon/README.rst",
+]
+
+[[package]]
+name = "openstack-dashboard"
+kind = "files"
+summary = "OpenStack Dashboard (Horizon) web application"
+description = """
+The OpenStack dashboard Django project in /usr/share/openstack-dashboard, its
+configuration in /etc/openstack-dashboard and the httpd configuration that
+serves it under /dashboard.
+"""
+requires = [
+  "python3-django-horizon = %{epoch}:%{version}-%{release}",
+  # rc4 pulled the (empty) theme package in this way; kept so the two install together.
+  "openstack-dashboard-theme >= %{epoch}:%{version}-%{release}",
+  # The packaged httpd configuration, the httpd.service drop-in and the apache
+  # user and group that own /etc/openstack-dashboard, /var/lib/openstack-dashboard
+  # and /var/log/horizon.
+  "httpd",
+  # openstack-dashboard.conf uses WSGIDaemonProcess and WSGIScriptAlias.
+  "python3-mod_wsgi",
+  # The memcached backend django.core.cache.backends.memcached.PyMemcacheCache
+  # named in upstream local_settings.py.example (CACHES) and configured by the
+  # Hagistack installer; upstream requirements.txt does not list pymemcache.
+  "python3-pymemcache",
+]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/openstack-dashboard", mode = "0750", group = "apache" },
+  { path = "%{_sysconfdir}/openstack-dashboard/local_settings.d", mode = "0750", group = "apache" },
+  { path = "%{_sysconfdir}/openstack-dashboard/default_policies", mode = "0750", group = "apache" },
+  { path = "%{_sysconfdir}/openstack-dashboard/nova_policy.d", mode = "0750", group = "apache" },
+  { path = "%{_unitdir}/httpd.service.d" },
+  { path = "%{_datadir}/openstack-dashboard" },
+  { path = "%{_sharedstatedir}/openstack-dashboard", mode = "0750", user = "apache", group = "apache" },
+  { path = "%{_localstatedir}/log/horizon", mode = "0750", user = "apache", group = "apache" },
+]
+install = [
+  { src = "file:local_settings",                                           dest = "%{_sysconfdir}/openstack-dashboard/local_settings",           mode = "0640", group = "apache", config = true },
+  { src = "upstream:openstack_dashboard/conf/*.yaml",                       dest = "%{_sysconfdir}/openstack-dashboard",                          mode = "0640", group = "apache", config = true },
+  { src = "upstream:openstack_dashboard/conf/nova_policy.d/*.yaml",         dest = "%{_sysconfdir}/openstack-dashboard/nova_policy.d",            mode = "0640", group = "apache", config = true },
+  { src = "upstream:openstack_dashboard/conf/default_policies/*.yaml",      dest = "%{_sysconfdir}/openstack-dashboard/default_policies",         mode = "0640", group = "apache", config = true },
+  { src = "upstream:openstack_dashboard/conf/default_policies/README.txt",  dest = "%{_sysconfdir}/openstack-dashboard/default_policies/README.txt", mode = "0640", group = "apache", config = true },
+  { src = "upstream:openstack_dashboard/local/local_settings.d/*.example",  dest = "%{_sysconfdir}/openstack-dashboard/local_settings.d",         mode = "0640", group = "apache", config = true },
+  { src = "file:openstack-dashboard.httpd.conf",                            dest = "%{_sysconfdir}/httpd/conf.d/openstack-dashboard.conf",        config = true },
+  { src = "file:openstack-dashboard.httpd-dropin.conf",                     dest = "%{_unitdir}/httpd.service.d/openstack-dashboard.conf",        config = true },
+  { src = "file:openstack-dashboard.logrotate",                             dest = "%{_sysconfdir}/logrotate.d/openstack-dashboard",              config = true },
+]
+files = [
+  "%{_datadir}/openstack-dashboard/manage.py",
+  "%{_datadir}/openstack-dashboard/openstack_dashboard",
+  "%{_datadir}/openstack-dashboard/static",
+]
+
+[[package]]
+name = "openstack-dashboard-theme"
+kind = "files"
+summary = "OpenStack Dashboard (Horizon) theme package"
+description = """
+Kept under its rc4 name so that installations carrying it upgrade cleanly. The
+themes upstream ships (default and material, plus the example theme) are part
+of openstack-dashboard, where rc4 had them too; this package installs no files.
+"""
+requires = ["openstack-dashboard = %{epoch}:%{version}-%{release}"]
+
+[[package]]
+name = "python3-django-horizon"
+kind = "python"
+summary = "Django application framework of the OpenStack Dashboard"
+description = """
+The horizon Python package (the Django framework the dashboard is built on,
+with its static files and translations) and openstack_auth (the Keystone
+authentication backend for Django).
+"""
+modules = ["horizon", "openstack_auth"]
+licenses = ["LICENSE"]
+install = [
+  { src = "file:openstack-dashboard-httpd-logging.conf", dest = "%{_docdir}/python3-django-horizon/openstack-dashboard-httpd-logging.conf" },
+]
+files = [
+  "%dir %{_docdir}/python3-django-horizon",
+  "%doc %{_docdir}/python3-django-horizon/README.rst",
+  "%{python3_sitelib}/horizon/locale/*/LC_MESSAGES/*.mo",
+  "%{python3_sitelib}/openstack_auth/locale/*/LC_MESSAGES/*.mo",
+]

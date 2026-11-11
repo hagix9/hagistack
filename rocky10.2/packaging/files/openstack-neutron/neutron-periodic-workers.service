@@ -1,0 +1,22 @@
+# Written for Hagistack.
+# Reads the distribution defaults, neutron.conf and the ML2 configuration, then
+# the *.conf files in conf.d/common (there is no conf.d directory of its own).
+[Unit]
+Description=OpenStack Networking (Neutron) periodic workers
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-periodic-workers \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/plugins/ml2/ml2_conf.ini \
+    --config-dir /etc/neutron/conf.d/common
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

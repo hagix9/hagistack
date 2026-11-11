@@ -1,0 +1,7 @@
+#!/bin/sh
+# Written for Hagistack.
+# /etc/sysconfig/modules/*.modules convention: an executable shell script that
+# loads kernel modules. The Open vSwitch agent's iptables-based firewall
+# drivers need br_netfilter. (systemd does not run these scripts itself; the
+# agent's unit loads the module through neutron-enable-bridge-firewall.sh.)
+/usr/sbin/modprobe -b br_netfilter >/dev/null 2>&1 || :

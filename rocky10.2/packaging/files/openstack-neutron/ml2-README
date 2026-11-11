@@ -1,0 +1,15 @@
+Written for Hagistack.
+
+openstack-neutron-ml2 installs the configuration of Neutron's Modular Layer 2
+(ML2) core plugin and its agents' samples:
+
+  /etc/neutron/plugins/ml2/ml2_conf.ini     ML2 plugin, including the [ovn]
+                                            settings of the OVN driver
+  /etc/neutron/plugins/ml2/ovn_agent.ini    neutron-ovn-agent
+  /etc/neutron/plugins/ml2/sriov_agent.ini  neutron-sriov-nic-agent
+
+The files are generated from the upstream option definitions with
+oslo-config-generator; every option is commented out with its default.
+The neutron-rpc-server, neutron-periodic-workers and
+neutron-ovn-maintenance-worker units read ml2_conf.ini after neutron.conf.
+/etc/neutron/ovn.ini (in openstack-neutron-common) is a link to ml2_conf.ini.

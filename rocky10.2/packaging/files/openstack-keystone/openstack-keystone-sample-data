@@ -1,0 +1,6 @@
+#!/bin/sh
+# Written for Hagistack.
+# Runs upstream Keystone's sample data script (tools/sample_data.sh), which the
+# package installs under /usr/share/keystone. All arguments and environment
+# variables (ADMIN_PASSWORD, SERVICE_PASSWORD, KEYSTONE_CONF, ...) are passed on.
+exec /usr/share/keystone/sample_data.sh "$@"

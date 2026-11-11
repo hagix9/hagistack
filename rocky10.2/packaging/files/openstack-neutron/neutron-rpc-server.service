@@ -1,0 +1,24 @@
+# Written for Hagistack.
+# Reads the distribution defaults, neutron.conf and the ML2 configuration (named
+# directly, so no /etc/neutron/plugin.ini link is needed), then the *.conf files
+# in conf.d/common and conf.d/neutron-rpc-server.
+[Unit]
+Description=OpenStack Networking (Neutron) RPC server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-rpc-server \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/plugins/ml2/ml2_conf.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-rpc-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

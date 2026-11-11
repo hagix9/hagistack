@@ -1,0 +1,23 @@
+# Written for Hagistack.
+# Reads the distribution defaults, neutron.conf and metering_agent.ini, then
+# the *.conf files in conf.d/common and conf.d/neutron-metering-agent.
+[Unit]
+Description=OpenStack Networking (Neutron) metering agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-metering-agent \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/metering_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-metering-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

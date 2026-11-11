@@ -1,0 +1,24 @@
+# Written for Hagistack.
+# Reads the distribution defaults and neutron.conf, then the *.conf files in
+# conf.d/common and conf.d/neutron-macvtap-agent. No macvtap_agent.ini is
+# installed, so its [macvtap] and [securitygroup] settings go in a *.conf file
+# in conf.d/neutron-macvtap-agent.
+[Unit]
+Description=OpenStack Networking (Neutron) macvtap agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-macvtap-agent \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-macvtap-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

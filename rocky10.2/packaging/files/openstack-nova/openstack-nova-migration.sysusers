@@ -1,0 +1,6 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-nova-migration.conf.
+# Login account for disk copies between compute nodes. sshd runs its forced
+# command (/usr/bin/nova-migration-wrapper) through the login shell, so the
+# shell must be a real one; the home directory is root-owned and not writable.
+u nova_migration - "OpenStack Compute (Nova) migration" /etc/nova/migration /bin/sh

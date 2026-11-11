@@ -1,0 +1,20 @@
+# Written for Hagistack.
+# nova-conductor stays in the foreground (oslo.service launcher); Type=simple.
+# No --config-file is passed: oslo.config then reads its default files for
+# project "nova" and this program (/etc/nova/nova.conf, then
+# /etc/nova/nova-conductor.conf if present, and the matching .conf.d directories).
+[Unit]
+Description=OpenStack Compute (Nova) conductor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nova
+Group=nova
+ExecStart=/usr/bin/nova-conductor
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Environment for openstack-nova-novncproxy.service.
+# OPTIONS: extra command-line arguments for nova-novncproxy, for example
+#   OPTIONS="--web /usr/share/novnc"
+# Settings normally belong in /etc/nova/nova.conf; this is empty by default.

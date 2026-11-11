@@ -1,0 +1,317 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Names, epoch, modes and owners follow what rc4 published so the new build can
+# replace it; every file installed comes either from the upstream tarball (or is
+# generated from it at build time) or from ../files/openstack-nova/
+# (Hagistack's own). Choices and sources: ../files/openstack-nova/AUTHORING.md.
+[source]
+name = "openstack-nova"
+project = "nova"
+version = "33.0.2"
+release = "1"
+epoch = 1
+tarball = "nova-33.0.2.tar.gz"
+sha256 = "84ab864ced8867f2989f3ba65ead61a7e39891ee7ea693850331636ac9d360ea"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "OpenStack Compute (Nova)"
+description = """
+Nova is the OpenStack Compute service: it schedules, starts and manages
+virtual machines on compute hosts. This is the upstream OpenStack release,
+packaged by Hagistack.
+"""
+check = "import"
+# The config sample generator loads the osprofiler option namespace named in
+# etc/nova/nova-config-generator.conf; osprofiler is only an optional extra of
+# nova, so the runtime requirements do not bring it in.
+buildrequires = ["python3-osprofiler"]
+locale_domain = "nova"
+# The wheel's data-files land under /usr/etc; the files this package ships are
+# installed explicitly below instead.
+drop_after_install = ["%{_prefix}/etc"]
+# Config samples, generated from upstream's generator configs exactly as
+# upstream's tox "genconfig"/"genpolicy" do. The option defaults that would be
+# the build host's own name or address carry upstream sample_default
+# placeholders; the checks stop the build if a placeholder or an expected option
+# group is missing, or if this build host's name or IPv4 address appears as a
+# value in a generated file.
+build_extra = [
+  'PYTHONPATH="$PWD" oslo-config-generator --config-file etc/nova/nova-config-generator.conf',
+  'PYTHONPATH="$PWD" oslopolicy-sample-generator --config-file etc/nova/nova-policy-generator.conf',
+  "grep -q '^#my_ip = <host_ipv4>$' etc/nova/nova.conf.sample || exit 1",
+  "grep -q '^#host = <current_hostname>$' etc/nova/nova.conf.sample || exit 1",
+  "grep -q '^#console_host = <current_hostname>$' etc/nova/nova.conf.sample || exit 1",
+  "grep -q '^#hostname = node1.example.com$' etc/nova/nova.conf.sample || exit 1",
+  "grep -q '^#pybasedir = <Path>$' etc/nova/nova.conf.sample || exit 1",
+  "for g in DEFAULT api_database database keystone_authtoken oslo_concurrency oslo_messaging_rabbit os_vif_ovs os_brick profiler vnc libvirt; do grep -q \"^\\[$g\\]$\" etc/nova/nova.conf.sample || exit 1; done",
+  "grep -q 'os_compute_api:servers:create' etc/nova/policy.yaml.sample || exit 1",
+  '''python3 -I - etc/nova/nova.conf.sample etc/nova/policy.yaml.sample <<'HAGISTACK_EOF' || exit 1
+import re, socket, sys
+from oslo_utils import netutils
+ids = set()
+for probe in (socket.gethostname, socket.getfqdn, netutils.get_my_ipv4):
+    try:
+        ids.add(probe())
+    except Exception:
+        pass
+ids -= {"", "localhost", "localhost.localdomain", "127.0.0.1", "::1"}
+bad = 0
+for path in sys.argv[1:]:
+    for n, line in enumerate(open(path, encoding="utf-8"), 1):
+        m = re.match(r"^#?\s*\S+ = (.*)", line) or re.match(r'^#?"[^"]*": (.*)', line)
+        if not m:
+            continue
+        for i in ids:
+            if re.search(r"(?<![\w.-])" + re.escape(i) + r"(?![\w.-])", m.group(1)):
+                print(path + ":" + str(n) + ": a value carries the build host identity", file=sys.stderr)
+                bad = 1
+sys.exit(bad)
+HAGISTACK_EOF''',
+]
+# rc4 packaged the catalogues owned by nova:nova; find_lang lists them without
+# an owner, so the list is given one, and the build stops if that did not apply.
+install_extra = [
+  "sed -i 's|^%%lang(|%%attr(0644, nova, nova) %%lang(|' nova.lang",
+  "grep -q '^%%attr(0644, nova, nova) %%lang(' nova.lang || exit 1",
+  "! grep -v '^%%attr(0644, nova, nova) %%lang(' nova.lang | grep -q . || exit 1",
+]
+
+# Meta package: a complete Nova on one host with the default console (VNC,
+# enabled by default in nova/conf/vnc.py), and -migration as rc4's meta package
+# had it (its SSH login stays closed until an operator installs a key in
+# authorized_keys). Not pulled in: -serialproxy and -spicehtml5proxy (consoles
+# that are disabled by default), python3-nova-tests.
+[[package]]
+name = "openstack-nova"
+kind = "files"
+requires = [
+  "openstack-nova-api = %{epoch}:%{version}-%{release}",
+  "openstack-nova-conductor = %{epoch}:%{version}-%{release}",
+  "openstack-nova-scheduler = %{epoch}:%{version}-%{release}",
+  "openstack-nova-compute = %{epoch}:%{version}-%{release}",
+  "openstack-nova-novncproxy = %{epoch}:%{version}-%{release}",
+  "openstack-nova-migration = %{epoch}:%{version}-%{release}",
+]
+
+# 2026.1 builds no nova-api binaries; the APIs are WSGI modules in python3-nova
+# (nova/wsgi/osapi_compute.py, nova/wsgi/metadata.py) served by httpd, and
+# their paste file is in -common. This package has no files of its own and
+# brings in what the API side needs.
+[[package]]
+name = "openstack-nova-api"
+kind = "files"
+summary = "OpenStack Compute (Nova) API side (served as WSGI modules)"
+description = """
+Pulls in the Nova WSGI applications (osapi_compute and metadata, in
+python3-nova) and their configuration (openstack-nova-common). A WSGI server
+such as httpd with mod_wsgi serves them; this release ships no API daemon.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+
+# Catalogues are in this package as in rc4 (kind "lang": the generator's
+# %find_lang list goes with it instead of python3-nova).
+[[package]]
+name = "openstack-nova-common"
+kind = "lang"
+summary = "Components common to all OpenStack Compute (Nova) services"
+description = """
+Configuration, the nova system user, rootwrap and sudo rules, log rotation,
+state directories and the administrative commands shared by all Nova services.
+"""
+# nova/utils.py get_root_helper() and oslo.privsep start helpers through sudo.
+requires = ["python3-nova = %{epoch}:%{version}-%{release}", "sudo"]
+sysusers = "openstack-nova-common.sysusers"
+bin = ["nova-manage", "nova-policy", "nova-rootwrap", "nova-rootwrap-daemon", "nova-status"]
+docs = ["etc/nova/policy.yaml.sample"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/nova" },
+  { path = "%{_datadir}/nova" },
+  { path = "%{_sharedstatedir}/nova",           mode = "0755", user = "nova", group = "nova" },
+  { path = "%{_sharedstatedir}/nova/instances", mode = "0755", user = "nova", group = "nova" },
+  { path = "%{_sharedstatedir}/nova/tmp",       mode = "0755", user = "nova", group = "nova" },
+  { path = "%{_localstatedir}/log/nova",        mode = "0750", user = "nova", group = "root" },
+  { path = "%{_localstatedir}/run/nova",        mode = "0755", user = "nova", group = "root" },
+]
+install = [
+  { src = "upstream:etc/nova/nova.conf.sample",     dest = "%{_sysconfdir}/nova/nova.conf",        mode = "0640", group = "nova", config = true },
+  { src = "upstream:etc/nova/api-paste.ini",        dest = "%{_sysconfdir}/nova/api-paste.ini",    mode = "0640", group = "nova", config = true },
+  { src = "upstream:etc/nova/rootwrap.conf",        dest = "%{_sysconfdir}/nova/rootwrap.conf",    mode = "0640", group = "nova", config = true },
+  { src = "file:nova-release",                      dest = "%{_sysconfdir}/nova/release",          mode = "0644" },
+  { src = "file:openstack-nova.logrotate",          dest = "%{_sysconfdir}/logrotate.d/openstack-nova", mode = "0644", config = true },
+  { src = "file:nova.sudoers",                      dest = "%{_sysconfdir}/sudoers.d/nova",        mode = "0440", config = true },
+  { src = "upstream:nova/virt/interfaces.template", dest = "%{_datadir}/nova/interfaces.template", mode = "0644" },
+]
+
+[[package]]
+name = "openstack-nova-compute"
+kind = "files"
+summary = "OpenStack Compute (Nova) compute service"
+description = """
+nova-compute, the service that runs virtual machines on a hypervisor host
+through libvirt and QEMU/KVM.
+"""
+requires = [
+  "openstack-nova-common = %{epoch}:%{version}-%{release}",
+  # nova/virt/libvirt/host.py imports the libvirt binding (not in upstream metadata).
+  "python3-libvirt",
+  # The libvirt daemon and QEMU the libvirt driver drives (package names as the
+  # installer installs them); they also own the libvirt and qemu groups that
+  # openstack-nova-compute.sysusers adds nova to.
+  "libvirt",
+  "qemu-kvm",
+  # nova/privsep/qemu.py and nova/virt/images.py run qemu-img.
+  "qemu-img",
+  # bindep.txt: openssh-clients [platform:rpm] (ssh/scp for resize and cold
+  # migration, nova/utils.py ssh_execute) and lsscsi (used through os-brick).
+  "openssh-clients",
+  "lsscsi",
+]
+sysusers = "openstack-nova-compute.sysusers"
+systemd_units = ["openstack-nova-compute.service"]
+bin = ["nova-compute"]
+dirs = [
+  { path = "%{_datadir}/nova/rootwrap" },
+]
+install = [
+  { src = "file:nova-compute.conf",                    dest = "%{_sysconfdir}/nova/nova-compute.conf",           mode = "0640", group = "nova", config = true },
+  { src = "upstream:etc/nova/rootwrap.d/compute.filters", dest = "%{_datadir}/nova/rootwrap/compute.filters",    mode = "0644" },
+  { src = "file:openstack-nova-compute.service",       dest = "%{_unitdir}/openstack-nova-compute.service" },
+]
+
+[[package]]
+name = "openstack-nova-conductor"
+kind = "files"
+summary = "OpenStack Compute (Nova) conductor"
+description = """
+nova-conductor, which performs database access and long-running orchestration
+on behalf of the compute services.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["openstack-nova-conductor.service"]
+bin = ["nova-conductor"]
+install = [
+  { src = "file:openstack-nova-conductor.service", dest = "%{_unitdir}/openstack-nova-conductor.service" },
+]
+
+[[package]]
+name = "openstack-nova-scheduler"
+kind = "files"
+summary = "OpenStack Compute (Nova) scheduler"
+description = """
+nova-scheduler, which picks the compute host for each new or moved instance.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["openstack-nova-scheduler.service"]
+bin = ["nova-scheduler"]
+install = [
+  { src = "file:openstack-nova-scheduler.service", dest = "%{_unitdir}/openstack-nova-scheduler.service" },
+]
+
+[[package]]
+name = "openstack-nova-novncproxy"
+kind = "files"
+summary = "OpenStack Compute (Nova) noVNC console proxy"
+description = """
+nova-novncproxy, the websocket proxy that serves the noVNC browser console.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+# nova/cmd/novncproxy.py serves /usr/share/novnc by default and
+# nova/cmd/baseproxy.py exits when that directory is missing. Weak, because the
+# --web directory can be pointed elsewhere.
+recommends = ["novnc"]
+systemd_units = ["openstack-nova-novncproxy.service"]
+bin = ["nova-novncproxy"]
+install = [
+  { src = "file:openstack-nova-novncproxy.sysconfig", dest = "%{_sysconfdir}/sysconfig/openstack-nova-novncproxy", mode = "0644", config = true },
+  { src = "file:openstack-nova-novncproxy.service",   dest = "%{_unitdir}/openstack-nova-novncproxy.service" },
+]
+
+[[package]]
+name = "openstack-nova-serialproxy"
+kind = "files"
+summary = "OpenStack Compute (Nova) serial console proxy"
+description = """
+nova-serialproxy, the websocket proxy for instance serial consoles.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+systemd_units = ["openstack-nova-serialproxy.service"]
+bin = ["nova-serialproxy"]
+install = [
+  { src = "file:openstack-nova-serialproxy.service", dest = "%{_unitdir}/openstack-nova-serialproxy.service" },
+]
+
+[[package]]
+name = "openstack-nova-spicehtml5proxy"
+kind = "files"
+summary = "OpenStack Compute (Nova) SPICE HTML5 console proxy"
+description = """
+nova-spicehtml5proxy, the websocket proxy that serves the SPICE HTML5 console.
+"""
+requires = ["openstack-nova-common = %{epoch}:%{version}-%{release}"]
+# The default --web directory (nova/conf/novnc.py) is /usr/share/spice-html5 and
+# nova/cmd/baseproxy.py exits when it is missing. Weak for the same reason.
+recommends = ["spice-html5"]
+systemd_units = ["openstack-nova-spicehtml5proxy.service"]
+bin = ["nova-spicehtml5proxy"]
+install = [
+  { src = "file:openstack-nova-spicehtml5proxy.service", dest = "%{_unitdir}/openstack-nova-spicehtml5proxy.service" },
+]
+
+# SSH forced-command setup for disk copies between compute nodes (resize and
+# cold migration). Opt-in; see AUTHORING.md for what it allows and what not.
+[[package]]
+name = "openstack-nova-migration"
+kind = "files"
+summary = "SSH setup for OpenStack Compute (Nova) cold migration and resize"
+description = """
+A restricted nova_migration SSH account for copying instance disks between
+compute nodes: a forced-command wrapper, sudo and rootwrap rules that let it
+run only Nova's own remote file commands as nova, the SSH client
+configuration of the nova user, and placeholder key files.
+"""
+requires = [
+  "openstack-nova-common = %{epoch}:%{version}-%{release}",
+  # The login side (sshd) and the remote scp that nova's scp talks to.
+  "openssh-server",
+  "openssh-clients",
+  "sudo",
+  # runuser and logger, used by the wrapper and the rootwrap filters.
+  "util-linux",
+]
+sysusers = "openstack-nova-migration.sysusers"
+dirs = [
+  { path = "%{_sysconfdir}/nova/migration" },
+  { path = "%{_sysconfdir}/nova/migration/rootwrap.d" },
+  { path = "%{_sharedstatedir}/nova/.ssh", mode = "0700", user = "nova", group = "nova" },
+]
+install = [
+  { src = "file:nova-migration-authorized_keys", dest = "%{_sysconfdir}/nova/migration/authorized_keys", mode = "0640", group = "nova_migration", config = true },
+  { src = "file:nova-migration-identity",        dest = "%{_sysconfdir}/nova/migration/identity",        mode = "0600", user = "nova", group = "nova", config = true },
+  { src = "file:nova-migration-rootwrap.conf",   dest = "%{_sysconfdir}/nova/migration/rootwrap.conf",   mode = "0640", config = true },
+  { src = "file:cold_migration.filters",         dest = "%{_sysconfdir}/nova/migration/rootwrap.d/cold_migration.filters", mode = "0640", config = true },
+  { src = "file:nova_migration.sudoers",         dest = "%{_sysconfdir}/sudoers.d/nova_migration",       mode = "0440", config = true },
+  { src = "file:nova-migration-wrapper",         dest = "%{_bindir}/nova-migration-wrapper",             mode = "0755" },
+  { src = "file:nova-migration-ssh-config",      dest = "%{_sharedstatedir}/nova/.ssh/config",           mode = "0600", user = "nova", group = "nova" },
+]
+
+[[package]]
+name = "python3-nova"
+kind = "python"
+summary = "Python modules of the OpenStack Compute service"
+description = """
+The nova Python package: the API WSGI applications, conductor, scheduler,
+compute manager, virt drivers and database models.
+"""
+modules = ["nova"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-nova-tests"
+kind = "python-tests"
+summary = "Unit and functional tests of the OpenStack Compute service"
+description = """
+The upstream test suite of nova.
+"""
+requires = ["python3-nova = %{epoch}:%{version}-%{release}"]
+tests_path = "nova/tests"
+licenses = ["LICENSE"]

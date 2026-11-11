@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-placement-common.conf.
+# No fixed ID is reserved for placement, so the IDs are allocated dynamically.
+g placement -
+u placement -:placement "OpenStack Placement service" / /usr/sbin/nologin

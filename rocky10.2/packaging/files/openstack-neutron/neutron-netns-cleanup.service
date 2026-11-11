@@ -1,0 +1,25 @@
+# Written for Hagistack.
+# One-shot: removes network namespaces left without devices by the DHCP and
+# L3 agents. It reads both agents' files because it needs their interface
+# driver settings. Not enabled by default; when enabled it runs before them.
+[Unit]
+Description=OpenStack Networking (Neutron) stale namespace cleanup
+Wants=network-online.target
+After=network-online.target openvswitch.service
+Before=neutron-dhcp-agent.service neutron-l3-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-netns-cleanup \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/dhcp_agent.ini \
+    --config-file /etc/neutron/l3_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-netns-cleanup
+
+[Install]
+WantedBy=multi-user.target

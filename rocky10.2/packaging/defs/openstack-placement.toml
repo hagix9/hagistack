@@ -1,0 +1,132 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Names, modes and owners follow what rc4 published so the new build can replace
+# it (rc4 had no epoch and no binary package called openstack-placement); every
+# file installed comes either from the upstream tarball, from oslo.config's and
+# oslo.policy's generators run on upstream's generator configs, or from
+# ../files/openstack-placement/ (Hagistack's own; see AUTHORING.md there).
+# Intended omission: /usr/share/placement/placement-dist.conf.
+[source]
+name = "openstack-placement"
+project = "placement"
+version = "15.0.0"
+release = "1"
+tarball = "openstack_placement-15.0.0.tar.gz"
+sha256 = "b4825e2a37eef18d92a96aef089438327bce5e4580716a8478f0c1864b188800"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack Placement service"
+description = """
+Placement tracks the inventories and usages of resource providers (compute
+hosts, storage and network pools) and answers allocation queries for the other
+OpenStack services. This is the upstream OpenStack release, packaged by
+Hagistack.
+"""
+check = "import"
+# etc/placement/config-generator.conf lists the osprofiler namespace, but
+# osprofiler is only an optional import of placement (placement/deploy.py
+# line 33, importutils.try_import) and is listed in test-requirements.txt
+# lines 21-22 "needed to generate osprofiler config options". Without it the
+# generator silently drops the [profiler] section.
+buildrequires = ["python3dist(osprofiler)"]
+build_extra = [
+'''# Hagistack: a generated file must not carry the build machine's identity.
+# Option values equal to the build host's name or one of its IPv4 addresses
+# become <current_hostname> / <host_ipv4>; afterwards no option line may
+# still contain the name and no line at all an address, or the build stops.
+hagistack_scrub() {
+    hs_host="$(uname -n)"
+    hs_addrs="$( { getent ahostsv4 "$hs_host" 2>/dev/null | awk '{ print $1 }'; %{python3} -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null; } | grep -v '^127\.' | sort -u | tr '\n' ' ')"
+    [ "$hs_host" = localhost ] && hs_host=""
+    awk -v h="$hs_host" -v a="$hs_addrs" '
+        BEGIN { n = split(a, ips, " ") }
+        /^#?[A-Za-z0-9_.-]+ = / {
+            i = index($0, " = "); k = substr($0, 1, i + 2); v = substr($0, i + 3)
+            if (h != "" && v == h) v = "<current_hostname>"
+            for (j = 1; j <= n; j++) if (v == ips[j]) v = "<host_ipv4>"
+            $0 = k v
+        }
+        { print }' "$1" > "$1.scrubbed"
+    mv "$1.scrubbed" "$1"
+    ! awk -v h="$hs_host" -v a="$hs_addrs" '
+        BEGIN { n = split(a, ips, " "); bad = 0 }
+        /^#?[A-Za-z0-9_.-]+ = / { if (h != "" && index($0, h)) bad = 1 }
+        { for (j = 1; j <= n; j++) if (index($0, ips[j])) bad = 1 }
+        END { exit !bad }' "$1" || { echo "$1 carries the build host's identity" >&2; exit 1; }
+}''',
+"# Hagistack: placement.conf and the policy sample from upstream's generator configs.",
+"PYTHONPATH=\"$PWD\" oslo-config-generator --config-file etc/placement/config-generator.conf --output-file etc/placement/placement.conf.sample",
+"# A namespace whose library is missing is silently skipped; require the sections.",
+"for s in DEFAULT api placement placement_database keystone_authtoken cors oslo_middleware oslo_policy profiler; do grep -q \"^\\[$s\\]\" etc/placement/placement.conf.sample || exit 1; done",
+"hagistack_scrub etc/placement/placement.conf.sample",
+"PYTHONPATH=\"$PWD\" oslopolicy-sample-generator --config-file etc/placement/policy-generator.conf --output-file etc/placement/policy.yaml.sample",
+"grep -q '^#\"placement:resource_providers:list\"' etc/placement/policy.yaml.sample || exit 1",
+"hagistack_scrub etc/placement/policy.yaml.sample",
+]
+install_extra = [
+"# Hagistack: point the httpd vhost at the WSGI module in this build's site-packages.",
+"sed -i 's|__PYTHON3_SITELIB__|%{python3_sitelib}|g' %{buildroot}%{_sysconfdir}/httpd/conf.d/00-placement-api.conf",
+"grep -q 'WSGIScriptAlias / %{python3_sitelib}/placement/wsgi/api.py$' %{buildroot}%{_sysconfdir}/httpd/conf.d/00-placement-api.conf || exit 1",
+"! grep -q __PYTHON3_SITELIB__ %{buildroot}%{_sysconfdir}/httpd/conf.d/00-placement-api.conf || exit 1",
+"test -f %{buildroot}%{python3_sitelib}/placement/wsgi/api.py || exit 1",
+]
+
+[[package]]
+name = "openstack-placement-api"
+kind = "files"
+summary = "OpenStack Placement API under Apache httpd"
+description = """
+The Apache httpd virtual host that serves the Placement API on port 8778
+through mod_wsgi.
+"""
+# The vhost uses mod_wsgi directives (WSGIDaemonProcess, WSGIScriptAlias) and
+# lives in httpd's conf.d; without both httpd refuses to start.
+requires = ["openstack-placement-common = %{version}-%{release}", "httpd", "python3-mod_wsgi"]
+licenses = ["LICENSE"]
+install = [
+  { src = "file:00-placement-api.conf", dest = "%{_sysconfdir}/httpd/conf.d/00-placement-api.conf", mode = "0640", config = true },
+]
+
+[[package]]
+name = "openstack-placement-common"
+kind = "files"
+summary = "Configuration and tools of the OpenStack Placement service"
+description = """
+The configuration file, the placement-manage and placement-status tools, the
+log directory and the placement service user.
+"""
+requires = ["python3-placement = %{version}-%{release}"]
+sysusers = "openstack-placement.sysusers"
+bin = ["placement-manage", "placement-status"]
+docs = ["etc/placement/policy.yaml.sample"]
+licenses = ["LICENSE"]
+dirs = [
+  { path = "%{_sysconfdir}/placement" },
+  { path = "%{_datadir}/placement" },
+  { path = "%{_localstatedir}/log/placement", mode = "0750", user = "placement" },
+]
+install = [
+  { src = "upstream:etc/placement/placement.conf.sample", dest = "%{_sysconfdir}/placement/placement.conf",        mode = "0640", group = "placement", config = true },
+  { src = "file:openstack-placement.logrotate",           dest = "%{_sysconfdir}/logrotate.d/openstack-placement", mode = "0644", config = true },
+]
+
+[[package]]
+name = "python3-placement"
+kind = "python"
+summary = "Python modules of the OpenStack Placement service"
+description = """
+The placement Python package: the Placement API, its database models, the WSGI
+application module placement.wsgi.api and the command implementations.
+"""
+modules = ["placement"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-placement-tests"
+kind = "python-tests"
+summary = "Unit and functional tests of the OpenStack Placement service"
+description = """
+The upstream test suite of placement.
+"""
+requires = ["python3-placement = %{version}-%{release}"]
+tests_path = "placement/tests"
+licenses = ["LICENSE"]

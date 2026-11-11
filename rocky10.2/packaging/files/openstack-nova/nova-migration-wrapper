@@ -1,0 +1,107 @@
+#!/bin/bash
+# nova-migration-wrapper: SSH forced command for the nova_migration account.
+# Written for Hagistack.
+#
+# nova-compute on a source or destination host runs "ssh -o BatchMode=yes
+# <host> <command>" and "scp -C -r ..." as user nova; /var/lib/nova/.ssh/config
+# sends those connections to the nova_migration account here, and sshd runs
+# this script instead of the requested command (SSH_ORIGINAL_COMMAND).
+#
+# Only the remote commands upstream Nova 33 itself issues for a cold
+# migration or resize with the default remote_filesystem_transport = ssh are
+# accepted (nova/virt/libvirt/volume/remotefs.py SshDriver, called from
+# nova/virt/libvirt/driver.py and nova/virt/libvirt/utils.py copy_image):
+#
+#   touch  <instances>/<uuid>/<32 hex>.tmp     shared-storage probe
+#   rm     <instances>/<uuid>/<32 hex>.tmp     shared-storage probe cleanup
+#   mkdir -p <instances>/<uuid>                destination instance directory
+#   rm -rf <instances>/<uuid>                  cleanup after a failed resize
+#   scp -r -t <instances>/<uuid>[/<name>]      disk, disk.info, swtpm copies in
+#   scp -r -f <instances>/<uuid>/<name>        kernel/ramdisk fetched back
+#   scp -r -f <instances>/_base/<name>         cached image fetched back
+#
+# Everything else is refused: interactive logins, the SFTP subsystem, rsync,
+# libvirt's qemu+ssh helper, any other command, option, path or character.
+# An accepted command runs as user nova through
+#   sudo nova-rootwrap /etc/nova/migration/rootwrap.conf runuser -u nova -- ...
+# whose filters (rootwrap.d/cold_migration.filters) check the same forms again.
+set -u
+export PATH=/usr/sbin:/usr/bin
+export LC_ALL=C
+umask 0022
+
+readonly INSTANCES=/var/lib/nova/instances
+readonly ROOTWRAP_CONF=/etc/nova/migration/rootwrap.conf
+readonly UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+# One path component that is not "." or ".." and does not start with "-".
+readonly NAME_RE='[A-Za-z0-9_][A-Za-z0-9._-]*'
+readonly TMP_RE="^${INSTANCES}/${UUID_RE}/[0-9a-f]{32}\\.tmp\$"
+readonly DIR_RE="^${INSTANCES}/${UUID_RE}\$"
+readonly FILE_RE="^${INSTANCES}/${UUID_RE}/${NAME_RE}\$"
+readonly BASE_RE="^${INSTANCES}/_base/${NAME_RE}\$"
+
+orig=${SSH_ORIGINAL_COMMAND-}
+client=${SSH_CLIENT:-unknown}
+client=${client%% *}
+
+# What reaches syslog: printable allowed characters only, at most 512 of them.
+shown() {
+    printf '%s' "$orig" | tr -c 'A-Za-z0-9 ./_:-' '?' | cut -c1-512
+}
+
+deny() {
+    logger -p authpriv.warning -t nova-migration-wrapper -- \
+        "refused from ${client} ($1): $(shown)" 2>/dev/null || true
+    echo "nova-migration-wrapper: command not allowed" >&2
+    exit 1
+}
+
+# The path, with symbolic links resolved, must still be the same path below
+# the (resolved) instances directory.
+canonical() {
+    local base real
+    base=$(realpath -e -- "$INSTANCES" 2>/dev/null) || return 1
+    real=$(realpath -m -- "$1" 2>/dev/null) || return 1
+    [ "$real" = "${base}${1#"$INSTANCES"}" ]
+}
+
+is() {  # is <path> <regex>
+    [[ $1 =~ $2 ]] && canonical "$1"
+}
+
+run() {
+    logger -p authpriv.info -t nova-migration-wrapper -- \
+        "accepted from ${client}: $(shown)" 2>/dev/null || true
+    exec sudo -n /usr/bin/nova-rootwrap "$ROOTWRAP_CONF" runuser -u nova -- "$@"
+}
+
+[ -n "$orig" ] || deny "no command"
+[ "${#orig}" -le 4096 ] || deny "too long"
+case $orig in
+    *[!A-Za-z0-9./_\ -]*) deny "unexpected character" ;;
+esac
+case $orig in
+    *sftp-server*|internal-sftp*) deny "SFTP subsystem is not supported" ;;
+esac
+
+read -r -a argv <<<"$orig"
+set -- "${argv[@]}"
+[ "$#" -ge 2 ] || deny "not an accepted command"
+
+case "$#:$1" in
+    2:touch)
+        is "$2" "$TMP_RE" && run /usr/bin/touch "$2" ;;
+    2:rm)
+        is "$2" "$TMP_RE" && run /usr/bin/rm "$2" ;;
+    3:mkdir)
+        [ "$2" = -p ] && is "$3" "$DIR_RE" && run /usr/bin/mkdir -p "$3" ;;
+    3:rm)
+        [ "$2" = -rf ] && is "$3" "$DIR_RE" && run /usr/bin/rm -rf "$3" ;;
+    4:scp)
+        if [ "$2" = -r ] && [ "$3" = -t ]; then
+            { is "$4" "$DIR_RE" || is "$4" "$FILE_RE"; } && run /usr/bin/scp -r -t "$4"
+        elif [ "$2" = -r ] && [ "$3" = -f ]; then
+            { is "$4" "$FILE_RE" || is "$4" "$BASE_RE"; } && run /usr/bin/scp -r -f "$4"
+        fi ;;
+esac
+deny "not an accepted command"

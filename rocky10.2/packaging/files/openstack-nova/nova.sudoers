@@ -1,0 +1,8 @@
+# Written for Hagistack.
+# Install as /etc/sudoers.d/nova with mode 0440.
+# nova-compute's root helper is "sudo nova-rootwrap /etc/nova/rootwrap.conf"
+# (os-brick and privsep start through it); privsep-helper is allowed directly
+# for a privsep helper_command that calls it without rootwrap.
+Defaults:nova !requiretty
+
+nova ALL = (root) NOPASSWD: /usr/bin/nova-rootwrap /etc/nova/rootwrap.conf *, /usr/bin/privsep-helper *

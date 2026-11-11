@@ -1,0 +1,20 @@
+# Written for Hagistack.
+# nova-compute stays in the foreground; it reaches libvirt at qemu:///system, so it is ordered after the libvirt daemon units (ordering only, no dependency).
+# No --config-file is passed: oslo.config then reads its default files for
+# project "nova" and this program (/etc/nova/nova.conf, then
+# /etc/nova/nova-compute.conf if present, and the matching .conf.d directories).
+[Unit]
+Description=OpenStack Compute (Nova) compute service
+Wants=network-online.target
+After=network-online.target libvirtd.service virtqemud.socket virtqemud.service
+
+[Service]
+Type=simple
+User=nova
+Group=nova
+ExecStart=/usr/bin/nova-compute
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

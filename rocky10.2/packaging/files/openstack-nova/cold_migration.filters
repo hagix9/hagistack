@@ -1,0 +1,16 @@
+# oslo.rootwrap filters for cold migration and resize, written for Hagistack.
+# Install as /etc/nova/migration/rootwrap.d/cold_migration.filters.
+# Each filter runs one exact command form as user nova through runuser (which
+# sets nova's user, group and supplementary groups); every argument is matched
+# by a regular expression anchored at both ends (paths end in \Z because
+# rootwrap's own "$" anchor would also accept a trailing newline). The forms are the remote
+# commands of Nova's SSH remote-filesystem driver; nova-migration-wrapper
+# accepts the same forms. oslo.rootwrap always adds its own privsep-helper
+# filter, which /etc/sudoers.d/nova_migration keeps out of reach.
+[Filters]
+nova_migration_touch: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/touch, /var/lib/nova/instances/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{32}\.tmp\Z
+nova_migration_rm: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/rm, /var/lib/nova/instances/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{32}\.tmp\Z
+nova_migration_mkdir: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/mkdir, -p, /var/lib/nova/instances/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z
+nova_migration_rmdir: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/rm, -rf, /var/lib/nova/instances/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z
+nova_migration_scp_to: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/scp, -r, -t, /var/lib/nova/instances/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/[A-Za-z0-9_][A-Za-z0-9._-]*)?\Z
+nova_migration_scp_from: RegExpFilter, runuser, root, runuser, -u, nova, --, /usr/bin/scp, -r, -f, /var/lib/nova/instances/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|_base)/[A-Za-z0-9_][A-Za-z0-9._-]*\Z

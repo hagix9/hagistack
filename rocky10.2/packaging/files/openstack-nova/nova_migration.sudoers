@@ -1,0 +1,9 @@
+# Written for Hagistack.
+# Install as /etc/sudoers.d/nova_migration with mode 0440.
+# nova_migration may only start nova-rootwrap with the migration configuration,
+# and only for a command that runuser runs as nova; the rootwrap filters then
+# decide the exact command. Starting rootwrap with any other first argument
+# (for example privsep-helper, which rootwrap always allows) is not permitted.
+Defaults:nova_migration !requiretty
+
+nova_migration ALL = (root) NOPASSWD: /usr/bin/nova-rootwrap /etc/nova/migration/rootwrap.conf runuser -u nova -- *

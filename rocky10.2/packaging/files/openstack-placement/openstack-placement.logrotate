@@ -1,0 +1,14 @@
+# Written for Hagistack.
+# Placement writes log files here when placement.conf sets log_dir (or
+# log_file) to this directory; by default it logs to stderr, which httpd puts
+# in /var/log/httpd. Placement does not reopen its log files on a signal, so
+# they are copied and truncated in place.
+/var/log/placement/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

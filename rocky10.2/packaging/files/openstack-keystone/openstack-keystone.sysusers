@@ -1,0 +1,4 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-keystone.conf.
+g keystone 163
+u keystone 163:keystone "OpenStack Keystone identity service" /var/lib/keystone /usr/sbin/nologin

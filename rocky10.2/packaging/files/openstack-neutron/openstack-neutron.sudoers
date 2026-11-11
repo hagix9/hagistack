@@ -1,0 +1,8 @@
+# Written for Hagistack.
+# Install as /etc/sudoers.d/neutron with mode 0440.
+# The Neutron agents run as neutron and reach root only through these
+# commands: rootwrap and its daemon (both limited to the filters named by
+# /etc/neutron/rootwrap.conf) and the oslo.privsep helper.
+Defaults:neutron !requiretty
+
+neutron ALL = (root) NOPASSWD: /usr/bin/neutron-rootwrap /etc/neutron/rootwrap.conf *, /usr/bin/neutron-rootwrap-daemon /etc/neutron/rootwrap.conf, /usr/bin/privsep-helper *

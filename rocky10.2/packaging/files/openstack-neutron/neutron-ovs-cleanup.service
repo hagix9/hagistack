@@ -1,0 +1,26 @@
+# Written for Hagistack.
+# One-shot: removes the ports Neutron created on the Open vSwitch bridges, for
+# a host whose agents start from a clean state. Its [OVS] settings come from
+# openvswitch_agent.ini, which openstack-neutron-openvswitch installs, so the
+# unit only runs where that file exists. Not enabled by default.
+[Unit]
+Description=OpenStack Networking (Neutron) Open vSwitch port cleanup
+Wants=network-online.target
+After=network-online.target openvswitch.service
+Before=neutron-openvswitch-agent.service neutron-dhcp-agent.service neutron-l3-agent.service
+ConditionPathExists=/etc/neutron/plugins/ml2/openvswitch_agent.ini
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=neutron
+Group=neutron
+ExecStart=/usr/bin/neutron-ovs-cleanup \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/plugins/ml2/openvswitch_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-ovs-cleanup
+
+[Install]
+WantedBy=multi-user.target

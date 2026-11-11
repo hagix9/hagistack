@@ -1,0 +1,13 @@
+# Written for Hagistack.
+# Keystone runs inside httpd (mod_wsgi) and keystone-manage; neither reopens
+# its log file on a signal, so the files are copied and truncated in place.
+# Truncating keeps the file's owner and mode (root:keystone 0660).
+/var/log/keystone/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

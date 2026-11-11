@@ -1,0 +1,17 @@
+# Written for Hagistack.
+# Install as /var/lib/nova/.ssh/config (owner nova, mode 0600).
+# nova-compute runs ssh and scp as user nova without naming a remote user;
+# this sends them to the nova_migration account on the other compute node,
+# whose forced command is /usr/bin/nova-migration-wrapper.
+# Host keys are checked: put the other compute nodes' host keys in
+# /var/lib/nova/.ssh/known_hosts before the first migration.
+Host *
+    User nova_migration
+    IdentityFile /etc/nova/migration/identity
+    IdentitiesOnly yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /var/lib/nova/.ssh/known_hosts
+    ForwardAgent no
+    ForwardX11 no

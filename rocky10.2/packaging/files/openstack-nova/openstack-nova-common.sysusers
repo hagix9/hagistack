@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-nova-common.conf.
+# UID/GID 162 is the ID the Fedora/EL setup package reserves for nova.
+g nova 162
+u nova 162:nova "OpenStack Compute (Nova) services" /var/lib/nova /usr/sbin/nologin

@@ -1,0 +1,21 @@
+Written for Hagistack.
+
+/etc/neutron/conf.d holds local configuration snippets for the Neutron
+services, so that changes can live outside the packaged files.
+
+Each service's systemd unit reads, in this order (a later value wins):
+
+  1. /usr/share/neutron/neutron-dist.conf   (packaged defaults, do not edit)
+  2. /etc/neutron/neutron.conf
+  3. the service's own file in /etc/neutron, if it has one
+     (for example dhcp_agent.ini or plugins/ml2/ml2_conf.ini)
+  4. every *.conf file in /etc/neutron/conf.d/common
+  5. every *.conf file in /etc/neutron/conf.d/<unit name>
+     (for example /etc/neutron/conf.d/neutron-dhcp-agent)
+
+Within a directory the *.conf files are read in alphabetical order. Files not
+ending in .conf are ignored. The files use the same INI syntax as neutron.conf.
+
+The neutron-server directory is kept for compatibility. OpenStack 2026.1 has
+no neutron-server program: the API runs under httpd, reading
+/etc/neutron/neutron.conf and /etc/neutron/plugins/ml2/ml2_conf.ini.

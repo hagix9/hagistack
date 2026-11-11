@@ -1,0 +1,17 @@
+# Written for Hagistack.
+# Log files under /var/log/horizon: the httpd log files of the example
+# openstack-dashboard-httpd-logging.conf, or Python logging file handlers an
+# administrator adds to local_settings. Both are written by httpd processes, and
+# a graceful reload makes them reopen their files.
+/var/log/horizon/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        /usr/bin/systemctl reload httpd.service >/dev/null 2>&1 || true
+    endscript
+}

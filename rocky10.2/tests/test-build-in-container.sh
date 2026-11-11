@@ -285,6 +285,37 @@ OUT="$(BIC_LIB_ONLY=1 BIC_BUILD="$T/scanbuild" BIC_PROC_NET="$T/nonexistent" bas
 [ "$RC" -ne 0 ] && grep -q "could not read the builder's addresses" <<<"$OUT" \
     && pass "scan: unreadable addresses stop the build (fail closed)" || fail "scan: no fib_trie" "rc=$RC $OUT"
 
+# --- own packaging (packaging/defs) ---------------------------------------
+mkdir -p "$T/own/packaging/defs"
+cp "$T/src/gazpacho.manifest" "$T/own/gazpacho.manifest"
+touch "$T/own/packaging/defs/python-one.toml" "$T/own/packaging/defs/openstack-two.toml"
+cat > "$T/own/packaging/build-own.sh" <<'EOS'
+#!/bin/bash
+[ "${1:-}" = --nocheck ] && shift
+echo "build-own called: $*" >> "$WORK/own-calls"
+{ echo "PASS python-one (stub)"; echo "PASS openstack-two (stub)"; } > "$RESULTS_FILE"
+EOS
+chmod +x "$T/own/packaging/build-own.sh"
+m="$(BIC_LIB_ONLY=1 BIC_SRC="$T/own" bash -c 'source "$1"; packaging_mode' _ "$BIC")"
+[ "$m" = own ] && pass "packaging: own definitions are the default when packaging/defs exists" || fail "packaging default" "$m"
+m="$(BIC_LIB_ONLY=1 BIC_SRC="$T/own" HAGISTACK_PACKAGING=rdo bash -c 'source "$1"; packaging_mode' _ "$BIC")"
+[ "$m" = rdo ] && pass "packaging: HAGISTACK_PACKAGING=rdo selects the RDO-distgit path" || fail "packaging rdo override" "$m"
+m="$(BIC_LIB_ONLY=1 BIC_SRC="$T/src" bash -c 'source "$1"; packaging_mode' _ "$BIC")"
+[ "$m" = rdo ] && pass "packaging: no packaging/defs means the RDO-distgit path" || fail "packaging without defs" "$m"
+got="$(BIC_LIB_ONLY=1 BIC_SRC="$T/own" bash -c 'source "$1"; expected_packages "$2" | sort | tr "\n" " "' _ "$BIC" "$T/own/gazpacho.manifest")"
+[ "$got" = "openstack-two python-one " ] && pass "own packaging: the expected packages are the definitions" || fail "own expected packages" "$got"
+d="$T/ownrun"; mkdir -p "$d/build/work" "$d/out/logs"
+OUT="$(BIC_LIB_ONLY=1 BIC_SRC="$T/own" BIC_BUILD="$d/build" BIC_OUT="$d/out" WORK="$d/build/work" \
+       bash -c 'source "$1"; build_all "$BIC_SRC/gazpacho.manifest" && echo "BUILD-ALL-OK count=$EXPECTED_COUNT"' _ "$BIC" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ] && grep -q 'BUILD-ALL-OK count=2' <<<"$OUT" && grep -q 'build-own called' "$d/build/work/own-calls" 2>/dev/null; then
+    pass "own packaging: build_all drives packaging/build-own.sh and accepts its results"
+else fail "own packaging build_all" "rc=$RC $OUT"; fi
+real_defs="$(ls "$HERE/../packaging/defs/"*.toml | wc -l)"
+n="$(BIC_LIB_ONLY=1 BIC_SRC="$HERE/.." bash -c 'source "$1"; expected_packages x | wc -l' _ "$BIC")"
+if [ "$n" -eq "$real_defs" ] && [ "$n" -eq 69 ]; then
+    pass "packaging/defs: 69 definitions, one per rc4 SRPM"
+else fail "packaging/defs count" "expected_packages=$n definitions=$real_defs (69 wanted)"; fi
+
 # --- the real manifest ------------------------------------------------------
 n="$(BIC_LIB_ONLY=1 bash -c 'source "$1"; expected_packages "$2" | wc -l' _ "$BIC" "$HERE/../gazpacho.manifest")"
 rows="$(awk '$0 !~ /^[[:space:]]*($|#)/ && $1!="KEY" && $1!="SPEC" && $1!="PATCH" && $1!="LICENSE"' "$HERE/../gazpacho.manifest" | wc -l)"

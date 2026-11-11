@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Install as /usr/lib/tmpfiles.d/openstack-keystone.conf.
+# Creates the Keystone log file, if it is missing, so that both the keystone
+# user and members of the keystone group can write to it.
+f /var/log/keystone/keystone.log 0660 root keystone -

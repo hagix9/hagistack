@@ -1,0 +1,8 @@
+# Written for Hagistack.
+# Install as /etc/nova/release. nova/version.py finds this file with
+# oslo.config's find_file("release") and reads the [Nova] keys below; the
+# vendor and product strings are reported by Nova (for example in the SMBIOS
+# data libvirt guests see).
+[Nova]
+vendor = Hagistack
+product = OpenStack Nova

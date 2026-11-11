@@ -1,0 +1,5 @@
+# Written for Hagistack.
+# Install as /usr/lib/sysusers.d/openstack-neutron-common.conf.
+# No fixed ID is reserved for neutron, so the IDs are allocated dynamically;
+# the user line also creates the group of the same name.
+u neutron - "OpenStack Neutron networking service" /var/lib/neutron /usr/sbin/nologin

@@ -1,0 +1,28 @@
+# Written for Hagistack.
+# Reads the distribution defaults, neutron.conf and openvswitch_agent.ini, then
+# the *.conf files in conf.d/common and conf.d/neutron-openvswitch-agent.
+# Before it starts: neutron-destroy-patch-ports.service runs once, and the
+# bridge firewall helper loads br_netfilter and sets the bridge netfilter
+# sysctls as root ("+"); a failure there is not fatal ("-") because only the
+# iptables-based firewall drivers need them, and the agent logs a warning.
+[Unit]
+Description=OpenStack Networking (Neutron) Open vSwitch agent
+Wants=network-online.target neutron-destroy-patch-ports.service
+After=network-online.target openvswitch.service neutron-destroy-patch-ports.service neutron-ovs-cleanup.service
+
+[Service]
+Type=simple
+User=neutron
+Group=neutron
+ExecStartPre=-+/usr/bin/neutron-enable-bridge-firewall.sh
+ExecStart=/usr/bin/neutron-openvswitch-agent \
+    --config-file /usr/share/neutron/neutron-dist.conf \
+    --config-file /etc/neutron/neutron.conf \
+    --config-file /etc/neutron/plugins/ml2/openvswitch_agent.ini \
+    --config-dir /etc/neutron/conf.d/common \
+    --config-dir /etc/neutron/conf.d/neutron-openvswitch-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

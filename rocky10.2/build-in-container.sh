@@ -49,7 +49,18 @@ LOG_DIR="$OUT_DIR/logs"
 # The packages build-rpms.sh will build from a manifest, in its own terms:
 # the first column, the rpm name for PYPI rows; KEY/SPEC/PATCH/LICENSE rows
 # and comments (including #DISABLED rows) are not packages.
+# Which packaging builds the set. Hagistack's own definitions (packaging/defs/)
+# are the default; HAGISTACK_PACKAGING=rdo selects the older RDO-distgit path,
+# kept until the own-packaging set has been accepted.
+packaging_mode() {
+    if [ "${HAGISTACK_PACKAGING:-own}" = rdo ] || [ ! -d "$SRC_DIR/packaging/defs" ]; then echo rdo; else echo own; fi
+}
+
 expected_packages() {   # expected_packages <manifest>
+    if [ "$(packaging_mode)" = own ]; then
+        (cd "$SRC_DIR/packaging/defs" && ls *.toml | sed 's/\.toml$//')
+        return
+    fi
     awk '$0 ~ /^[[:space:]]*($|#)/ {next}
          $1=="KEY" || $1=="SPEC" || $1=="PATCH" || $1=="LICENSE" {next}
          $1=="PYPI" {print $2; next}
@@ -106,8 +117,10 @@ run_pass() {   # run_pass <n> [package ...]  -> build-rpms.sh's exit status
     local n="$1"; shift
     say "build pass $n${*:+: $*}"
     local rc=0
+    local builder=./build-rpms.sh
+    [ "$(packaging_mode)" = own ] && builder=./packaging/build-own.sh
     ( cd "$SRC_DIR" && RESULTS_FILE="$LOG_DIR/pass$n.results" BUILD_SRPMS=1 \
-        ./build-rpms.sh --nocheck "$@" ) > "$LOG_DIR/pass$n.log" 2>&1 || rc=$?
+        "$builder" --nocheck "$@" ) > "$LOG_DIR/pass$n.log" 2>&1 || rc=$?
     tail -n 80 "$LOG_DIR/pass$n.log" | grep -E '^  (PASS|FAIL)|STOP' || true
     return "$rc"
 }
@@ -264,7 +277,11 @@ collect_result() {
 
 [ "${BIC_LIB_ONLY:-0}" = "1" ] && return 0 2>/dev/null
 
-[ -r "$SRC_DIR/build-rpms.sh" ] || die "$SRC_DIR/build-rpms.sh is missing (mount rocky10.2/ at /src)"
+if [ "$(packaging_mode)" = own ]; then
+    [ -r "$SRC_DIR/packaging/build-own.sh" ] || die "$SRC_DIR/packaging/build-own.sh is missing (mount rocky10.2/ at /src)"
+else
+    [ -r "$SRC_DIR/build-rpms.sh" ] || die "$SRC_DIR/build-rpms.sh is missing (mount rocky10.2/ at /src)"
+fi
 [ -d /build ] && [ -d /out ] || die "/build and /out must be mounted"
 [ "$(id -u)" -eq 0 ] || die "run as root inside the container"
 

@@ -1,0 +1,11 @@
+# Written for Hagistack. Placeholder: no key is authorized.
+# Public keys allowed to log in as nova_migration, one per line, each
+# restricted to the wrapper, for example:
+#   command="/usr/bin/nova-migration-wrapper",restrict ssh-ed25519 AAAA... nova-migration
+# sshd only reads this file when told to, for example with
+#   Match User nova_migration
+#       AuthorizedKeysFile /etc/nova/migration/authorized_keys
+#       ForceCommand /usr/bin/nova-migration-wrapper
+#       AllowTcpForwarding no
+#       X11Forwarding no
+#       PermitTTY no

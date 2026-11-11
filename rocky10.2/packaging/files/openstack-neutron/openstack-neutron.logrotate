@@ -1,0 +1,14 @@
+# Written for Hagistack.
+# The Neutron services log to the journal unless log_file or log_dir is set;
+# when they write here they keep the files open and do not reopen them on a
+# signal, so the files are copied and truncated in place.
+/var/log/neutron/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su neutron neutron
+}
