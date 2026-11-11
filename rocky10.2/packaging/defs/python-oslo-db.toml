@@ -1,0 +1,60 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-db"
+project = "oslo.db"
+version = "18.0.0"
+release = "1"
+tarball = "oslo_db-18.0.0.tar.gz"
+sha256 = "94bff3241ad389ef5866c16919de005ae0e5b9df1814eeb94d4027c575270923"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Database library"
+description = """
+Oslo Database library.
+
+The upstream oslo.db 18.0.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(oslo-config)", "python3dist(openstackdocstheme)", "python3dist(stevedore)"]
+locale_domain = "oslo_db"
+
+[[package]]
+name = "python3-oslo-db"
+kind = "python"
+modules = ["oslo_db"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-db-lang"
+kind = "lang"
+summary = "Translations for oslo.db"
+description = """
+Compiled message catalogues for oslo.db.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-db-tests"
+kind = "python-tests"
+tests_path = "oslo_db/tests"
+summary = "Tests for oslo.db"
+description = """
+The upstream test suite of oslo.db.
+"""
+
+[[package]]
+name = "python3-oslo-db+mysql"
+kind = "extras"
+extras = ["mysql"]
+
+[[package]]
+name = "python-oslo-db-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.db"
+description = """
+HTML documentation for oslo.db, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

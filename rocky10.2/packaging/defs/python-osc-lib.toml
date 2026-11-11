@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-osc-lib"
+project = "osc-lib"
+version = "4.4.0"
+release = "1"
+tarball = "osc_lib-4.4.0.tar.gz"
+sha256 = "6a615d744f03fba513d92eb4760a9cd5baa96e3d8530611fe53b217062bf317e"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStackClient Library"
+description = """
+OpenStackClient Library.
+
+The upstream osc-lib 4.4.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+[[package]]
+name = "python3-osc-lib"
+kind = "python"
+modules = ["osc_lib"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-osc-lib-tests"
+kind = "python-tests"
+tests_path = "osc_lib/tests"
+summary = "Tests for osc-lib"
+description = """
+The upstream test suite of osc-lib.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-osc-lib-doc"
+kind = "sphinx-html"
+summary = "Documentation for osc-lib"
+description = """
+HTML documentation for osc-lib, built from the upstream sources.
+"""
+docs = ["README.rst"]
+licenses = ["LICENSE"]

@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-os-resource-classes"
+project = "os-resource-classes"
+version = "1.1.0"
+release = "1"
+tarball = "os-resource-classes-1.1.0.tar.gz"
+sha256 = "e0bcbb8961a9fe33b7213734c51c001812890e2be62101c9279c88b72f75f9eb"
+signing_key = "0x4c29ff0e437f3351fd82bdf47c5a3bc787dc7035"
+license = "Apache-2.0"
+summary = "Resource Classes for OpenStack"
+description = """
+Resource Classes for OpenStack.
+
+The upstream os-resource-classes 1.1.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-os-resource-classes"
+kind = "python"
+modules = ["os_resource_classes"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-os-resource-classes-tests"
+kind = "python-tests"
+tests_path = "os_resource_classes/tests"
+summary = "Tests for os-resource-classes"
+description = """
+The upstream test suite of os-resource-classes.
+"""
+
+[[package]]
+name = "python-os-resource-classes-doc"
+kind = "sphinx-html"
+summary = "Documentation for os-resource-classes"
+description = """
+HTML documentation for os-resource-classes, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

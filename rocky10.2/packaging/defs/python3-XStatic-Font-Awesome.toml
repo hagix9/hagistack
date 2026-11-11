@@ -1,0 +1,23 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-Font-Awesome"
+origin = "pypi"
+project = "XStatic-Font-Awesome"
+version = "6.2.1.2"
+release = "1"
+tarball = "xstatic_font_awesome-6.2.1.2.tar.gz"
+sha256 = "9f3cb2f038fad7d352722375d3f25af346da9ee093ed9dc2c8c46bd911ab1971"
+license = "CC-BY-4.0 AND OFL-1.1 AND MIT"
+summary = "Font-Awesome 6.2.1 (XStatic packaging standard)"
+description = """
+Font-Awesome 6.2.1 (XStatic packaging standard).
+
+The upstream XStatic-Font-Awesome 6.2.1.2 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-XStatic-Font-Awesome"
+kind = "python"
+modules = ["xstatic"]

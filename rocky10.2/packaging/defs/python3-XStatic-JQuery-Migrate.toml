@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-JQuery-Migrate"
+origin = "pypi"
+project = "XStatic-JQuery-Migrate"
+version = "3.3.2.2"
+release = "1"
+tarball = "xstatic_jquery_migrate-3.3.2.2.tar.gz"
+sha256 = "641ca995d838c151dfdcadbb0eb8d2e7d9855bcd398c77c36cc65c3e79f57228"
+license = "MIT"
+summary = "JQuery-Migrate 3.3.2 (XStatic packaging standard)"
+description = """
+JQuery-Migrate 3.3.2 (XStatic packaging standard).
+
+The upstream XStatic-JQuery-Migrate 3.3.2.2 release, packaged by Hagistack.
+"""
+extra_licenses = [{ path = "third-party/licenses/LICENSE-jquery-migrate-3.3.2.txt", sha256 = "5cb3a35c5966f3715ccd4a8bcf1d70c921c76efd1af83a9fee66923ada36e29d" }]
+check = "import"
+
+[[package]]
+name = "python3-XStatic-JQuery-Migrate"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE-jquery-migrate-3.3.2.txt"]

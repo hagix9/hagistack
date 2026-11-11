@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-jQuery"
+origin = "pypi"
+project = "XStatic-jQuery"
+version = "3.7.1.1"
+release = "1"
+tarball = "xstatic_jquery-3.7.1.1.tar.gz"
+sha256 = "0c2ac780d8388bfd8b94586f6a0f86541e8702b5fc96f1ded997866214809445"
+license = "MIT"
+summary = "jQuery 3.7.1 (XStatic packaging standard)"
+description = """
+jQuery 3.7.1 (XStatic packaging standard).
+
+The upstream XStatic-jQuery 3.7.1.1 release, packaged by Hagistack.
+"""
+extra_licenses = [{ path = "third-party/licenses/LICENSE-jquery-3.7.1.txt", sha256 = "d4db9ebe6f29f5168eac45ad713f055623ac5d0dcd5ba92da23d650ae012020d" }]
+check = "import"
+
+[[package]]
+name = "python3-XStatic-jQuery"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE-jquery-3.7.1.txt"]

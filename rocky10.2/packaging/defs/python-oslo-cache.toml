@@ -1,0 +1,65 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-cache"
+project = "oslo.cache"
+version = "4.1.1"
+release = "1"
+tarball = "oslo_cache-4.1.1.tar.gz"
+sha256 = "1c19a605fe3c7f7c7608843f28c6b529c782cc3597f867ead14749f439b4f939"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Cache storage for OpenStack projects."
+description = """
+Cache storage for OpenStack projects.
+
+The upstream oslo.cache 4.1.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+locale_domain = "oslo_cache"
+
+[[package]]
+name = "python3-oslo-cache"
+kind = "python"
+modules = ["oslo_cache"]
+docs = ["AUTHORS", "CONTRIBUTING.rst", "ChangeLog", "PKG-INFO", "README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-cache-lang"
+kind = "lang"
+summary = "Translations for oslo.cache"
+description = """
+Compiled message catalogues for oslo.cache.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-cache-tests"
+kind = "python-tests"
+tests_path = "oslo_cache/tests"
+summary = "Tests for oslo.cache"
+description = """
+The upstream test suite of oslo.cache.
+"""
+
+[[package]]
+name = "python3-oslo-cache+dogpile"
+kind = "extras"
+extras = ["dogpile"]
+
+[[package]]
+name = "python3-oslo-cache+etcd3gw"
+kind = "extras"
+extras = ["etcd3gw"]
+
+[[package]]
+name = "python-oslo-cache-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.cache"
+description = """
+HTML documentation for oslo.cache, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

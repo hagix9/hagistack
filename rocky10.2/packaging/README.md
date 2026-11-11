@@ -42,14 +42,24 @@ Run the tests with Python 3.11 or newer: `python3 -I test_genspec.py`.
 
 ## Definition format (summary)
 
-`[source]`: `name`, `project`, `version`, `release`, `epoch`, `tarball`,
-`sha256`, `signing_key`, `license` (SPDX), `summary`, `description`, and
-optionally `check = "import"`, `check_import_exclude`, `doc` (Sphinx source
-directory), `buildrequires`, `locale_domain`, `drop_after_install`.
+`[source]`: `name`, `origin` (`openstack`, the default, or `pypi`), `project`,
+`version`, `release`, `epoch`, `tarball`, `topdir` (only if the tarball does not
+unpack into its own stem), `sha256`, `signing_key` (openstack only), `license`
+(SPDX), `summary`, `description`, and as needed: `check = "import"`, `doc`
+(Sphinx source directory), `doc_env`, `buildrequires`, `locale_domain`,
+`locale_path`, `drop_after_install`, `patches` and `extra_licenses`
+(`{ path = "third-party/...", sha256 = "..." }`), and `prep_extra`,
+`build_extra`, `install_extra` (short shell lines Hagistack writes itself).
 
-`[[package]]`: `name`, `kind` (`python`, `python-tests`, `files`,
-`sphinx-html`), and as needed `summary`, `description`, `requires`,
-`recommends`, `provides`, `modules`, `tests_path`, `bin`, `bin_symlinks`,
-`install` (`src` = `upstream:<path in tarball>` or `file:<name in files/>`,
-`dest`, `mode`, `user`, `group`, `config`), `dirs`, `symlinks`,
-`systemd_units`, `sysusers`, `docs`, `licenses`.
+`[[package]]`: `name`, `kind` (`python`, `python-tests`, `files`, `sphinx-html`,
+`extras`, `lang`), and as needed `summary`, `description`, `requires`,
+`recommends`, `provides`, `obsoletes`, `conflicts`, `modules`, `tests_path`
+(string or list), `extras`, `bin`, `bin_symlinks`, `install` (`src` =
+`upstream:<path in the unpacked tree, may end in a glob>` or `file:<name in
+files/>`, `dest`, `mode`, `user`, `group`, `config`), `dirs`, `symlinks`,
+`systemd_units`, `sysusers`, `scriptlets` (`pre`, `post`, `preun`, `postun`,
+`posttrans` lines), `docs`, `licenses`, `files` (extra `%files` lines).
+
+Library definitions were drafted with `draft-def.py` from rc4's RPM metadata and
+the upstream source, then reviewed; service definitions and their files were
+written from functional specifications (`files/<name>/AUTHORING.md`).

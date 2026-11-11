@@ -1,0 +1,57 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-policy"
+project = "oslo.policy"
+version = "5.0.0"
+release = "1"
+tarball = "oslo_policy-5.0.0.tar.gz"
+sha256 = "b3e85d45eea0a60cb2362410c6d03906dec21a0f81df69ac16867851f075e5d1"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Policy library"
+description = """
+Oslo Policy library.
+
+The upstream oslo.policy 5.0.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+locale_domain = "oslo_policy"
+
+[[package]]
+name = "python3-oslo-policy"
+kind = "python"
+modules = ["oslo_policy"]
+bin = ["oslopolicy-checker", "oslopolicy-convert-json-to-yaml", "oslopolicy-list-redundant", "oslopolicy-policy-generator", "oslopolicy-policy-upgrade", "oslopolicy-sample-generator", "oslopolicy-validator"]
+bin_symlinks = { "oslopolicy-checker-3" = "oslopolicy-checker", "oslopolicy-list-redundant-3" = "oslopolicy-list-redundant", "oslopolicy-policy-generator-3" = "oslopolicy-policy-generator", "oslopolicy-sample-generator-3" = "oslopolicy-sample-generator" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-policy-lang"
+kind = "lang"
+summary = "Translations for oslo.policy"
+description = """
+Compiled message catalogues for oslo.policy.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-policy-tests"
+kind = "python-tests"
+tests_path = "oslo_policy/tests"
+summary = "Tests for oslo.policy"
+description = """
+The upstream test suite of oslo.policy.
+"""
+
+[[package]]
+name = "python-oslo-policy-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.policy"
+description = """
+HTML documentation for oslo.policy, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

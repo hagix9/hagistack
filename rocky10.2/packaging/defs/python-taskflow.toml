@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-taskflow"
+project = "taskflow"
+version = "6.2.0"
+release = "1"
+tarball = "taskflow-6.2.0.tar.gz"
+sha256 = "0a7584444da6e808582d67e70f3bd166a766a17f1aa010796e0c56b4df735f7c"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Taskflow structured state management library."
+description = """
+Taskflow structured state management library.
+
+The upstream taskflow 6.2.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-taskflow"
+kind = "python"
+modules = ["taskflow"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-taskflow-doc"
+kind = "sphinx-html"
+summary = "Documentation for taskflow"
+description = """
+HTML documentation for taskflow, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

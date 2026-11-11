@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-neutronclient"
+project = "python-neutronclient"
+version = "11.8.0"
+release = "1"
+tarball = "python_neutronclient-11.8.0.tar.gz"
+sha256 = "6ea711eb88fcde47523250ac829cb9b9da8bc0bf2dd0205add4e1c9a4cce0515"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "CLI and Client Library for OpenStack Networking"
+description = """
+CLI and Client Library for OpenStack Networking.
+
+The upstream python-neutronclient 11.8.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(reno)", "python3dist(openstackdocstheme)", "python3dist(cliff)"]
+
+[[package]]
+name = "python3-neutronclient"
+kind = "python"
+modules = ["neutronclient"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-neutronclient-tests"
+kind = "python-tests"
+tests_path = "neutronclient/tests"
+summary = "Tests for python-neutronclient"
+description = """
+The upstream test suite of python-neutronclient.
+"""
+
+[[package]]
+name = "python-neutronclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-neutronclient"
+description = """
+HTML documentation for python-neutronclient, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

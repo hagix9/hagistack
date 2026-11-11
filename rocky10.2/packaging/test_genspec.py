@@ -30,12 +30,16 @@ def manifest_rows():
             keys[f[1]] = f[2]
         elif len(f) >= 10 and re.fullmatch(r'[0-9a-f]{40}', f[2]):
             rows[f[7]] = f   # keyed by tarball sha256
+        elif f[0] == 'PYPI':
+            rows[f[5]] = ['PYPI', f[1], '', '', f[3], '', f[4], f[5], f[2], '']
+        elif f[0] in ('LICENSE', 'PATCH'):
+            keys.setdefault('files', {})[f[-2] if f[0] == 'LICENSE' else f[-2]] = f[-1]
     return rows, keys
 
 
 class Definitions(unittest.TestCase):
     def test_there_are_definitions(self):
-        self.assertGreaterEqual(len(DEFS), 3)
+        self.assertGreaterEqual(len(DEFS), 64)
 
     def test_each_definition_generates(self):
         for d in DEFS:
@@ -55,8 +59,15 @@ class Definitions(unittest.TestCase):
                 self.assertEqual(row[6], src['tarball'])
                 self.assertEqual(row[4], src['version'])
                 self.assertEqual(row[8], src['project'])
-                self.assertEqual(row[9], src['signing_key'])
-                self.assertIn(src['signing_key'], keys)
+                if src.get('origin', 'openstack') == 'openstack':
+                    self.assertEqual(row[9], src['signing_key'])
+                    self.assertIn(src['signing_key'], keys)
+                for it in src.get('patches', []) + src.get('extra_licenses', []):
+                    f = os.path.join(HERE, '..', it['path'])
+                    self.assertTrue(os.path.isfile(f), it['path'])
+                    import hashlib
+                    with open(f, 'rb') as fh:
+                        self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), it['sha256'], it['path'])
 
     def test_sources_are_upstream_or_hagistack_only(self):
         for d in DEFS:
@@ -64,16 +75,19 @@ class Definitions(unittest.TestCase):
                 src, pkgs = genspec.load(d)
                 spec = genspec.generate(src, pkgs)
                 for line in spec.splitlines():
-                    m = re.match(r'(Source|Patch)\d*:\s*(\S+)', line)
+                    m = re.match(r'(Source|Patch)(\d*):\s*(\S+)', line)
                     if not m:
                         continue
-                    self.assertEqual(m.group(1), 'Source', 'no patches in phase 1')
-                    v = m.group(2)
+                    v = m.group(3)
+                    pinned = {os.path.basename(it['path']) for it in src.get('patches', []) + src.get('extra_licenses', [])}
                     if '/' in v:
-                        self.assertRegex(v, r'^https://(tarballs|releases)\.openstack\.org/')
+                        self.assertRegex(v, r'^https://(tarballs\.openstack\.org|releases\.openstack\.org|files\.pythonhosted\.org)/')
+                    elif v in pinned:
+                        pass
                     else:
+                        self.assertEqual(m.group(1), 'Source')
                         self.assertTrue(os.path.isfile(os.path.join(HERE, 'files', src['name'], v)), v)
-                self.assertNotRegex(spec.lower(), r'rdo|delorean|distgit')
+                self.assertNotRegex(spec.lower(), r'\\brdo\\b|delorean|distgit|rdoproject')
 
     def test_hagistack_files_are_used_and_marked(self):
         for d in DEFS:

@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-wsme"
+project = "wsme"
+version = "0.12.1"
+release = "1"
+tarball = "WSME-0.12.1.tar.gz"
+sha256 = "9c049f64c2abb14b702635c70fb16ad89f9e046789c61c7c41ee0deadf29a10d"
+signing_key = "0x815afec729392386480e076dcc0dfe2d21c023c9"
+license = "MIT"
+summary = "Simplify the writing of REST APIs, and extend them with additional protocols."
+description = """
+Simplify the writing of REST APIs, and extend them with additional protocols.
+
+The upstream wsme 0.12.1 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-wsme"
+kind = "python"
+modules = ["wsme", "wsmeext"]
+docs = ["README.rst", "examples"]
+licenses = ["LICENSE"]

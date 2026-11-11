@@ -1,0 +1,55 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-privsep"
+project = "oslo.privsep"
+version = "3.10.1"
+release = "1"
+tarball = "oslo_privsep-3.10.1.tar.gz"
+sha256 = "7340b76130654d4602caefd0173622062a3a3bf436be8d3cd88281af16c19c80"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack library for privilege separation"
+description = """
+OpenStack library for privilege separation.
+
+The upstream oslo.privsep 3.10.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)"]
+locale_domain = "oslo_privsep"
+
+[[package]]
+name = "python3-oslo-privsep"
+kind = "python"
+modules = ["oslo_privsep"]
+bin = ["privsep-helper"]
+docs = ["README.rst"]
+
+[[package]]
+name = "python-oslo-privsep-lang"
+kind = "lang"
+summary = "Translations for oslo.privsep"
+description = """
+Compiled message catalogues for oslo.privsep.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-privsep-tests"
+kind = "python-tests"
+tests_path = "oslo_privsep/tests"
+summary = "Tests for oslo.privsep"
+description = """
+The upstream test suite of oslo.privsep.
+"""
+
+[[package]]
+name = "python-oslo-privsep-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.privsep"
+description = """
+HTML documentation for oslo.privsep, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

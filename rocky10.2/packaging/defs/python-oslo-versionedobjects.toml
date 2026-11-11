@@ -1,0 +1,55 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-versionedobjects"
+project = "oslo.versionedobjects"
+version = "3.9.0"
+release = "1"
+tarball = "oslo_versionedobjects-3.9.0.tar.gz"
+sha256 = "e58f1b17f73191e1a266c02f6efb9fa7d6f741d500c3cbd0ff9b125980b39069"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Versioned Objects library"
+description = """
+Oslo Versioned Objects library.
+
+The upstream oslo.versionedobjects 3.9.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+locale_domain = "oslo_versionedobjects"
+
+[[package]]
+name = "python3-oslo-versionedobjects"
+kind = "python"
+modules = ["oslo_versionedobjects"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-versionedobjects-lang"
+kind = "lang"
+summary = "Translations for oslo.versionedobjects"
+description = """
+Compiled message catalogues for oslo.versionedobjects.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-versionedobjects-tests"
+kind = "python-tests"
+tests_path = "oslo_versionedobjects/tests"
+summary = "Tests for oslo.versionedobjects"
+description = """
+The upstream test suite of oslo.versionedobjects.
+"""
+
+[[package]]
+name = "python-oslo-versionedobjects-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.versionedobjects"
+description = """
+HTML documentation for oslo.versionedobjects, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

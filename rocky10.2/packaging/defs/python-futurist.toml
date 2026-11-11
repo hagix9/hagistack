@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-futurist"
+project = "futurist"
+version = "3.2.1"
+release = "1"
+tarball = "futurist-3.2.1.tar.gz"
+sha256 = "01dd4f30acdfbb2e2eb6091da565eded82d8cbaf6c48a36cc7f73c11cfa7fb3f"
+signing_key = "0xc71b007ef97887fd8fb6365ceb4fd6d618e62181"
+license = "Apache-2.0"
+summary = "Useful additions to futures, from the future."
+description = """
+Useful additions to futures, from the future.
+
+The upstream futurist 3.2.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-futurist"
+kind = "python"
+modules = ["futurist"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-futurist-doc"
+kind = "sphinx-html"
+summary = "Documentation for futurist"
+description = """
+HTML documentation for futurist, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

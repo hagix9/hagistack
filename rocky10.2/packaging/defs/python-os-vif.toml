@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-os-vif"
+project = "os-vif"
+version = "4.3.0"
+release = "1"
+tarball = "os_vif-4.3.0.tar.gz"
+sha256 = "2d819eed0ac45a3606120f67f64f838eca1ff61653f310b33be185e028fee435"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "A library for plugging and unplugging virtual interfaces in OpenStack."
+description = """
+A library for plugging and unplugging virtual interfaces in OpenStack.
+
+The upstream os-vif 4.3.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(reno)"]
+
+[[package]]
+name = "python3-os-vif"
+kind = "python"
+modules = ["os_vif", "vif_plug_linux_bridge", "vif_plug_noop", "vif_plug_ovs"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-os-vif-tests"
+kind = "python-tests"
+tests_path = ["os_vif/tests", "vif_plug_linux_bridge/tests", "vif_plug_noop/tests", "vif_plug_ovs/tests"]
+summary = "Tests for os-vif"
+description = """
+The upstream test suite of os-vif.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-os-vif-doc"
+kind = "sphinx-html"
+summary = "Documentation for os-vif"
+description = """
+HTML documentation for os-vif, built from the upstream sources.
+"""
+docs = ["README.rst"]
+licenses = ["LICENSE"]

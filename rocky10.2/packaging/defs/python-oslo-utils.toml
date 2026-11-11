@@ -1,0 +1,55 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-utils"
+project = "oslo.utils"
+version = "10.0.1"
+release = "1"
+tarball = "oslo_utils-10.0.1.tar.gz"
+sha256 = "21bfc29bb4c1cd9afb4ef741fb8e39468fa5485e60717f4f90f3ad3dce8a1f22"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Utility library"
+description = """
+Oslo Utility library.
+
+The upstream oslo.utils 10.0.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+locale_domain = "oslo_utils"
+
+[[package]]
+name = "python3-oslo-utils"
+kind = "python"
+modules = ["oslo_utils"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-utils-lang"
+kind = "lang"
+summary = "Translations for oslo.utils"
+description = """
+Compiled message catalogues for oslo.utils.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-utils-tests"
+kind = "python-tests"
+tests_path = "oslo_utils/tests"
+summary = "Tests for oslo.utils"
+description = """
+The upstream test suite of oslo.utils.
+"""
+
+[[package]]
+name = "python-oslo-utils-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.utils"
+description = """
+HTML documentation for oslo.utils, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

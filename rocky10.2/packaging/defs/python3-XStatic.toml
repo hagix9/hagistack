@@ -1,0 +1,27 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic"
+origin = "pypi"
+project = "XStatic"
+version = "1.0.3"
+release = "1"
+tarball = "XStatic-1.0.3.tar.gz"
+sha256 = "402544cc9e179489441054f09c807804e115ea246907de87c0355fb4f5a31268"
+license = "MIT"
+summary = "XStatic base package with minimal support code"
+description = """
+XStatic base package with minimal support code.
+
+The upstream XStatic 1.0.3 release, packaged by Hagistack.
+"""
+check = "import"
+
+# setuptools may emit a namespace .pth for the XStatic base package; PEP 420
+# namespaces need none, so it is removed (and dropped from the file list) if present.
+install_extra = ["rm -f %{buildroot}%{python3_sitelib}/*-nspkg.pth", "sed -i '/-nspkg\\.pth$/d' %{pyproject_files}"]
+[[package]]
+name = "python3-XStatic"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE.txt"]

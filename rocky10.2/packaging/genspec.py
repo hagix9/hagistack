@@ -3,19 +3,24 @@
 
 This is Hagistack's own packaging for OpenStack on Rocky Linux 10.2. It does not
 read, translate or rephrase any distribution's spec files. A definition states
-facts — the upstream tarball and its pins, the binary packages and their names,
+facts — the upstream source and its pins, the binary packages and their names,
 the files each one installs with owner and mode, the systemd units, the users —
-and this program writes the spec around them using a small set of building
-blocks that every package shares:
+and this program writes the spec around them using building blocks every
+package shares:
 
-  * the OpenStack release tarball, checked against its detached signature in
-    prep with the release key the manifest pins (gpgverify);
-  * a pyproject build (pyproject-rpm-macros), so build and runtime requirements
-    come from upstream's own metadata through the Python dependency generator;
-  * optional Sphinx HTML documentation, gettext catalogues, an import check;
-  * for services: config files copied from upstream etc/, Hagistack's own unit,
+  * the source: an OpenStack release tarball checked against its detached
+    signature in prep (gpgverify, release key pinned in the manifest), or a PyPI
+    sdist pinned by SHA-256 only (PyPI sdists are not signed);
+  * upstream patches from third-party/, pinned by SHA-256;
+  * a pyproject build (pyproject-rpm-macros): build and runtime requirements
+    come from upstream metadata through the Python dependency generator;
+  * an import check of the top-level modules, Sphinx HTML documentation,
+    gettext catalogues (in the Python package or a separate -lang package),
+    extras subpackages;
+  * for services: config files from upstream etc/, Hagistack's own unit,
     logrotate, sudoers and sysusers files, systemd scriptlets by the standard
-    systemd-rpm-macros.
+    systemd-rpm-macros, and short build or install steps that the definition
+    spells out.
 
 Run:  genspec.py defs/<name>.toml [-o <out.spec>]
 Needs Python 3.11+ (tomllib). Exit status 2 on a definition error.
@@ -28,18 +33,23 @@ import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILES_DIR = os.path.join(HERE, 'files')
+TOP = os.path.dirname(HERE)          # rocky10.2/
 
-KINDS = {'python', 'python-tests', 'files', 'sphinx-html'}
-SOURCE_KEYS = {'name', 'project', 'version', 'release', 'epoch', 'tarball', 'sha256',
-               'signing_key', 'license', 'url', 'summary', 'description',
-               'buildrequires', 'check', 'check_import_exclude', 'doc', 'locale_domain',
-               'drop_after_install'}
+KINDS = {'python', 'python-tests', 'files', 'sphinx-html', 'extras', 'lang'}
+ORIGINS = {'openstack', 'pypi'}
+SOURCE_KEYS = {'name', 'origin', 'project', 'version', 'release', 'epoch', 'tarball', 'topdir',
+               'sha256', 'signing_key', 'license', 'url', 'summary', 'description',
+               'buildrequires', 'check', 'doc', 'doc_env', 'locale_domain', 'locale_path',
+               'drop_after_install', 'patches', 'extra_licenses', 'prep_extra', 'build_extra',
+               'install_extra'}
 PACKAGE_KEYS = {'name', 'kind', 'summary', 'description', 'requires', 'recommends',
-                'provides', 'modules', 'tests_path', 'bin', 'bin_symlinks', 'install', 'dirs',
-                'symlinks', 'systemd_units', 'sysusers', 'docs', 'licenses',
-                'locale', 'doc_dir'}
+                'provides', 'obsoletes', 'conflicts', 'modules', 'tests_path', 'bin',
+                'bin_symlinks', 'install', 'dirs', 'symlinks', 'systemd_units', 'sysusers',
+                'docs', 'licenses', 'doc_dir', 'extras', 'files', 'scriptlets'}
 INSTALL_KEYS = {'src', 'dest', 'mode', 'user', 'group', 'config'}
 DIR_KEYS = {'path', 'mode', 'user', 'group'}
+PINNED_KEYS = {'path', 'sha256'}
+SCRIPTLETS = ('pre', 'post', 'preun', 'postun', 'posttrans')
 # A fixed date keeps the generated spec, and so the SRPM, reproducible.
 CHANGELOG_DATE = 'Wed Nov 11 2026'
 
@@ -53,6 +63,15 @@ def need(cond, msg):
         raise DefError(msg)
 
 
+def _pinned(path, src, key):
+    for it in src.get(key, []):
+        need(isinstance(it, dict) and set(it) == PINNED_KEYS,
+             f'{path}: {key} entries are {{ path = "...", sha256 = "..." }}')
+        need(re.fullmatch(r'[0-9a-f]{64}', it['sha256']), f'{path}: {key}: bad sha256 for {it["path"]}')
+        need(it['path'].startswith('third-party/') and '..' not in it['path'],
+             f'{path}: {key}: {it["path"]} must live under third-party/')
+
+
 def load(path):
     with open(path, 'rb') as f:
         d = tomllib.load(f)
@@ -62,14 +81,22 @@ def load(path):
     need(isinstance(pkgs, list) and pkgs, f'{path}: at least one [[package]] is required')
     unknown = set(src) - SOURCE_KEYS
     need(not unknown, f'{path}: unknown [source] keys {sorted(unknown)}')
-    for k in ('name', 'project', 'version', 'release', 'tarball', 'sha256', 'signing_key',
-              'license', 'summary', 'description'):
+    origin = src.setdefault('origin', 'openstack')
+    need(origin in ORIGINS, f'{path}: origin must be one of {sorted(ORIGINS)}')
+    for k in ('name', 'project', 'version', 'release', 'tarball', 'sha256', 'license',
+              'summary', 'description'):
         need(k in src, f'{path}: [source] needs {k}')
+    if origin == 'openstack':
+        need('signing_key' in src, f'{path}: an openstack source needs signing_key')
+        need(re.fullmatch(r'0x[0-9a-f]{40}', src['signing_key']), f'{path}: signing_key must be 0x + 40 hex digits')
+    else:
+        need('signing_key' not in src, f'{path}: a pypi source has no signature, so no signing_key')
     need(re.fullmatch(r'[0-9a-f]{64}', src['sha256']), f'{path}: sha256 must be 64 lowercase hex digits')
-    need(re.fullmatch(r'0x[0-9a-f]{40}', src['signing_key']), f'{path}: signing_key must be 0x + 40 hex digits')
     need(re.fullmatch(r'[A-Za-z0-9.+-]+( (AND|OR) [A-Za-z0-9.+-]+)*', src['license']),
          f'{path}: license must be an SPDX expression')
     need(src.get('check', 'none') in ('none', 'import'), f'{path}: check is "none" or "import"')
+    _pinned(path, src, 'patches')
+    _pinned(path, src, 'extra_licenses')
     names = set()
     for p in pkgs:
         unknown = set(p) - PACKAGE_KEYS
@@ -90,9 +117,14 @@ def load(path):
             need(re.fullmatch(r'0[0-7]{3}', it.get('mode', '0644')), f'{path}: {p["name"]}: bad mode {it.get("mode")}')
         for dd in p.get('dirs', []):
             need(set(dd) <= DIR_KEYS and 'path' in dd, f'{path}: {p["name"]}: bad dirs entry {dd}')
+            need(re.fullmatch(r'0[0-7]{3}', dd.get('mode', '0755')), f'{path}: {p["name"]}: bad dir mode {dd.get("mode")}')
         if p.get('sysusers'):
             f = os.path.join(FILES_DIR, src['name'], p['sysusers'])
             need(os.path.isfile(f), f'{path}: {p["name"]}: sysusers file {p["sysusers"]} not found')
+        if p['kind'] == 'extras':
+            need(p.get('extras') and isinstance(p['extras'], list), f'{path}: {p["name"]}: extras = ["..."] required')
+        for k in p.get('scriptlets', {}):
+            need(k in SCRIPTLETS, f'{path}: {p["name"]}: scriptlet {k} not one of {SCRIPTLETS}')
     return src, pkgs
 
 
@@ -108,23 +140,42 @@ def hagistack_files(src, pkgs):
     return seen
 
 
-def pkg_header(src, p, main):
-    """%package line (or nothing for the main package) plus its tags."""
+def topdir(src):
+    if src.get('topdir'):
+        return src['topdir']
+    t = src['tarball']
+    for ext in ('.tar.gz', '.tgz', '.tar.xz', '.zip'):
+        if t.endswith(ext):
+            return t[:-len(ext)]
+    raise DefError(f'{src["name"]}: cannot derive the top directory from {t}')
+
+
+def tests_paths(p):
+    tp = p.get('tests_path')
+    need(tp, f'package {p["name"]}: tests_path is required')
+    return tp if isinstance(tp, list) else [tp]
+
+
+def tags(p):
     out = []
-    if not main:
-        out.append(f'%package -n {p["name"]}')
-    if not main:   # the main package's Summary is written with Name, once
-        out.append(f'Summary:        {p.get("summary", src["summary"])}')
-    for r in p.get('requires', []):
-        out.append(f'Requires:       {r}')
-    for r in p.get('recommends', []):
-        out.append(f'Recommends:     {r}')
-    for r in p.get('provides', []):
-        out.append(f'Provides:       {r}')
+    for key, tag in (('requires', 'Requires'), ('recommends', 'Recommends'), ('provides', 'Provides'),
+                     ('obsoletes', 'Obsoletes'), ('conflicts', 'Conflicts')):
+        for r in p.get(key, []):
+            out.append(f'{tag + ":":<16}{r}')
     if p.get('sysusers'):
         out.append('Requires(pre):  shadow-utils')
     if p.get('systemd_units'):
         out.append('%{?systemd_requires}')
+    return out
+
+
+def pkg_header(src, p, main):
+    """%package block (or the main package's tags and %description)."""
+    out = []
+    if not main:
+        out.append(f'%package -n {p["name"]}')
+        out.append(f'Summary:        {p.get("summary", src["summary"])}')
+    out.extend(tags(p))
     out.append('')
     out.append(f'%description{"" if main else " -n " + p["name"]}')
     out.append(p.get('description', src['description']).strip())
@@ -132,28 +183,23 @@ def pkg_header(src, p, main):
     return out
 
 
-def topdir(src):
-    t = src['tarball']
-    for ext in ('.tar.gz', '.tgz', '.tar.xz'):
-        if t.endswith(ext):
-            return t[:-len(ext)]
-    raise DefError(f'{src["name"]}: cannot derive the top directory from {t}')
-
-
 def generate(src, pkgs):
     hfiles = hagistack_files(src, pkgs)
-    python_pkgs = [p for p in pkgs if p['kind'] == 'python']
-    tests_pkgs = [p for p in pkgs if p['kind'] == 'python-tests']
-    doc_pkgs = [p for p in pkgs if p['kind'] == 'sphinx-html']
+    by_kind = lambda k: [p for p in pkgs if p['kind'] == k]
+    python_pkgs, tests_pkgs, doc_pkgs = by_kind('python'), by_kind('python-tests'), by_kind('sphinx-html')
+    extras_pkgs, lang_pkgs = by_kind('extras'), by_kind('lang')
     need(len(python_pkgs) <= 1, f'{src["name"]}: at most one python package per source')
     need(not tests_pkgs or python_pkgs, f'{src["name"]}: a python-tests package needs a python package')
+    need(not extras_pkgs or python_pkgs, f'{src["name"]}: an extras package needs a python package')
     need(not doc_pkgs or src.get('doc'), f'{src["name"]}: a sphinx-html package needs [source] doc = "<sphinx source dir>"')
+    need(len(lang_pkgs) <= 1, f'{src["name"]}: at most one lang package')
+    need(not lang_pkgs or src.get('locale_domain'), f'{src["name"]}: a lang package needs locale_domain')
     main = next((p for p in pkgs if p['name'] == src['name']), None)
+    openstack = src['origin'] == 'openstack'
     s = []
     w = s.append
     w('# Generated by rocky10.2/packaging/genspec.py from defs/%s.toml. Edit the definition,' % src['name'])
     w('# not this file. Hagistack packaging; the packaged software keeps its own licence.')
-    w(f'%global hagistack_project {src["project"]}')
     w('')
     w(f'Name:           {src["name"]}')
     if src.get('epoch'):
@@ -162,17 +208,27 @@ def generate(src, pkgs):
     w(f'Release:        {src["release"]}%{{?dist}}')
     w(f'Summary:        {(main or {}).get("summary", src["summary"])}')
     w(f'License:        {src["license"]}')
-    w(f'URL:            {src.get("url", "https://opendev.org/openstack/" + src["project"])}')
-    w(f'Source0:        https://tarballs.openstack.org/%{{hagistack_project}}/{src["tarball"]}')
-    w(f'Source1:        https://tarballs.openstack.org/%{{hagistack_project}}/{src["tarball"]}.asc')
-    w(f'Source2:        https://releases.openstack.org/_static/{src["signing_key"]}.txt')
+    if openstack:
+        w(f'URL:            {src.get("url", "https://opendev.org/openstack/" + src["project"])}')
+        w(f'Source0:        https://tarballs.openstack.org/{src["project"]}/{src["tarball"]}')
+        w(f'Source1:        https://tarballs.openstack.org/{src["project"]}/{src["tarball"]}.asc')
+        w(f'Source2:        https://releases.openstack.org/_static/{src["signing_key"]}.txt')
+    else:
+        p = src['project']
+        w(f'URL:            {src.get("url", "https://pypi.org/project/" + p + "/")}')
+        w(f'Source0:        https://files.pythonhosted.org/packages/source/{p[0]}/{p}/{src["tarball"]}')
     for i, f in enumerate(hfiles):
         w(f'Source{100 + i}:      {f}')
+    for i, it in enumerate(src.get('extra_licenses', [])):
+        w(f'Source{900 + i}:      {os.path.basename(it["path"])}')
+    for i, it in enumerate(src.get('patches', [])):
+        w(f'Patch{i + 1:04d}:      {os.path.basename(it["path"])}')
     w('BuildArch:      noarch')
     w('')
     w('BuildRequires:  python3-devel')
     w('BuildRequires:  pyproject-rpm-macros')
-    w('BuildRequires:  gnupg2')
+    if openstack:
+        w('BuildRequires:  gnupg2')
     if any(p.get('systemd_units') for p in pkgs):
         w('BuildRequires:  systemd-rpm-macros')
     if src.get('locale_domain'):
@@ -187,15 +243,26 @@ def generate(src, pkgs):
         w(src['description'].strip())
         w('')
     for p in pkgs:
-        if p is not main:
-            s.extend(pkg_header(src, p, False))
+        if p is main:
+            continue
+        if p['kind'] == 'extras':
+            base = python_pkgs[0]['name']
+            w(f'%pyproject_extras_subpkg -n {base} {" ".join(p["extras"])}')
+            w('')
+            continue
+        s.extend(pkg_header(src, p, False))
 
     srcidx = {f: 100 + i for i, f in enumerate(hfiles)}
-    need_runtime = src.get('check') == 'import' or bool(doc_pkgs)
+    need_runtime = src.get('check') == 'import' or bool(src.get('doc'))
 
     w('%prep')
-    w("%{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'")
+    if openstack:
+        w("%{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'")
     w(f'%autosetup -n {topdir(src)} -p1')
+    for line in src.get('prep_extra', []):
+        w(line)
+    if src.get('extra_licenses'):
+        w('cp -p ' + ' '.join(f'%{{SOURCE{900 + i}}}' for i in range(len(src['extra_licenses']))) + ' .')
     w('')
     w('%generate_buildrequires')
     # -r adds the runtime requirements too: the import check and Sphinx autodoc
@@ -204,9 +271,16 @@ def generate(src, pkgs):
     w('')
     w('%build')
     w('%pyproject_wheel')
-    for p in doc_pkgs:
-        w(f'PYTHONPATH="$PWD" sphinx-build -b html -d doc-trees {src["doc"]} {p.get("doc_dir", "html")}')
-        w(f'rm -rf {p.get("doc_dir", "html")}/.buildinfo')
+    for line in src.get('build_extra', []):
+        w(line)
+    # Sphinx HTML: for a -doc package, or for a package that lists html in docs.
+    html_dirs = [p.get('doc_dir', 'html') for p in doc_pkgs]
+    if src.get('doc') and not html_dirs and any('html' in p.get('docs', []) for p in pkgs):
+        html_dirs = ['html']
+    for d in dict.fromkeys(html_dirs):
+        env = f'{src["doc_env"]} ' if src.get('doc_env') else ''
+        w(f'{env}PYTHONPATH="$PWD" sphinx-build -b html -d doc-trees {src["doc"]} {d}')
+        w(f'rm -rf {d}/.buildinfo')
     w('')
     w('%install')
     w('%pyproject_install')
@@ -219,15 +293,15 @@ def generate(src, pkgs):
     # list, which pyproject_save_files builds from the wheel RECORD, not the disk.
     if src.get('locale_domain'):
         dom = src['locale_domain']
-        w(f'for po in {dom}/locale/*/LC_MESSAGES/{dom}.po; do')
+        lpath = src.get('locale_path', f'{dom}/locale')
+        w(f'for po in {lpath}/*/LC_MESSAGES/{dom}.po; do')
         w('    lang="$(basename "$(dirname "$(dirname "$po")")")"')
-        w(f'    install -d %{{buildroot}}%{{_datadir}}/locale/"$lang"/LC_MESSAGES')
+        w('    install -d %{buildroot}%{_datadir}/locale/"$lang"/LC_MESSAGES')
         w(f'    msgfmt -o %{{buildroot}}%{{_datadir}}/locale/"$lang"/LC_MESSAGES/{dom}.mo "$po"')
         w('done')
-        w(f'rm -rf %{{buildroot}}%{{python3_sitelib}}/{dom}/locale')
-        w(f"sed -i '\\#/{dom}/locale#d' %{{pyproject_files}}")
-    if src.get('locale_domain'):
-        w(f'%find_lang {src["locale_domain"]}')
+        w(f'rm -rf %{{buildroot}}%{{python3_sitelib}}/{lpath}')
+        w(f"sed -i '\\#/{lpath}#d' %{{pyproject_files}}")
+        w(f'%find_lang {dom}')
     for d in src.get('drop_after_install', []):
         w(f'rm -rf %{{buildroot}}{d}')
     for p in pkgs:
@@ -238,9 +312,9 @@ def generate(src, pkgs):
             dest = it['dest']
             if it['src'].startswith('upstream:'):
                 path = it['src'][9:]
-                if path.endswith('/*'):
+                if '*' in os.path.basename(path):     # a glob: dest is the directory
                     w(f'install -d -m 0755 %{{buildroot}}{dest}')
-                    w(f'install -p -m {mode} {path[:-2]}/*.json %{{buildroot}}{dest}/')
+                    w(f'install -p -m {mode} {path} %{{buildroot}}{dest}/')
                 else:
                     w(f'install -p -D -m {mode} {path} %{{buildroot}}{dest}')
             else:
@@ -252,50 +326,55 @@ def generate(src, pkgs):
             w(f'ln -s {target} %{{buildroot}}%{{_bindir}}/{link}')
         if p.get('sysusers'):
             w(f'install -p -D -m 0644 %{{SOURCE{srcidx[p["sysusers"]]}}} %{{buildroot}}%{{_sysusersdir}}/{p["name"]}.conf')
+    for line in src.get('install_extra', []):
+        w(line)
     w('')
     if src.get('check') == 'import':
         w('%check')
-        excl = ' '.join(f"-e '{e}'" for e in src.get('check_import_exclude', []))
         # -t: top-level modules only. Importing every submodule pulls in test
         # helpers and example plugins whose dependencies are test-only (stevedore
         # ships example setup.py files inside the package; oslo_config.fixture
         # needs fixtures).
-        w(f'%pyproject_check_import -t {excl}'.rstrip())
+        w('%pyproject_check_import -t')
         w('')
 
     for p in pkgs:
-        su = p.get('sysusers')
-        units = ' '.join(p.get('systemd_units', []))
         flag = '' if p is main else f' -n {p["name"]}'
-        if su:
-            w(f'%pre{flag}')
-            w(f'%sysusers_create_compat %{{SOURCE{srcidx[su]}}}')
-            w('')
+        units = ' '.join(p.get('systemd_units', []))
+        body = {k: [] for k in SCRIPTLETS}
+        if p.get('sysusers'):
+            body['pre'].append(f'%sysusers_create_compat %{{SOURCE{srcidx[p["sysusers"]]}}}')
         if units:
-            w(f'%post{flag}')
-            w(f'%systemd_post {units}')
-            w('')
-            w(f'%preun{flag}')
-            w(f'%systemd_preun {units}')
-            w('')
-            w(f'%postun{flag}')
-            w(f'%systemd_postun_with_restart {units}')
-            w('')
+            body['post'].append(f'%systemd_post {units}')
+            body['preun'].append(f'%systemd_preun {units}')
+            body['postun'].append(f'%systemd_postun_with_restart {units}')
+        for k, lines in p.get('scriptlets', {}).items():
+            body[k].extend(lines)
+        for k in SCRIPTLETS:
+            if body[k]:
+                w(f'%{k}{flag}')
+                s.extend(body[k])
+                w('')
 
     for p in pkgs:
-        head = '%files' + ('' if p is main else f' -n {p["name"]}')
         k = p['kind']
+        if k == 'extras':
+            continue
+        head = '%files' + ('' if p is main else f' -n {p["name"]}')
         if k == 'python':
-            if src.get('locale_domain') and p.get('locale', True):
-                head += ' -f %{pyproject_files} -f ' + src['locale_domain'] + '.lang'
-            else:
-                head += ' -f %{pyproject_files}'
+            head += ' -f %{pyproject_files}'
+            if src.get('locale_domain') and not lang_pkgs:
+                head += f' -f {src["locale_domain"]}.lang'
+        if k == 'lang':
+            head += f' -f {src["locale_domain"]}.lang'
         w(head)
         if k == 'python' and tests_pkgs:
             for t in tests_pkgs:
-                w(f'%exclude %{{python3_sitelib}}/{t["tests_path"]}')
+                for tp in tests_paths(t):
+                    w(f'%exclude %{{python3_sitelib}}/{tp}')
         if k == 'python-tests':
-            w(f'%{{python3_sitelib}}/{p["tests_path"]}')
+            for tp in tests_paths(p):
+                w(f'%{{python3_sitelib}}/{tp}')
         if k == 'sphinx-html':
             w(f'%doc {p.get("doc_dir", "html")}')
         for lic in p.get('licenses', []):
@@ -311,12 +390,15 @@ def generate(src, pkgs):
         for it in p.get('install', []):
             attr = f'%attr({it.get("mode", "0644")}, {it.get("user", "root")}, {it.get("group", "root")})'
             cfg = '%config(noreplace) ' if it.get('config') else ''
-            dest = it['dest'] + ('/*.json' if it['src'].endswith('/*') else '')
+            pat = os.path.basename(it['src'][9:]) if it['src'].startswith('upstream:') else ''
+            dest = it['dest'] + (f'/{pat}' if '*' in pat else '')
             w(f'{cfg}{attr} {dest}')
         for ln in p.get('symlinks', []):
             w(ln['path'])
         if p.get('sysusers'):
             w(f'%{{_sysusersdir}}/{p["name"]}.conf')
+        for line in p.get('files', []):
+            w(line)
         w('')
     w('%changelog')
     evr = (f'{int(src["epoch"])}:' if src.get('epoch') else '') + f'{src["version"]}-{src["release"]}'

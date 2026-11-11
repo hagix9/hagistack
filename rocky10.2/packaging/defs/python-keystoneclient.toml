@@ -1,0 +1,47 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-keystoneclient"
+project = "python-keystoneclient"
+version = "5.8.0"
+release = "1"
+epoch = 1
+tarball = "python_keystoneclient-5.8.0.tar.gz"
+sha256 = "3ca87c67c404298ce862310b569f545a58acf75cd5685094c82f35320b3a355d"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Client Library for OpenStack Identity"
+description = """
+Client Library for OpenStack Identity.
+
+The upstream python-keystoneclient 5.8.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-keystoneclient"
+kind = "python"
+modules = ["keystoneclient"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-keystoneclient-tests"
+kind = "python-tests"
+tests_path = "keystoneclient/tests"
+summary = "Tests for python-keystoneclient"
+description = """
+The upstream test suite of python-keystoneclient.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-keystoneclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-keystoneclient"
+description = """
+HTML documentation for python-keystoneclient, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

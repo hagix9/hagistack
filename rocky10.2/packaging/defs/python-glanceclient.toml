@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-glanceclient"
+project = "python-glanceclient"
+version = "4.11.0"
+release = "1"
+epoch = 1
+tarball = "python_glanceclient-4.11.0.tar.gz"
+sha256 = "5ce2118bfe7462934805916617e537bc5b00fd4cab3fb7bb88a4f9253970562d"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack Image API Client Library"
+description = """
+OpenStack Image API Client Library.
+
+The upstream python-glanceclient 4.11.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+# The man page is built from upstream's Sphinx man_pages entry.
+build_extra = ["PYTHONPATH=\"$PWD\" sphinx-build -b man -d doc-trees doc/source man"]
+install_extra = ["install -p -D -m 0644 man/glance.1 %{buildroot}%{_mandir}/man1/glance.1"]
+[[package]]
+name = "python3-glanceclient"
+kind = "python"
+modules = ["glanceclient"]
+bin = ["glance"]
+bin_symlinks = { "glance-3" = "glance" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/bash_completion.d" }]
+install = [{ src = "upstream:tools/glance.bash_completion", dest = "%{_sysconfdir}/bash_completion.d/glance" }]
+files = ["%{_mandir}/man1/glance.1*"]
+
+[[package]]
+name = "python-glanceclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-glanceclient"
+description = """
+HTML documentation for python-glanceclient, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-reports"
+project = "oslo.reports"
+version = "3.7.0"
+release = "1"
+tarball = "oslo_reports-3.7.0.tar.gz"
+sha256 = "30852972459594671686f232ad67e8fe63e2f2542e34e37a69731d542040e343"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "oslo.reports library"
+description = """
+oslo.reports library.
+
+The upstream oslo.reports 3.7.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+
+[[package]]
+name = "python3-oslo-reports"
+kind = "python"
+modules = ["oslo_reports"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-reports-tests"
+kind = "python-tests"
+tests_path = "oslo_reports/tests"
+summary = "Tests for oslo.reports"
+description = """
+The upstream test suite of oslo.reports.
+"""
+
+[[package]]
+name = "python-oslo-reports-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.reports"
+description = """
+HTML documentation for oslo.reports, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

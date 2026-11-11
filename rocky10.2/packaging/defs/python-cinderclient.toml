@@ -1,0 +1,42 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-cinderclient"
+project = "python-cinderclient"
+version = "9.9.0"
+release = "1"
+tarball = "python_cinderclient-9.9.0.tar.gz"
+sha256 = "697e4d12c249f39b41ecf4fa6fcb8c38cbf2d6b2d84d6f515ed567b82dcd0bd1"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack Block Storage API Client Library"
+description = """
+OpenStack Block Storage API Client Library.
+
+The upstream python-cinderclient 9.9.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(reno)"]
+
+# The man page is built from upstream's Sphinx man_pages entry.
+build_extra = ["PYTHONPATH=\"$PWD\" sphinx-build -b man -d doc-trees doc/source man"]
+install_extra = ["install -p -D -m 0644 man/cinder.1 %{buildroot}%{_mandir}/man1/cinder.1"]
+[[package]]
+name = "python3-cinderclient"
+kind = "python"
+modules = ["cinderclient"]
+bin = ["cinder"]
+bin_symlinks = { "cinder-3" = "cinder" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+install = [{ src = "upstream:tools/cinder.bash_completion", dest = "%{_sysconfdir}/bash_completion.d/cinder.bash_completion" }]
+files = ["%{_mandir}/man1/cinder.1*"]
+
+[[package]]
+name = "python-cinderclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-cinderclient"
+description = """
+HTML documentation for python-cinderclient, built from the upstream sources.
+"""

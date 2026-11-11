@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-metrics"
+project = "oslo.metrics"
+version = "0.15.1"
+release = "1"
+tarball = "oslo_metrics-0.15.1.tar.gz"
+sha256 = "d70a5cdaee963eb9ed9071936ce732866baa3725c3d245df9a58cbf1e7243790"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Metrics library"
+description = """
+Oslo Metrics library.
+
+The upstream oslo.metrics 0.15.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+
+[[package]]
+name = "python3-oslo-metrics"
+kind = "python"
+modules = ["oslo_metrics"]
+bin = ["oslo-metrics"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-metrics-tests"
+kind = "python-tests"
+tests_path = "oslo_metrics/tests"
+summary = "Tests for oslo.metrics"
+description = """
+The upstream test suite of oslo.metrics.
+"""
+
+[[package]]
+name = "python-oslo-metrics-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.metrics"
+description = """
+HTML documentation for oslo.metrics, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

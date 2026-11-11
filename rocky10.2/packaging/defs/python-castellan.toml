@@ -1,0 +1,24 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-castellan"
+project = "castellan"
+version = "5.6.0"
+release = "1"
+tarball = "castellan-5.6.0.tar.gz"
+sha256 = "917f43a1f1d26e87bef8b6de0e17fe3955f5f7cc05b746fc804fdac7c13bcc5e"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Generic Key Manager interface for OpenStack"
+description = """
+Generic Key Manager interface for OpenStack.
+
+The upstream castellan 5.6.0 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-castellan"
+kind = "python"
+modules = ["castellan"]
+docs = ["LICENSE", "README.rst"]

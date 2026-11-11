@@ -1,0 +1,39 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-os-ken"
+project = "os-ken"
+version = "4.1.2"
+release = "1"
+tarball = "os_ken-4.1.2.tar.gz"
+sha256 = "0a335e02ea3de4842026dafde752b1dd4d99568f957b1f97c2c1d31f8e9d911f"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "A component-based software defined networking framework for OpenStack."
+description = """
+A component-based software defined networking framework for OpenStack.
+
+The upstream os-ken 4.1.2 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+drop_after_install = ["%{_prefix}/etc"]
+[[package]]
+name = "python3-os-ken"
+kind = "python"
+modules = ["os_ken"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/os_ken" }]
+install = [{ src = "upstream:etc/os_ken/os_ken.conf", dest = "%{_sysconfdir}/os_ken/os_ken.conf", group = "neutron", config = true }]
+
+[[package]]
+name = "python-os-ken-doc"
+kind = "sphinx-html"
+summary = "Documentation for os-ken"
+description = """
+HTML documentation for os-ken, built from the upstream sources.
+"""
+docs = ["README.rst"]
+licenses = ["LICENSE"]

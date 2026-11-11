@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-designateclient"
+project = "python-designateclient"
+version = "6.4.0"
+release = "1"
+tarball = "python_designateclient-6.4.0.tar.gz"
+sha256 = "bb49cf1a090e01288d93b966643333833e3417040c06f463ffe3c9e66b10ad48"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack DNS-as-a-Service - Client"
+description = """
+OpenStack DNS-as-a-Service - Client.
+
+The upstream python-designateclient 6.4.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(cliff)"]
+
+[[package]]
+name = "python3-designateclient"
+kind = "python"
+modules = ["designateclient"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-designateclient-tests"
+kind = "python-tests"
+tests_path = "designateclient/tests"
+summary = "Tests for python-designateclient"
+description = """
+The upstream test suite of python-designateclient.
+"""
+
+[[package]]
+name = "python-designateclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-designateclient"
+description = """
+HTML documentation for python-designateclient, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

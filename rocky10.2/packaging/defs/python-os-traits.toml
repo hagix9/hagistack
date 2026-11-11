@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-os-traits"
+project = "os-traits"
+version = "3.6.0"
+release = "1"
+tarball = "os_traits-3.6.0.tar.gz"
+sha256 = "0fef8ef5c17ca98388551bb6c0b2d2fe2dee305b1e1866e780c0e776df6fcb60"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "A library containing standardized trait strings"
+description = """
+A library containing standardized trait strings.
+
+The upstream os-traits 3.6.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-os-traits"
+kind = "python"
+modules = ["os_traits"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-os-traits-tests"
+kind = "python-tests"
+tests_path = "os_traits/tests"
+summary = "Tests for os-traits"
+description = """
+The upstream test suite of os-traits.
+"""
+
+[[package]]
+name = "python-os-traits-doc"
+kind = "sphinx-html"
+summary = "Documentation for os-traits"
+description = """
+HTML documentation for os-traits, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

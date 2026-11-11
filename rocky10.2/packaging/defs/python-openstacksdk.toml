@@ -1,0 +1,35 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-openstacksdk"
+project = "openstacksdk"
+version = "4.10.0"
+release = "1"
+tarball = "openstacksdk-4.10.0.tar.gz"
+sha256 = "5dde9ae3f1e2411a87ff57b2d78da53fac8eae9e5bac8e5870927cb62ddfc033"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "An SDK for building applications to work with OpenStack"
+description = """
+An SDK for building applications to work with OpenStack.
+
+The upstream openstacksdk 4.10.0 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-openstacksdk"
+kind = "python"
+modules = ["openstack"]
+bin = ["openstack-inventory"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-openstacksdk-tests"
+kind = "python-tests"
+tests_path = "openstack/tests"
+summary = "Tests for openstacksdk"
+description = """
+The upstream test suite of openstacksdk.
+"""

@@ -1,0 +1,57 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-log"
+project = "oslo.log"
+version = "8.1.1"
+release = "1"
+tarball = "oslo_log-8.1.1.tar.gz"
+sha256 = "46e652c0064b7e7d5374127e096a9981c0c606af6f8f385056f183549672c8f7"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "oslo.log library"
+description = """
+oslo.log library.
+
+The upstream oslo.log 8.1.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(oslo-config)", "python3dist(openstackdocstheme)"]
+locale_domain = "oslo_log"
+
+[[package]]
+name = "python3-oslo-log"
+kind = "python"
+modules = ["oslo_log"]
+bin = ["convert-json"]
+bin_symlinks = { "convert-json-3" = "./convert-json" }
+docs = ["AUTHORS", "ChangeLog", "README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-log-lang"
+kind = "lang"
+summary = "Translations for oslo.log"
+description = """
+Compiled message catalogues for oslo.log.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-log-tests"
+kind = "python-tests"
+tests_path = "oslo_log/tests"
+summary = "Tests for oslo.log"
+description = """
+The upstream test suite of oslo.log.
+"""
+
+[[package]]
+name = "python-oslo-log-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.log"
+description = """
+HTML documentation for oslo.log, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

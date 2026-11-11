@@ -1,0 +1,23 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-term-js"
+origin = "pypi"
+project = "XStatic-term.js"
+version = "0.0.7.1"
+release = "1"
+tarball = "xstatic_term_js-0.0.7.1.tar.gz"
+sha256 = "afda65f80b08fafb056ef216b47d2d1b31b2f607c956abb8c6b186d2727041ae"
+license = "MIT"
+summary = "term.js 0.0.7 (XStatic packaging standard)"
+description = """
+term.js 0.0.7 (XStatic packaging standard).
+
+The upstream XStatic-term.js 0.0.7.1 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-XStatic-term-js"
+kind = "python"
+modules = ["xstatic"]

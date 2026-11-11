@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-automaton"
+project = "automaton"
+version = "3.3.0"
+release = "1"
+tarball = "automaton-3.3.0.tar.gz"
+sha256 = "d73cf7ba6da43ef2adf75c49dad334fd24116ceea0dd4e6ba1e720740439a293"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Friendly state machines for python."
+description = """
+Friendly state machines for python.
+
+The upstream automaton 3.3.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-automaton"
+kind = "python"
+modules = ["automaton"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-automaton-doc"
+kind = "sphinx-html"
+summary = "Documentation for automaton"
+description = """
+HTML documentation for automaton, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

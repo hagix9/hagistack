@@ -1,0 +1,47 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-messaging"
+project = "oslo.messaging"
+version = "17.3.0"
+release = "1"
+tarball = "oslo_messaging-17.3.0.tar.gz"
+sha256 = "7381a08f31091f28b82cb93c0a04ed5bb2a4487dab1b873d1fe6ad6553948777"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Messaging API"
+description = """
+Oslo Messaging API.
+
+The upstream oslo.messaging 17.3.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(stevedore)", "python3dist(oslo-config)"]
+
+[[package]]
+name = "python3-oslo-messaging"
+kind = "python"
+modules = ["oslo_messaging"]
+bin = ["oslo-messaging-send-notification"]
+bin_symlinks = { "oslo-messaging-send-notification-3" = "./oslo-messaging-send-notification" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-messaging-tests"
+kind = "python-tests"
+tests_path = "oslo_messaging/tests"
+summary = "Tests for oslo.messaging"
+description = """
+The upstream test suite of oslo.messaging.
+"""
+
+[[package]]
+name = "python-oslo-messaging-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.messaging"
+description = """
+HTML documentation for oslo.messaging, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

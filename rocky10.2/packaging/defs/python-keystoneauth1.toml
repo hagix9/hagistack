@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-keystoneauth1"
+project = "keystoneauth"
+version = "5.13.1"
+release = "1"
+tarball = "keystoneauth1-5.13.1.tar.gz"
+sha256 = "e011e47ac3f3c671ffae33505c095548650cc19dab7f6af3b2ea5bd18c98f0c9"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Authentication Library for OpenStack Identity"
+description = """
+Authentication Library for OpenStack Identity.
+
+The upstream keystoneauth 5.13.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+[[package]]
+name = "python3-keystoneauth1"
+kind = "python"
+modules = ["keystoneauth1"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-keystoneauth1-doc"
+kind = "sphinx-html"
+summary = "Documentation for keystoneauth"
+description = """
+HTML documentation for keystoneauth, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

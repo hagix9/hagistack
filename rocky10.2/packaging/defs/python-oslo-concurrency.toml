@@ -1,0 +1,57 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-concurrency"
+project = "oslo.concurrency"
+version = "7.4.1"
+release = "1"
+tarball = "oslo_concurrency-7.4.1.tar.gz"
+sha256 = "a8042e5797ac4c7fef9936461f7b43d0f99a23ff74a9cada9f1b30f81badfa1b"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "Oslo Concurrency library"
+description = """
+Oslo Concurrency library.
+
+The upstream oslo.concurrency 7.4.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)", "python3dist(oslo-config)"]
+locale_domain = "oslo_concurrency"
+
+[[package]]
+name = "python3-oslo-concurrency"
+kind = "python"
+modules = ["oslo_concurrency"]
+bin = ["lockutils-wrapper"]
+bin_symlinks = { "lockutils-wrapper-3" = "./lockutils-wrapper" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-concurrency-lang"
+kind = "lang"
+summary = "Translations for oslo.concurrency"
+description = """
+Compiled message catalogues for oslo.concurrency.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-concurrency-tests"
+kind = "python-tests"
+tests_path = "oslo_concurrency/tests"
+summary = "Tests for oslo.concurrency"
+description = """
+The upstream test suite of oslo.concurrency.
+"""
+
+[[package]]
+name = "python-oslo-concurrency-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.concurrency"
+description = """
+HTML documentation for oslo.concurrency, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

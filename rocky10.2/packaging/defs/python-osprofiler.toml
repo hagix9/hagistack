@@ -1,0 +1,38 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-osprofiler"
+project = "osprofiler"
+version = "4.3.0"
+release = "1"
+tarball = "osprofiler-4.3.0.tar.gz"
+sha256 = "77a8da2b23bb5f9048054bd5ccc45d0ac84574ca8a88ef120b8fac6e8864e24c"
+signing_key = "0xc71b007ef97887fd8fb6365ceb4fd6d618e62181"
+license = "Apache-2.0"
+summary = "OpenStack Profiler Library"
+description = """
+OpenStack Profiler Library.
+
+The upstream osprofiler 4.3.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+[[package]]
+name = "python3-osprofiler"
+kind = "python"
+modules = ["osprofiler"]
+bin = ["osprofiler"]
+bin_symlinks = { "osprofiler-3" = "osprofiler" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-osprofiler-doc"
+kind = "sphinx-html"
+summary = "Documentation for osprofiler"
+description = """
+HTML documentation for osprofiler, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

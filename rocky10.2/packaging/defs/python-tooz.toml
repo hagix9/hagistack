@@ -1,0 +1,35 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-tooz"
+project = "tooz"
+version = "8.1.0"
+release = "1"
+tarball = "tooz-8.1.0.tar.gz"
+sha256 = "80876d8722b52eb9eff92565abb925fd6e59eb581820e6b4739ff4aa18476bda"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Coordination library for distributed systems."
+description = """
+Coordination library for distributed systems.
+
+The upstream tooz 8.1.0 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-tooz"
+kind = "python"
+modules = ["tooz"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-tooz+etcd3gw"
+kind = "extras"
+extras = ["etcd3gw"]
+
+[[package]]
+name = "python3-tooz+redis"
+kind = "extras"
+extras = ["redis"]

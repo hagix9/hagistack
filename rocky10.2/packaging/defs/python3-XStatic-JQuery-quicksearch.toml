@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-JQuery-quicksearch"
+origin = "pypi"
+project = "XStatic-JQuery.quicksearch"
+version = "2.0.3.3"
+release = "1"
+tarball = "xstatic_jquery_quicksearch-2.0.3.3.tar.gz"
+sha256 = "71d7fc84a73fd5da4ae08d54ada83c6e1d809465c50106a94d72747f36023a3c"
+license = "MIT"
+summary = "JQuery.quicksearch 2.0.3 (XStatic packaging standard)"
+description = """
+JQuery.quicksearch 2.0.3 (XStatic packaging standard).
+
+The upstream XStatic-JQuery.quicksearch 2.0.3.3 release, packaged by Hagistack.
+"""
+extra_licenses = [{ path = "third-party/licenses/LICENSE-jquery-quicksearch-2.0.3.txt", sha256 = "a4b60f2086c2992c7d46c96c19cc74c63149f2f05bcde9331b8a2c7c96a8dfa7" }]
+check = "import"
+
+[[package]]
+name = "python3-XStatic-JQuery-quicksearch"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE-jquery-quicksearch-2.0.3.txt"]

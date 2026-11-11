@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-upgradecheck"
+project = "oslo.upgradecheck"
+version = "2.7.1"
+release = "1"
+tarball = "oslo_upgradecheck-2.7.1.tar.gz"
+sha256 = "9ab2e726d32e47cab4f9c42580e2726e311d8243f3e44f2f67f4875517f29ef4"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Common code for writing OpenStack upgrade checks"
+description = """
+Common code for writing OpenStack upgrade checks.
+
+The upstream oslo.upgradecheck 2.7.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-oslo-upgradecheck"
+kind = "python"
+modules = ["oslo_upgradecheck"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-upgradecheck-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.upgradecheck"
+description = """
+HTML documentation for oslo.upgradecheck, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

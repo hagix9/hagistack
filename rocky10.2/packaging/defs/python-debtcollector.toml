@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-debtcollector"
+project = "debtcollector"
+version = "3.0.0"
+release = "1"
+tarball = "debtcollector-3.0.0.tar.gz"
+sha256 = "2a8917d25b0e1f1d0d365d3c1c6ecfc7a522b1e9716e8a1a4a915126f7ccea6f"
+signing_key = "0x2ef3fe0ec2b075ab7458b5f8b702b20b13df2318"
+license = "Apache-2.0"
+summary = "A collection of Python deprecation patterns and strategies that help you collect your technical debt in a non-destructive manner."
+description = """
+A collection of Python deprecation patterns and strategies that help you collect your technical debt in a non-destructive manner.
+
+The upstream debtcollector 3.0.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-debtcollector"
+kind = "python"
+modules = ["debtcollector"]
+docs = ["CONTRIBUTING.rst", "README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-debtcollector-doc"
+kind = "sphinx-html"
+summary = "Documentation for debtcollector"
+description = """
+HTML documentation for debtcollector, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

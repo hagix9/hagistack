@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-JQuery-TableSorter"
+origin = "pypi"
+project = "XStatic-JQuery.TableSorter"
+version = "2.14.5.3"
+release = "1"
+tarball = "xstatic_jquery_tablesorter-2.14.5.3.tar.gz"
+sha256 = "e8a4f4900992fe87e2a41167a07fab0aaab39ef194090f58e0083892dc4bcc34"
+license = "MIT"
+summary = "JQuery.TableSorter 2.14.5 (XStatic packaging standard)"
+description = """
+JQuery.TableSorter 2.14.5 (XStatic packaging standard).
+
+The upstream XStatic-JQuery.TableSorter 2.14.5.3 release, packaged by Hagistack.
+"""
+extra_licenses = [{ path = "third-party/licenses/LICENSE-jquery-tablesorter-2.14.5.txt", sha256 = "38b85a91f2c8f2e556d028569a523e6b48ab35733f831e585b9f0ddb7cd0f37e" }]
+check = "import"
+
+[[package]]
+name = "python3-XStatic-JQuery-TableSorter"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE-jquery-tablesorter-2.14.5.txt"]

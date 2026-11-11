@@ -1,0 +1,24 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-Angular"
+origin = "pypi"
+project = "XStatic-Angular"
+version = "1.8.2.3"
+release = "1"
+tarball = "xstatic_angular-1.8.2.3.tar.gz"
+sha256 = "4ad638c12955e8146f5526fe19e08ef33fb63f901b503ec59ccb030bf268337e"
+license = "MIT"
+summary = "Angular 1.8.2 (XStatic packaging standard)"
+description = """
+Angular 1.8.2 (XStatic packaging standard).
+
+The upstream XStatic-Angular 1.8.2.3 release, packaged by Hagistack.
+"""
+check = "import"
+
+[[package]]
+name = "python3-XStatic-Angular"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE"]

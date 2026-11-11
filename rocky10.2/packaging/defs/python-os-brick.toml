@@ -1,0 +1,30 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-os-brick"
+project = "os-brick"
+version = "7.0.0"
+release = "1"
+tarball = "os_brick-7.0.0.tar.gz"
+sha256 = "3a28dc05c418f992e72538886136107c67b80051a5840144cd7f73d50b9ec05a"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "OpenStack Cinder brick library for managing local volume attaches"
+description = """
+OpenStack Cinder brick library for managing local volume attaches.
+
+The upstream os-brick 7.0.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(reno)", "python3dist(openstackdocstheme)"]
+
+drop_after_install = ["%{_prefix}/etc"]
+[[package]]
+name = "python3-os-brick"
+kind = "python"
+modules = ["os_brick"]
+docs = ["README.rst", "html"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_datadir}/os-brick" }, { path = "%{_datadir}/os-brick/rootwrap" }]
+install = [{ src = "upstream:etc/os-brick/rootwrap.d/os-brick.filters", dest = "%{_datadir}/os-brick/rootwrap/os-brick.filters" }]

@@ -1,0 +1,32 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-pycadf"
+project = "pycadf"
+version = "4.0.1"
+release = "1"
+tarball = "pycadf-4.0.1.tar.gz"
+sha256 = "b015f1e4cfb6bd968bb8e23f903593328f0d82e1922902447197f4862f259d2f"
+signing_key = "0x22284f69d9eccdf3df7819791c711af193ff8e54"
+license = "Apache-2.0"
+summary = "CADF Library"
+description = """
+CADF Library.
+
+The upstream pycadf 4.0.1 release, packaged by Hagistack.
+"""
+check = "import"
+
+drop_after_install = ["%{_prefix}/etc"]
+[[package]]
+name = "python-pycadf-common"
+kind = "files"
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/pycadf" }]
+install = [{ src = "upstream:etc/pycadf/*.conf", dest = "%{_sysconfdir}/pycadf", config = true }]
+
+[[package]]
+name = "python3-pycadf"
+kind = "python"
+modules = ["pycadf"]

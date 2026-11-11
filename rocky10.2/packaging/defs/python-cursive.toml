@@ -1,0 +1,36 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-cursive"
+project = "cursive"
+version = "0.2.3"
+release = "1"
+tarball = "cursive-0.2.3.tar.gz"
+sha256 = "f435f6cdbe6a517f054c1105c36e436d7868124f1b227d310fe809d918a8c10c"
+signing_key = "0xa7475c5f2122fec3f90343223fe3bf5aad1080e4"
+license = "Apache-2.0"
+summary = "Cursive implements OpenStack-specific validation of digital signatures."
+description = """
+Cursive implements OpenStack-specific validation of digital signatures.
+
+The upstream cursive 0.2.3 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-cursive"
+kind = "python"
+modules = ["cursive"]
+docs = ["README.rst", "readme.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-cursive-doc"
+kind = "sphinx-html"
+summary = "Documentation for cursive"
+description = """
+HTML documentation for cursive, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

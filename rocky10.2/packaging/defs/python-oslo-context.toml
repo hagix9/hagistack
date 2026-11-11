@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-context"
+project = "oslo.context"
+version = "6.3.0"
+release = "1"
+tarball = "oslo_context-6.3.0.tar.gz"
+sha256 = "e504f8df02c5cce7fc984f867fbdfaaa1d4d4b9b88978e291f6e5cb89df5a3e0"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Context library"
+description = """
+Oslo Context library.
+
+The upstream oslo.context 6.3.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-oslo-context"
+kind = "python"
+modules = ["oslo_context"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-oslo-context-tests"
+kind = "python-tests"
+tests_path = "oslo_context/tests"
+summary = "Tests for oslo.context"
+description = """
+The upstream test suite of oslo.context.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-context-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.context"
+description = """
+HTML documentation for oslo.context, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-ovsdbapp"
+project = "ovsdbapp"
+version = "2.16.1"
+release = "1"
+tarball = "ovsdbapp-2.16.1.tar.gz"
+sha256 = "8189d1e4089d288763f8666eecde2d260d5c1be11e8dcecc38b858d6d4bbe447"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "A library for creating OVSDB applications"
+description = """
+A library for creating OVSDB applications.
+
+The upstream ovsdbapp 2.16.1 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-ovsdbapp"
+kind = "python"
+modules = ["ovsdbapp"]
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-ovsdbapp-tests"
+kind = "python-tests"
+tests_path = "ovsdbapp/tests"
+summary = "Tests for ovsdbapp"
+description = """
+The upstream test suite of ovsdbapp.
+"""
+
+[[package]]
+name = "python-ovsdbapp-doc"
+kind = "sphinx-html"
+summary = "Documentation for ovsdbapp"
+description = """
+HTML documentation for ovsdbapp, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

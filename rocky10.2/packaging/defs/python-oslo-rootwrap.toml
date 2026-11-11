@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-rootwrap"
+project = "oslo.rootwrap"
+version = "7.9.0"
+release = "1"
+tarball = "oslo_rootwrap-7.9.0.tar.gz"
+sha256 = "6b8f65a144f82c4c9cf0a4dcd71bc786d76e50bf51e3c4cd78da68b475019df0"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo Rootwrap"
+description = """
+Oslo Rootwrap.
+
+The upstream oslo.rootwrap 7.9.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)"]
+
+[[package]]
+name = "python3-oslo-rootwrap"
+kind = "python"
+modules = ["oslo_rootwrap"]
+bin = ["oslo-rootwrap", "oslo-rootwrap-daemon"]
+docs = ["LICENSE", "README.rst"]
+
+[[package]]
+name = "python3-oslo-rootwrap-tests"
+kind = "python-tests"
+tests_path = "oslo_rootwrap/tests"
+summary = "Tests for oslo.rootwrap"
+description = """
+The upstream test suite of oslo.rootwrap.
+"""
+
+[[package]]
+name = "python-oslo-rootwrap-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.rootwrap"
+description = """
+HTML documentation for oslo.rootwrap, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

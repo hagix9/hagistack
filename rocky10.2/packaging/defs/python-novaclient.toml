@@ -1,0 +1,45 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-novaclient"
+project = "python-novaclient"
+version = "18.12.0"
+release = "1"
+epoch = 1
+tarball = "python_novaclient-18.12.0.tar.gz"
+sha256 = "ead3db2a3dd43a89bb5a56f62f87362a76e7ef9c01938699ff6c1a060f0e9eab"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Client library for OpenStack Compute API"
+description = """
+Client library for OpenStack Compute API.
+
+The upstream python-novaclient 18.12.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+# The man page is built from upstream's Sphinx man_pages entry.
+build_extra = ["PYTHONPATH=\"$PWD\" sphinx-build -b man -d doc-trees doc/source man"]
+install_extra = ["install -p -D -m 0644 man/nova.1 %{buildroot}%{_mandir}/man1/nova.1"]
+[[package]]
+name = "python3-novaclient"
+kind = "python"
+modules = ["novaclient"]
+bin = ["nova"]
+bin_symlinks = { "nova-3" = "nova" }
+docs = ["README.rst"]
+licenses = ["LICENSE"]
+dirs = [{ path = "%{_sysconfdir}/bash_completion.d" }]
+install = [{ src = "upstream:tools/nova.bash_completion", dest = "%{_sysconfdir}/bash_completion.d/nova" }]
+files = ["%{_mandir}/man1/nova.1*"]
+
+[[package]]
+name = "python-novaclient-doc"
+kind = "sphinx-html"
+summary = "Documentation for python-novaclient"
+description = """
+HTML documentation for python-novaclient, built from the upstream sources.
+"""
+licenses = ["LICENSE"]

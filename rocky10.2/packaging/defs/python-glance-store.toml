@@ -1,0 +1,40 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-glance-store"
+project = "glance_store"
+version = "5.4.1"
+release = "1"
+tarball = "glance_store-5.4.1.tar.gz"
+sha256 = "70448da7b3f4c799f2ac3c5ae0eda7cebac612b56ca6cd4841814d070cd4772f"
+signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
+license = "Apache-2.0"
+summary = "OpenStack Image Service Store Library"
+description = """
+OpenStack Image Service Store Library.
+
+The upstream glance_store 5.4.1 release, packaged by Hagistack.
+"""
+check = "import"
+
+drop_after_install = ["%{_prefix}/etc"]
+[[package]]
+name = "python3-glance-store"
+kind = "python"
+modules = ["glance_store"]
+bin = ["glance-rootwrap"]
+docs = ["AUTHORS", "ChangeLog"]
+licenses = ["LICENSE"]
+# upstream data_files; rc4 placed the cinder store filter under /usr/share
+dirs = [{ path = "%{_datadir}/glance_store" }]
+install = [{ src = "upstream:etc/glance/rootwrap.d/glance_cinder_store.filters", dest = "%{_datadir}/glance_store/glance_cinder_store.filters" }]
+
+[[package]]
+name = "python3-glance-store+cinder"
+kind = "extras"
+extras = ["cinder"]
+
+[[package]]
+name = "python3-glance-store+swift"
+kind = "extras"
+extras = ["swift"]

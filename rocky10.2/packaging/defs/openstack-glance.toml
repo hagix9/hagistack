@@ -19,7 +19,7 @@ holds the daemons, their configuration and systemd units. This is the
 upstream OpenStack release, packaged by Hagistack.
 """
 check = "import"
-check_import_exclude = ["glance.tests*", "glance.db.sqlalchemy.alembic_migrations*", "glance.cmd.*"]
+
 doc = "doc/source"
 # The Sphinx extensions doc/source/conf.py loads; the rest of doc/requirements.txt
 # (os-api-ref, whereto) is for api-ref/ and the redirect test, not built here.
@@ -58,7 +58,7 @@ install = [
   { src = "upstream:etc/glance-scrubber.conf",            dest = "%{_sysconfdir}/glance/glance-scrubber.conf",   mode = "0640", group = "glance", config = true },
   { src = "upstream:etc/glance-swift.conf.sample",        dest = "%{_sysconfdir}/glance/glance-swift.conf",      mode = "0644", group = "glance", config = true },
   { src = "upstream:etc/schema-image.json",               dest = "%{_sysconfdir}/glance/schema-image.json",      mode = "0640", group = "glance", config = true },
-  { src = "upstream:etc/metadefs/*",                      dest = "%{_sysconfdir}/glance/metadefs",               mode = "0640", group = "glance", config = true },
+  { src = "upstream:etc/metadefs/*.json",                 dest = "%{_sysconfdir}/glance/metadefs",               mode = "0640", group = "glance", config = true },
   { src = "file:glance-rootwrap.conf",                    dest = "%{_sysconfdir}/glance/rootwrap.conf",          mode = "0640", group = "glance", config = true },
   { src = "file:openstack-glance.logrotate",              dest = "%{_sysconfdir}/logrotate.d/openstack-glance",  mode = "0644", group = "glance", config = true },
   { src = "file:openstack-glance.sudoers",                dest = "%{_sysconfdir}/sudoers.d/glance",              mode = "0440", config = true },

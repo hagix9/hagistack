@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-neutron-lib"
+project = "neutron-lib"
+version = "3.24.0"
+release = "1"
+tarball = "neutron_lib-3.24.0.tar.gz"
+sha256 = "96861925534f3c3a16b0e3de9e6fe3953f58b2b5f695386d8b71aa598bdc649b"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Neutron shared routines and utilities"
+description = """
+Neutron shared routines and utilities.
+
+The upstream neutron-lib 3.24.0 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
+
+[[package]]
+name = "python3-neutron-lib"
+kind = "python"
+modules = ["neutron_lib"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python3-neutron-lib-tests"
+kind = "python-tests"
+tests_path = "neutron_lib/tests"
+summary = "Tests for neutron-lib"
+description = """
+The upstream test suite of neutron-lib.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-neutron-lib-doc"
+kind = "sphinx-html"
+summary = "Documentation for neutron-lib"
+description = """
+HTML documentation for neutron-lib, built from the upstream sources.
+"""
+docs = ["README.rst"]
+licenses = ["LICENSE"]

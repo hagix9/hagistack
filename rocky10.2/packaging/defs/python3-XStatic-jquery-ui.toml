@@ -1,0 +1,25 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-XStatic-jquery-ui"
+origin = "pypi"
+project = "XStatic-jquery-ui"
+version = "1.13.0.2"
+release = "1"
+tarball = "xstatic_jquery_ui-1.13.0.2.tar.gz"
+sha256 = "11b2aa7eaa1ad69c6e594cae11a817a8fa171cec9ceb82ae2ca4ba7e93d5ae43"
+license = "MIT"
+summary = "jquery-ui 1.13.0 (XStatic packaging standard)"
+description = """
+jquery-ui 1.13.0 (XStatic packaging standard).
+
+The upstream XStatic-jquery-ui 1.13.0.2 release, packaged by Hagistack.
+"""
+extra_licenses = [{ path = "third-party/licenses/LICENSE-jquery-ui-1.13.0.txt", sha256 = "de33fb695880d0b07615d4b86f78cd43796906959ade5fdfef70968827a0db78" }]
+check = "import"
+
+[[package]]
+name = "python3-XStatic-jquery-ui"
+kind = "python"
+modules = ["xstatic"]
+licenses = ["LICENSE-jquery-ui-1.13.0.txt"]

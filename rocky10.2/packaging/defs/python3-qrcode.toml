@@ -1,0 +1,28 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python3-qrcode"
+origin = "pypi"
+project = "qrcode"
+version = "8.2"
+release = "1"
+tarball = "qrcode-8.2.tar.gz"
+sha256 = "35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c"
+license = "BSD-3-Clause"
+summary = "QR Code image generator"
+description = """
+QR Code image generator.
+
+The upstream qrcode 8.2 release, packaged by Hagistack.
+"""
+check = "import"
+
+# rpm refuses the ambiguous "#!/usr/bin/env python" shebang qrcode ships in a module
+# that is never run directly; the line is removed rather than rewritten.
+prep_extra = ["find . -name '*.py' -exec sed -i '1{/^#![[:space:]]*\\/usr\\/bin\\/env[[:space:]]*python[[:space:]]*$/d}' {} +"]
+[[package]]
+name = "python3-qrcode"
+kind = "python"
+modules = ["qrcode"]
+bin = ["qr"]
+licenses = ["LICENSE"]

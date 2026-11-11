@@ -1,0 +1,46 @@
+# Hagistack package definition. Facts only: pins, names, files. See ../README.md.
+# Drafted by draft-def.py from rc4 RPM metadata and the upstream source; reviewed by hand.
+[source]
+name = "python-oslo-i18n"
+project = "oslo.i18n"
+version = "6.7.2"
+release = "1"
+tarball = "oslo_i18n-6.7.2.tar.gz"
+sha256 = "b1241ad3eee216e9dc9acb4336fce0bd79c4c286751ee70dfa42ff2f9763d34f"
+signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
+license = "Apache-2.0"
+summary = "Oslo i18n library"
+description = """
+Oslo i18n library.
+
+The upstream oslo.i18n 6.7.2 release, packaged by Hagistack.
+"""
+doc = "doc/source"
+check = "import"
+buildrequires = ["python3dist(sphinx)", "python3dist(sphinxcontrib-apidoc)", "python3dist(openstackdocstheme)"]
+locale_domain = "oslo_i18n"
+
+[[package]]
+name = "python3-oslo-i18n"
+kind = "python"
+modules = ["oslo_i18n"]
+docs = ["CONTRIBUTING.rst", "ChangeLog", "PKG-INFO", "README.rst"]
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-i18n-lang"
+kind = "lang"
+summary = "Translations for oslo.i18n"
+description = """
+Compiled message catalogues for oslo.i18n.
+"""
+licenses = ["LICENSE"]
+
+[[package]]
+name = "python-oslo-i18n-doc"
+kind = "sphinx-html"
+summary = "Documentation for oslo.i18n"
+description = """
+HTML documentation for oslo.i18n, built from the upstream sources.
+"""
+licenses = ["LICENSE"]
