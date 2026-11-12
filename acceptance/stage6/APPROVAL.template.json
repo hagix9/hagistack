@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "run_id": "<run id: a lowercase letter, then 3-7 lowercase letters or digits>",
+  "project": "<GCP_PROJECT>",
+  "zone": "asia-northeast1-a",
+  "account": "<the gcloud account to use>",
+  "owner_statement": "I, the Owner, approve the Stage 6-1 GCE operations listed here for run <run id> in <GCP_PROJECT>/asia-northeast1-a.",
+  "harness_sha256": "<sha256 of acceptance/stage6/hs6.py at the approved commit>",
+  "operations": ["init", "network", "n1", "n2", "n3", "n4", "u1", "ssh", "upload", "teardown", "residual"],
+  "budget_usd": 8,
+  "max_hours": 6,
+  "approved_at": "<UTC, e.g. 2026-11-20T01:00:00Z>",
+  "expires_at": "<UTC, at most 24 hours after approved_at>"
+}

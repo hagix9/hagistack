@@ -5,6 +5,15 @@ No GCE resource was read, created, started, stopped or deleted. Nothing was rebu
 pushed or released. Stage 6-1 (the GCE run) starts only after the Owner approves
 section 9.
 
+**Revision R1 (2026-11-12).** The Owner decided D1–D4 as recommended, plus:
+- **D5:** all five boot disks are `pd-standard`, with the sizes unchanged.
+- **D6:** effective IAM is unverified. The 2026-11-11 run created and deleted the same
+  kinds of resource with the same account and project. A permission error stops the
+  run at once, and IAM is never changed.
+
+The GCE lifecycle is driven by `acceptance/stage6/hs6.py` (section 5.1). A read-only
+preflight on 2026-11-12 gave the observations in section 5.
+
 ## 1. What is under test
 
 | Item | Value | Checked |
@@ -87,31 +96,111 @@ required, so **N2 machine types only** (E2 has no nested virtualisation).
 
 | Node | Machine, disk | Use | Est. hours |
 |---|---|---|---|
-| n1 | n2-standard-8, pd-balanced 100 GB | B, then C; mock release server; `make-rpm-release.sh` | 4 |
-| n2 | n2-standard-4, pd-balanced 60 GB | A; N4, N6, N7 checks | 3 |
-| n3 | n2-standard-4, pd-balanced 50 GB | D | 3 |
-| n4 | n2-standard-4, pd-balanced 50 GB | second remote compute (D1) | 2.5 |
-| u1 | n2-standard-4, pd-balanced 60 GB | N3 and N8: rc4 all-in-one, then replacement (D3) | 3 |
+| n1 | n2-standard-8, pd-standard 100 GB | B, then C; mock release server; `make-rpm-release.sh` | 4 |
+| n2 | n2-standard-4, pd-standard 60 GB | A; N4, N6, N7 checks | 3 |
+| n3 | n2-standard-4, pd-standard 50 GB | D | 3 |
+| n4 | n2-standard-4, pd-standard 50 GB | second remote compute (D1) | 2.5 |
+| u1 | n2-standard-4, pd-standard 60 GB | N3 and N8: rc4 all-in-one, then replacement (D3); created only after n4 is deleted | 3 |
 
-- Estimated cost at approximate list prices: about US$4–5 with all five nodes (n1 about
-  US$2, each n2-standard-4 about US$0.75, disks and NAT about US$0.5).
-- These prices are **not verified** against the current price list or billing.
-- The 2026-11-09 run of the same four configurations (four N2 nodes plus a 35-minute
-  build) was estimated at US$3–4.
+Total 320 GB. At most 20 vCPUs run at once: u1 replaces n4.
+
+**Read-only preflight, 2026-11-12.** These values were observed once, may change, and
+are checked again by `hs6.py init` immediately before the run.
+
+| Item | Observed |
+|---|---|
+| Project / zone | ACTIVE / UP; Compute Engine and IAP APIs enabled; cloudresourcemanager API disabled (so IAM cannot be read) |
+| Existing resources | 13 Sinter VMs (all TERMINATED) and their disks; networks `default`, `mkg-proto-vpc`, `sinter-v180-relv-net`; one Sinter router with NAT; one reserved Sinter address. No `hagistack-*` resource. All of these are protected. |
+| Region quotas free | N2_CPUS 200, CPUS 100, DISKS_TOTAL_GB 4096, SSD_TOTAL_GB **170** (the reason for D5), INSTANCES 11, IN_USE_ADDRESSES 8 |
+| Project quotas free | CPUS_ALL_REGIONS 32, NETWORKS 2, ROUTERS 9, FIREWALLS 91 |
+| Machine types | n2-standard-8 and n2-standard-4 available in the zone |
+| Image | `rocky-linux-10-v20261110` (id `4057710101549472031`, `rocky-linux-cloud`, READY, X86_64). Its description says only "10", so `VERSION_ID=10.2` is checked on each node at boot. |
+
+**Cost (Tokyo list prices, read from Google's pricing pages on 2026-11-12):**
+- n2-standard-8 US$0.498352/h, n2-standard-4 US$0.249176/h;
+- pd-standard US$0.000071233 per GiB-hour;
+- Cloud NAT US$0.0014 per VM-hour, US$0.045 per GiB processed, US$0.005 per NAT
+  IP-hour;
+- internet egress for Tokyo was **not verified**. The harness assumes US$0.20/GiB for
+  2 GiB.
+
+| Case | Estimate |
+|---|---|
+| Planned hours (15.5 node-hours) | **US$6.06** projected by `hs6.py plan`, including the egress assumption, NAT data and the NAT IP |
+| All five nodes for the full 6 hours | about **US$10.3**, above the cap. This is why the guards below exist and u1 waits for n4. |
+
+The planned US$6.06 leaves about US$1 before the US$7 threshold that blocks new
+resources. If n1–n4 run well over their planned hours, u1 (N3 and N8) can be blocked
+by the guard. That ends N3/N8 as BLOCKED and does not raise the limit.
+
 - Proposed caps: **US$8 and 6 hours of wall time** from the first creation.
-- Labels: `purpose=hagistack-verify`, `temporary=true`, plus a fresh run id.
+- The figures are estimates, not billing. GCE does not cap the bill.
+- Labels on nodes: `purpose=hagistack-verify`, `temporary=true`, `run-id=<rid>`,
+  `hs-node=<node>`. Labels are never the reason to delete anything.
+
+### 5.1 The harness (`acceptance/stage6/hs6.py`)
+
+- **Dry-run by default.** Execution needs all of the following:
+  - an Owner approval file bound to the run id, project, zone, account and the
+    harness's own SHA-256, with the approved operations, a budget of US$8 or less,
+    6 hours or less, and at most a 24-hour validity;
+  - `HS6_EXECUTE=<rid>`;
+  - the gcloud account matching the approval.
+- **Names.** Only names `hagistack-s6-<rid>-*` that the harness generates can be
+  changed, through exact create/delete command forms.
+- **Run id.** A run id is never reused: a local registry and the empty-namespace check
+  at `init` enforce this.
+- **Identity.** Every gcloud call carries `--account=<approved account>`.
+  Impersonation and `CLOUDSDK_*` identity overrides are refused. The test hooks
+  (`HS6_GCLOUD`, `HS6_NOW`) are refused with any real account.
+- **Nodes.** Each node is created with:
+  - no external address, no service account and no scopes;
+  - `block-project-ssh-keys=TRUE`, so `gcloud compute ssh` keeps its key on the
+    instance and not in the project metadata that Sinter's VMs share;
+  - a GCE-side `--max-run-duration`, with `--instance-termination-action=DELETE`, so
+    a node is deleted by GCE even if the operator or agent is gone. The duration is
+    the smaller of its planned hours × 1.5 and the time left before the run's limit.
+- **Project ssh-keys.** They are recorded at `init` and checked before and after
+  every ssh/upload.
+- **Test steps.** Each step's full output and exit status are kept under the state
+  directory (`remote/`). The lock is not held while a step runs, so a teardown is
+  never blocked.
+- **Outcomes of a creation.** The API can refuse a creation outright (a permission or
+  quota error), or the outcome can be unclear (a timeout or any other error).
+  - A refused creation is recorded as failed.
+  - An unclear outcome is recorded as **unknown** and counted as running. Teardown
+    reconciles it: it adopts and deletes a resource that appeared later, or records
+    the creation as failed only after it has stayed absent for 15 minutes.
+- **Ledger and deletion.** A hash-chained ledger records every creation before the
+  call, and then its GCE id. A deletion requires the same id and creation time in GCE.
+- **Stops.** Each of these stops the run:
+  - a permission, quota, timeout or unknown-state error;
+  - a broken ledger;
+  - an unexpected resource in the run's namespace or a new external address;
+  - a failed deletion.
+- **Cost and time.** Projected US$7 blocks new resources. Accrued US$8, 6 hours, a
+  node 50 % over plan, or a failed monitor stops the run. Accrued US$8 also starts the
+  teardown automatically. An approval may lower these limits, never raise them.
+  Teardown remains possible after the approval expires.
+- **Order.** The harness enforces the creation order: network, then n1 before n3 and
+  n4, then u1 after n4 is gone.
+- Details: `acceptance/stage6/README.md`. Tests: `acceptance/stage6/test_hs6.py`
+  (mock gcloud, no Google API).
 
 ## 6. Procedure per configuration
 
 ### 6.0 Common to every node
 
 1. **Before:**
-   - record the project's existing resources (read-only);
+   - `hs6.py init` records the project's existing resources (read-only) as the
+     protected baseline, and checks quotas and the image;
    - confirm the image is Rocky Linux 10.2 x86_64;
    - confirm `/proc/cpuinfo` has `vmx`.
-2. **Node:** create it with nested virtualisation and no external IP. Set a dummy
+2. **Node:** `hs6.py create-node <node>` creates it with nested virtualisation and no
+   external IP. Set a dummy
    provider interface (`hgext0`), as in earlier runs; it is never attached to `br-ex`.
-3. **Inputs:** upload the tree archive and the RPM inputs, and check their SHA-256.
+3. **Inputs:** `hs6.py upload` sends the tree archive and the RPM inputs, and compares
+   the SHA-256 on the node.
 4. **Install:** as listed per configuration below. Keep each run's exit code and full log.
 5. **Services:** `systemctl is-active` for every unit hagistack enables, and
    `hagistack status`.
@@ -345,9 +434,12 @@ contain cloud-internal host names.
 
 - After the last configuration, or at any stop:
   - collect evidence;
-  - delete every VM, disk, NAT, router, firewall rule, subnet and network created by
-    this run;
-  - run a residual check by label and name, which must show none.
+  - `hs6.py teardown` deletes, in this order, the nodes (with their boot disks), the
+    NAT, the router, the firewall rules, the subnet and the network;
+    - each deletion checks the ledger entry and the GCE id;
+    - a node that cannot be deleted stops it before the network;
+  - `hs6.py residual` lists every resource named `hagistack-s6-<rid>-*`. It must show
+    none.
 - Resources that existed before the run are not touched.
 - If a deletion fails, report at once which resource still runs and why. No further
   test is run while billable resources of this run are unaccounted for.
@@ -355,6 +447,11 @@ contain cloud-internal host names.
   committed, except evidence the Owner wants kept.
 
 ## 9. Owner approval (needed before stage 6-1)
+
+Decided on 2026-11-12: D1–D4 as recommended, D5 (pd-standard) and D6 (IAM as above).
+Still needed before any GCE change: the approval file of `hs6.py` (section 5.1),
+written by the Owner for a fresh run id.
+
 
 1. **GCE operations:** the project, zone and account to use, and permission to create,
    run and delete the resources in section 5. The account and project were **not**
@@ -375,9 +472,12 @@ contain cloud-internal host names.
 
 ## 10. Not verified in stage 6-0
 
-- The GCE account, project, quotas, and the availability of N2 machine types in the
-  zone (no GCE call was made).
-- Current GCE prices; the figures in section 5 are approximations.
+- Effective IAM permissions (D6). The cloudresourcemanager API is disabled and is not
+  enabled for this.
+- Organisation policies that could forbid nested virtualisation.
+- The Tokyo internet egress price (assumed).
+- That the quotas and the image observed on 2026-11-12 are unchanged at run time;
+  `hs6.py init` checks them again.
 - That `--rpm-source bundle --rpm-set-sha256` works for the `controller` role. The code
   path is shared with `rpm-prepare`, but on 2026-11-09 bundle was run only on remote
   compute nodes. B is BLOCKED if it does not work, and the Owner decides.
