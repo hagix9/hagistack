@@ -6,7 +6,7 @@ to type the run id, and signs the approval with your SSH key (your passphrase or
 your security-key touch). The AI agent cannot do that step: it does not have the
 passphrase or the key, and this tool refuses to run without a terminal.
 
-    One time:  python3 hs6_approve.py --setup [--sk]
+    One time:  python3 -I hs6_approve.py --setup [--sk]
     Each run:  python3 -I hs6_approve.py --run-id RID --ops init,network,n2,ssh,upload,teardown,residual
     Cleanup :  python3 -I hs6_approve.py --run-id RID --ops teardown,residual   (a used run id)
 
@@ -14,17 +14,25 @@ Writes ~/hagistack-approvals/<RID>.json and <RID>.json.sig. hs6.py executes
 nothing without a valid signature by a key pinned in hs6.OWNER_SIGNING_KEYS.
 Python 3.9+, standard library only. Network: only `gcloud config get-value account`.
 """
-import argparse
-import datetime
-import hashlib
-import json
-import os
-import re
-import secrets
-import shutil
-import subprocess
 import sys
-import types
+
+# First, before any other import: without -I, Python would import modules planted
+# next to this file (an ignored json.pyc, for example) at the next import line.
+# sys is built in and cannot be replaced that way.
+if __name__ == "__main__" and not sys.flags.isolated:
+    sys.stderr.write("REFUSED: run it as: python3 -I %s ...\n" % sys.argv[0].rsplit("/", 1)[-1])
+    sys.exit(2)
+
+import argparse  # noqa: E402
+import datetime  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import secrets  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import types  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HS6_PATH = os.path.join(HERE, "hs6.py")
@@ -109,7 +117,11 @@ def pub_line(key):
 
 
 def key_in_agent(pub):
-    p = run([SSH_ADD, "-L"]) if os.environ.get("SSH_AUTH_SOCK") and os.path.exists(SSH_ADD) else None
+    if not os.environ.get("SSH_AUTH_SOCK"):
+        return False
+    if not os.path.exists(SSH_ADD):
+        raise Refused("an ssh-agent is running but %s is missing, so the agent cannot be checked" % SSH_ADD)
+    p = run([SSH_ADD, "-L"])
     return bool(p and p.returncode == 0 and any(" ".join(l.split()[:2]) == pub for l in p.stdout.splitlines()))
 
 
@@ -124,7 +136,7 @@ def harness_state():
     for f in ("hs6.py", "hs6_approve.py"):
         if run([GIT, "-C", top, "ls-files", "--error-unmatch", os.path.join(rel, f)]).returncode != 0:
             raise Refused("%s is not committed" % f)
-    st = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=all", "--", rel])
+    st = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", rel])
     if st.returncode != 0 or st.stdout.strip():
         raise Refused("%s has uncommitted or untracked changes: approve only committed code\n%s"
                       % (rel, st.stdout.strip()))

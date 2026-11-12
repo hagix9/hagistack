@@ -252,10 +252,12 @@ python3 -I acceptance/stage6/hs6_approve.py --run-id h6abc1 --ops init,network,n
 ```
 
 The Owner runs it in their own terminal. It:
-- refuses without a terminal, or in a shell an AI agent runs (`CLAUDECODE` and
+- refuses unless started as `python3 -I` (isolated mode: nothing planted next to it
+  is imported), without a terminal, or in a shell an AI agent runs (`CLAUDECODE` and
   similar variables);
 - refuses if the pinned keys are not exactly the Owner's key, if the key is loaded
-  in `ssh-agent`, if anything in `acceptance/stage6/` is uncommitted or untracked,
+  in `ssh-agent`, if anything in `acceptance/stage6/` is uncommitted, untracked or
+  ignored by git (a planted `.pyc`, for example),
   or if the run id was used before (except for a cleanup-only approval);
 - shows the run id, project, zone, account, operations, nodes, limits, validity
   and the harness's SHA-256 and commit;
@@ -288,8 +290,9 @@ What makes such a change visible:
 - any change to `hs6.py` changes the SHA-256 inside the signed approval.
 
 So an approval rests on the key's passphrase (or security key) and on the Owner
-reviewing the committed changes to `acceptance/stage6/` before signing. Run the tool
-as `python3 -I`, from a checkout whose history you have looked at.
+reviewing the committed changes to `acceptance/stage6/` before signing. The tool
+refuses to run without `python3 -I`; run it from a checkout whose history you have
+looked at.
 
 **Cleanup is always possible.** `teardown` and `residual` accept an expired
 approval and a changed `hs6.py` (with a warning), so a harness fixed after `init`

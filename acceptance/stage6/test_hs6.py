@@ -1419,6 +1419,13 @@ class ApproveTool(unittest.TestCase):
                            capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=60)
         return p.returncode, p.stdout + p.stderr
 
+    def test_refuses_without_isolated_mode(self):
+        e = {"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()}
+        p = subprocess.run([sys.executable, os.path.join(HERE, "hs6_approve.py"), "--run-id", "t6abc"],
+                           capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("python3 -I", p.stderr)
+
     def test_refuses_without_a_terminal(self):
         rc, out = self.tool("--run-id", "t6abc")
         self.assertEqual(rc, 2, out)
