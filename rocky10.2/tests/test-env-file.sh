@@ -16,7 +16,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HS="$HERE/../hagistack"
 [ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "needs bash 4 or later (this is $BASH_VERSION)" >&2; exit 2; }
 
-T="$(mktemp -d "${TMPDIR:-/tmp}/hs-envfile-test.XXXXXX")"
+T="$(mktemp -d "${TMPDIR:-/tmp}/hs-envfile-test.XXXXXX")" && [ -d "$T" ] || { echo "cannot create a temporary directory" >&2; exit 2; }
 trap 'rm -rf "$T"' EXIT
 
 PASS=0; FAIL=0
