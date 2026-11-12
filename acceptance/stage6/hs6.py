@@ -784,6 +784,7 @@ def check_unexpected(g, rid, recs, baseline):
     """Our namespace: anything not in the ledger stops. Other names: anything not
     in the baseline is reported (another product's work), never touched."""
     inv = inventory(g)
+    own_ips = own_nat_ips(g, rid)
     known = {(r.get("name"), str(r.get("gce_id"))) for r in recs[1:] if r.get("gce_id")}
     known |= {(r.get("disk_name"), str(r.get("disk_id"))) for r in recs[1:] if r.get("disk_id")}
     foreign = []
@@ -793,12 +794,30 @@ def check_unexpected(g, rid, recs, baseline):
             if name.startswith(PREFIX):
                 if (name, rid_) not in known:
                     raise Stop("unexpected resource in the stage 6 namespace: %s %s (id %s)" % (key, name, rid_))
-            elif (name, rid_) not in base:
+            elif (name, rid_) not in base and not (key == "addresses" and (name, rid_) in own_ips):
                 foreign.append("%s %s" % (key, name))
     for name, rid_ in inv["addresses"]:
+        if (name, rid_) in own_ips:
+            continue  # this run's Cloud NAT allocated it (checked by name and by its user)
         if (name, rid_) not in {tuple(x) for x in baseline.get("addresses", [])}:
             raise Stop("unexpected external address appeared: %s" % name)
     return foreign
+
+
+def own_nat_ips(g, rid):
+    """External addresses that Cloud NAT allocated automatically for this run's
+    router: named nat-auto-ip-*, and every user of the address is the run's own
+    router. They appear when a node first sends traffic out, and they are
+    released when the NAT is deleted. Anything else stays unexpected."""
+    router = "https://www.googleapis.com/compute/v1/projects/%s/regions/%s/routers/%s" % (
+        PROJECT, REGION, name_of(rid, "router"))
+    out = set()
+    for a in g.read_json(["compute", "addresses", "list", P()]) or []:
+        users = a.get("users") or []
+        if str(a.get("name", "")).startswith("nat-auto-ip-") and str(a.get("region", "")).endswith("/regions/" + REGION) \
+                and users and all(u == router for u in users):
+            out.add((a.get("name"), str(a.get("id"))))
+    return out
 
 
 # ------------------------------------------------------------------ runner --
@@ -1306,6 +1325,7 @@ class Run:
         if not g.execute:
             return 0
         left = ["%s %s" % (k, n) for k, items in inv.items() for n, _ in items if n.startswith(PREFIX + self.rid + "-")]
+        left += ["address %s (Cloud NAT IP of this run's router)" % n for n, _ in sorted(own_nat_ips(g, self.rid))]
         try:
             g.read_json(self.describe_args("nat"))
             left.append("nat " + name_of(self.rid, "nat"))

@@ -200,6 +200,13 @@ def main():
                     notfound(kind, name)
                 if mode != "DELETE_NOOP":
                     del res[name]
+                    if kind == "nats":
+                        # Cloud NAT releases the IPs it allocated automatically
+                        router = "/routers/" + (flag(args, "router") or "")
+                        addrs = s["res"].setdefault("addresses", {})
+                        for a in [a for a, v in addrs.items() if a.startswith("nat-auto-ip-")
+                                  and any(str(u).endswith(router) for u in v.get("users", []))]:
+                            addrs.pop(a)
                     if kind == "instances" and mode != "KEEP_DISK":
                         s["res"].get("disks", {}).pop(name, None)
                 out = []

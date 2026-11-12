@@ -1146,5 +1146,71 @@ class R2Fixes(R2Teardown):
         self.assertEqual(self.events("n2"), [])
 
 
+class NatAutoIp(Base):
+    """Cloud NAT allocates its external IP only when a node first sends traffic out
+    (seen in the live run h6n121): the run's own NAT IP must not stop the run."""
+    ROUTER = "https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/asia-northeast1/routers/"
+
+    def add_ip(self, name, users, region="https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/asia-northeast1"):
+        self.set_mock(lambda s: s["res"]["addresses"].update(
+            {name: {"name": name, "id": "4242", "users": users, "region": region}}))
+
+    def test_own_nat_ip_is_accepted_checked_and_released(self):
+        self.up("n1")
+        self.add_ip("nat-auto-ip-1-2-3", [self.ROUTER + "hagistack-s6-%s-router" % RID])
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("nat-auto-ip-1-2-3", out)  # not reported as a change by someone else
+        rc, out = self.hs("residual")
+        self.assertEqual(rc, hs6.EXIT_CLEANUP, out)
+        self.assertIn("nat-auto-ip-1-2-3", out)
+        self.assertEqual(self.hs("teardown")[0], 0)
+        self.assertNotIn("nat-auto-ip-1-2-3", self.mock()["res"]["addresses"])
+        self.assertEqual(self.hs("residual")[0], 0)
+        self.assertIn("sinter-p8-gateway-ip", self.mock()["res"]["addresses"])
+
+    def test_nat_ip_of_another_router_stops(self):
+        self.up("n1")
+        self.add_ip("nat-auto-ip-9-9-9", [self.ROUTER + "sinter-v180-relv-router"])
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("unexpected external address", out)
+
+    def test_nat_named_ip_without_our_router_as_only_user_stops(self):
+        self.up("n1")
+        for users in ([], [self.ROUTER + "hagistack-s6-%s-router" % RID, self.ROUTER + "other"],
+                      [self.ROUTER + "hagistack-s6-%s-router-x" % RID]):
+            self.set_mock(lambda s: s["res"]["addresses"].pop("nat-auto-ip-7", None))
+            self.add_ip("nat-auto-ip-7", users)
+            rc, out = self.hs("create-node", "n2")
+            self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+            self.assertIn("unexpected external address", out)
+        self.assertEqual(self.events("n2"), [])
+
+    def test_own_router_ip_with_another_name_stops(self):
+        self.up("n1")
+        self.add_ip("manual-ip", [self.ROUTER + "hagistack-s6-%s-router" % RID])
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("unexpected external address", out)
+
+    def test_same_router_name_in_another_project_or_region_stops(self):
+        self.up("n1")
+        name = "hagistack-s6-%s-router" % RID
+        for users, region in (
+                (["https://www.googleapis.com/compute/v1/projects/evil/regions/asia-northeast1/routers/" + name], None),
+                (["https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/us-east1/routers/" + name], None),
+                ([self.ROUTER + name], "https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/us-east1"),
+                (["/routers/" + name], None)):
+            self.set_mock(lambda s: s["res"]["addresses"].pop("nat-auto-ip-8", None))
+            if region:
+                self.add_ip("nat-auto-ip-8", users, region)
+            else:
+                self.add_ip("nat-auto-ip-8", users)
+            rc, out = self.hs("create-node", "n2")
+            self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+            self.assertIn("unexpected external address", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
