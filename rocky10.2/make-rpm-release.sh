@@ -47,6 +47,12 @@ done
 for t in rpm tar sha256sum python3; do command -v "$t" >/dev/null || die "$t is required"; done
 [ -f "$SET_DIR/RPM-SHA256SUMS" ] && [ -d "$SET_DIR/repo/repodata" ] || die "$SET_DIR is not a verified set directory"
 [ ! -e "$OUT" ] || [ -z "$(ls -A "$OUT")" ] || die "$OUT exists and is not empty"
+# The MIT licence of Hagistack's own work and the notices must ship with every
+# candidate. LICENSE is the repository-root file, so run this from a full checkout.
+for f in "$HERE/../LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$HERE/gazpacho.manifest"; do
+    [ -f "$f" ] || die "$f is missing: run from a full checkout (every candidate must carry it)"
+done
+[ -d "$HERE/third-party" ] || die "$HERE/third-party is missing: run from a full checkout"
 mkdir -p "$OUT"
 
 echo "== checking the set =="
@@ -102,6 +108,17 @@ missing="$(awk -F'\t' 'NR>1{print $8}' "$OUT/PACKAGE_MANIFEST.tsv" | sort -u \
            | while read -r s; do [ -f "$SET_DIR/srpms/$s" ] || echo "$s"; done)"
 [ -z "$missing" ] || die "source RPMs missing for: $missing"
 ok "every binary RPM has its source RPM"
+# ... and srpms/ holds nothing else, so the source asset is exactly the set's sources.
+extra="$(cd "$SET_DIR/srpms" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
+         | comm -23 - <(awk -F'\t' 'NR>1{print $8}' "$OUT/PACKAGE_MANIFEST.tsv" | LC_ALL=C sort -u))"
+[ -z "$extra" ] || die "srpms/ holds files no binary RPM comes from (would be published): $extra"
+# Every source RPM carries Hagistack's own licence for the packaging it contains.
+# (the list is captured first: with pipefail, "rpm | grep -q" can fail on SIGPIPE)
+nolic="$(cd "$SET_DIR/srpms" && for s in ./*.src.rpm; do
+             l="$(rpm -qpl --nosignature "$s" 2>/dev/null || true)"
+             grep -qx 'HAGISTACK-LICENSE' <<<"$l" || echo "${s#./}"; done)"
+[ -z "$nolic" ] || die "source RPMs without HAGISTACK-LICENSE: $nolic"
+ok "srpms/ holds exactly the set's source RPMs, each with HAGISTACK-LICENSE"
 
 # Deterministic tarballs: same set, same bytes, whatever the clock says.
 EPOCH="$(stat -c %Y "$SET_DIR/RPM-SHA256SUMS")"
@@ -112,7 +129,7 @@ tar -cf "$OUT/hagistack-srpms-$TAG.tar" "${TFLAGS[@]}" -C "$SET_DIR" srpms
 ok "assets written"
 
 cp -p "$HERE/gazpacho.manifest" "$OUT/"
-cp -p "$HERE/../LICENSE" "$OUT/LICENSE" 2>/dev/null || true
+cp -p "$HERE/../LICENSE" "$OUT/LICENSE"
 [ -f "$SET_DIR/build-env.lock" ] && cp -p "$SET_DIR/build-env.lock" "$OUT/"
 cp -rp "$HERE/third-party" "$OUT/third-party"
 cp -p "$HERE/THIRD_PARTY_NOTICES.md" "$OUT/"

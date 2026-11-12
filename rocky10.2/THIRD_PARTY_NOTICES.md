@@ -36,6 +36,42 @@ This file is copied into every release candidate by `make-rpm-release.sh`.
   each with its own licence: two upstream Neutron changes (`third-party/neutron/`,
   Apache-2.0) and licence texts for the XStatic RPMs (`third-party/licenses/`).
 
+## Source code
+
+Every binary RPM is built from a source RPM published with it, in
+`hagistack-srpms-<TAG>.tar`. Each source RPM holds the spec, the upstream source
+archive (with its signature and the signing key where upstream signs it), the
+pinned patches and licence texts, Hagistack's own files, and `HAGISTACK-LICENSE`.
+`make-rpm-release.sh` refuses a candidate in which a binary has no source RPM, a
+source RPM has no binary, or a source RPM lacks `HAGISTACK-LICENSE`.
+
+## Licence texts per package
+
+Some subpackages install no licence text of their own: meta and service
+subpackages, `-tests` packages and extras that depend on the package carrying the
+text, and the documentation packages `openstack-glance-doc`,
+`python-cinderclient-doc` and `python-keystonemiddleware-doc`, whose texts are in
+the other packages built from the same source RPM. Font Awesome and term.js carry
+their licence inside the packaged files. Every text is in the release asset. If
+you redistribute single packages, include the licence texts of the source RPM
+they come from.
+
+## Repositories the RPMs need, not part of this release
+
+The RPMs install only together with packages from these repositories, which the
+Hagistack installer configures. Their packages are under their own licences and
+are distributed by their own projects:
+
+- Rocky Linux 10 BaseOS, AppStream and CRB;
+- EPEL 10 (`epel-release`);
+- the CentOS Stream 10 NFV SIG Open vSwitch repository,
+  `https://mirror.stream.centos.org/SIGs/10-stream/nfv/$basearch/openvswitch-2/`;
+- RDO's EL10 dependency repositories (third-party libraries only, no OpenStack
+  component repository):
+  `https://trunk.rdoproject.org/centos10-master/deps/latest/`,
+  `https://trunk.rdoproject.org/centos10-master/build-deps/latest/` and
+  `https://trunk.rdoproject.org/centos10-master/rabbitmq/`.
+
 ## JavaScript, CSS and fonts used by the dashboard
 
 `openstack-dashboard` does not ship copies of the JavaScript and CSS libraries
