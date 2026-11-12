@@ -384,6 +384,9 @@ load_env_file() {
 }
 
 # Precedence: command line > environment > config file > default.
+# On Rocky the environment tier stays empty: the assignments under
+# "configuration" overwrite inherited values before _capture_env runs, so
+# exported variables are not read (as the README says; tests/test-env-file.sh).
 # A tier that sets a key to the empty string is an error rather than a silent
 # fall-through, so "explicitly blank" can never be mistaken for "not given".
 resolve_config() {
@@ -621,6 +624,13 @@ CONFIG_KEYS="MGMT_IP EXT_NIC PROVIDER_CIDR PROVIDER_GATEWAY FLOATING_START
              PROVIDER_PHYSNET PROVIDER_BRIDGE IMAGE_NAME IMAGE_URL IMAGE_SHA256
              IMAGE_FILE CONTROLLER_IP REPO_URL RPM_SOURCE RPM_BUNDLE
              RPM_LOCK_FILE BUILD_IMAGE RPM_SET_EXPECTED"
+# The same list with every run of whitespace collapsed to one space, and a
+# space at each end, so that `case "$CONFIG_KEYS_FLAT" in *" $key "*)` in
+# load_env_file works for every key wherever the line breaks fall. It was
+# referenced but never defined here (the Ubuntu installer has it), so any
+# hagistack.env aborted with "CONFIG_KEYS_FLAT: unbound variable"; found in
+# stage 6-1 run h6n121.
+CONFIG_KEYS_FLAT=" $(printf '%s' "$CONFIG_KEYS" | tr -s '[:space:]' ' ') "
 declare -A CLI_VAL CLI_SET ENV_VAL ENV_SET FILE_VAL FILE_SET CONFIG_SOURCE DEFAULT_VAL
 
 # The defaults are whatever the variables hold before any tier is applied, so

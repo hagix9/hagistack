@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run every Rocky test suite that needs no OpenStack and no network:
+#   tests/test-env-file.sh            hagistack.env reader and option precedence
 #   tests/test-rpm-source.sh          RPM sources, verification, guards
 #   tests/test-build-in-container.sh  pass control of the source build
 #   tests/test-build-rpms-staging.sh  sources re-staged before every rpmbuild
@@ -14,7 +15,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 rc=0
-for t in test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh test-build-own.sh; do
+for t in test-env-file.sh test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh test-build-own.sh; do
     echo "######## $t"
     bash "$HERE/$t" || rc=1
 done

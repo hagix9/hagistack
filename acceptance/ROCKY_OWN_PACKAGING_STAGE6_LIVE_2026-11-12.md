@@ -91,7 +91,10 @@ On every node:
    - The variable has never been defined since the first commit `84b50d6`.
    - Earlier acceptance runs used command-line options and did not see it. This run
      used command-line options after the first attempt failed in 0 s.
-   - Not caused by the own packaging. Needs a fix in the installer.
+   - Not caused by the own packaging.
+   - Fixed after the run: `rocky10.2/hagistack` now defines `CONFIG_KEYS_FLAT` as the
+     Ubuntu installer does, and `rocky10.2/tests/test-env-file.sh` covers the file
+     reader. Not re-run on a real machine.
 2. **Harness defect, fixed in `a772d57`.** Cloud NAT allocates its external IP
    (`nat-auto-ip-*`) only when a node first sends traffic out. The harness treated it
    as an unexpected address and refused new nodes. Now only an address whose every
