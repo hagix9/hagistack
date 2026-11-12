@@ -178,10 +178,33 @@ by the guard. That ends N3/N8 as BLOCKED and does not raise the limit.
   - a broken ledger;
   - an unexpected resource in the run's namespace or a new external address;
   - a failed deletion.
-- **Cost and time.** Projected US$7 blocks new resources. Accrued US$8, 6 hours, a
-  node 50 % over plan, or a failed monitor stops the run. Accrued US$8 also starts the
-  teardown automatically. An approval may lower these limits, never raise them.
-  Teardown remains possible after the approval expires.
+- **Cost and time (R2).**
+  - Projected US$7 blocks new resources.
+  - Accrued US$8, the run's time limit, or a node 50 % over plan stops the run **and
+    starts the teardown**. The stop and the teardown's outcome are recorded
+    separately; an incomplete teardown names what is left.
+  - A failed monitor stops new work without tearing down.
+  - The guards are also checked while an ssh/upload step runs, which is killed at a
+    limit, and by `hs6.py watch` in a second terminal.
+  - An approval may lower these limits, never raise them.
+  - Teardown is never refused by the guards, and remains possible after the approval
+    expires.
+- **When the harness is not running.** GCE deletes each node at its max run duration.
+  The network and NAT stay until removed.
+  - An unattended run is estimated at about US$8.54, so US$8 is not guaranteed then.
+  - The estimate assumes all five nodes at their longest possible duration, list
+    prices, the assumed egress (2 GiB) and NAT data (3 GiB per node), and 6 hours of
+    NAT IP.
+  - It is an estimate, not a bound. The NAT IP charge after that is not included.
+  **Required operating conditions:**
+  - keep `hs6.py watch` running for the whole run;
+  - finish only when `hs6.py residual` reports nothing left;
+  - check `residual` at once after any interruption.
+
+  No extra billable monitor (VM, Cloud Scheduler, Cloud Functions) is added.
+- **Cost display.** Status shows these apart: the planned projection, the harness's
+  accrued estimate, the assumed or unpriced items, and the fact that the real bill is
+  unknown to it.
 - **Order.** The harness enforces the creation order: network, then n1 before n3 and
   n4, then u1 after n4 is gone.
 - Details: `acceptance/stage6/README.md`. Tests: `acceptance/stage6/test_hs6.py`

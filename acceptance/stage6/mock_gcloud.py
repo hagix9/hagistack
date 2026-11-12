@@ -14,7 +14,8 @@ State keys:
                               CREATE_DEFERRED (create errors, the resource appears on the next
                               call after the following one), DELETE_NOOP, KEEP_DISK,
                               FAKE_EXISTS (describe returns a resource), METADATA_CHANGE (ssh
-                              writes a key into the project metadata)
+                              writes a key into the project metadata), SLEEP (ssh runs for
+                              MOCK_SLEEP seconds, then records ssh_finished)
   external_ip              instances get an access config (an external IP)
   calls                    every call, appended
 """
@@ -124,6 +125,18 @@ def main():
                 md = s.setdefault("project_metadata", {"fingerprint": "fp0", "items": []})
                 md["fingerprint"] = "fp1"
                 md["items"].append({"key": "ssh-keys", "value": "tester:ssh-ed25519 AAAA"})
+            if mode == "SLEEP":
+                save(s)
+                if os.environ.get("MOCK_FORK"):
+                    # a child that keeps the output pipes open, as ssh under gcloud would
+                    import subprocess
+                    subprocess.Popen(["sleep", os.environ.get("MOCK_SLEEP", "15")])
+                time.sleep(float(os.environ.get("MOCK_SLEEP", "15")))
+                s2 = load()
+                s2["ssh_finished"] = True
+                save(s2)
+                print("slept")
+                return 0
             if os.environ.get("MOCK_LOCKFILE"):
                 s["lock_seen_during_ssh"] = os.path.exists(os.environ["MOCK_LOCKFILE"])
             if mode == "SSH_FAIL":

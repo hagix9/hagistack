@@ -20,11 +20,13 @@ See README.md for the safety model. Python 3.9+, standard library only.
 """
 import argparse
 import datetime
+import stat
 import hashlib
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -63,7 +65,8 @@ EST_NAT_GIB_PER_NODE = 3.0
 # Internet egress price for Tokyo was NOT verified. A deliberately high assumption:
 ASSUMED_EGRESS_USD_PER_GIB = 0.20
 EST_EGRESS_GIB_TOTAL = 2.0
-UNPRICED = ("internet egress (assumed US$0.20/GiB for 2 GiB)",)
+UNPRICED = ("internet egress (assumed US$0.20/GiB for 2 GiB)",
+            "NAT data volume (assumed 3 GiB per node at US$0.045/GiB)")
 
 COST_STOP_NEW = 7.0
 COST_STOP_ALL = 8.0
@@ -119,20 +122,55 @@ class NotFound(Exception):
 # ".invalid" domain, which no real Google account can have; with a real account
 # they make the harness refuse to run. Without an approval nothing is called.
 _TEST_MODE = {"on": False}
+TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WATCH_MAX_LOOPS")
+
+
+def watch_interval():
+    """Seconds between guard checks while waiting. Outside the tests it is kept
+    between 5 s and 5 min, so it can neither busy-loop nor switch monitoring off."""
+    v = float(os.environ.get("HS6_WATCH_INTERVAL", "60"))
+    return v if _TEST_MODE["on"] else min(300.0, max(5.0, v))
+
+
+def record_stop(state_dir, rec):
+    """Append to stops.jsonl without the lock: a limit or a monitor failure is
+    recorded even when the lock is busy or the teardown cannot start. Any
+    entry there blocks new resources and test steps for the rest of the run."""
+    rec = dict(rec, at=iso(now()))
+    try:
+        with open(os.path.join(state_dir, "stops.jsonl"), "a") as f:
+            f.write(json.dumps(rec, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        print("WARNING: could not record the stop (%s): %s" % (e, rec), file=sys.stderr)
+
+
+def recorded_stops(state_dir):
+    path = os.path.join(state_dir, "stops.jsonl")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [line for line in f.read().splitlines() if line.strip()]
 
 
 def _decide_test_mode(account):
-    stub = any(os.environ.get(k) for k in ("HS6_GCLOUD", "HS6_NOW", "HS6_REGISTRY"))
+    stub = any(os.environ.get(k) for k in TEST_HOOKS)
     fake = isinstance(account, str) and account.endswith(".invalid")
     if stub and not fake:
-        raise Stop("HS6_GCLOUD / HS6_NOW / HS6_REGISTRY are for tests only and are refused with a real account")
+        raise Stop("%s are for tests only and are refused with a real account" % " / ".join(TEST_HOOKS))
     if fake and not os.environ.get("HS6_GCLOUD"):
         raise Stop("an .invalid account is a test account: refused with the real gcloud")
     _TEST_MODE["on"] = fake
 
 
 def now():
-    if os.environ.get("HS6_NOW") and (_TEST_MODE["on"] or os.environ.get("HS6_GCLOUD")):
+    test = _TEST_MODE["on"] or os.environ.get("HS6_GCLOUD")
+    if test and os.environ.get("HS6_CLOCK_FILE"):
+        # a clock the tests can move while a command runs
+        with open(os.environ["HS6_CLOCK_FILE"]) as f:
+            return float(f.read().strip())
+    if test and os.environ.get("HS6_NOW"):
         return float(os.environ["HS6_NOW"])
     return time.time()
 
@@ -190,6 +228,9 @@ class Gcloud:
         self.log = log
         self.account = account
         self.bin = os.environ.get("HS6_GCLOUD") or "gcloud"
+        # test hook: a Python stand-in is run with this interpreter (no new executable file needed)
+        self.cmd = [sys.executable, "-I", self.bin] if os.environ.get("HS6_GCLOUD") and self.bin.endswith(".py") \
+            else [self.bin]
         self.timeout = float(os.environ.get("HS6_TIMEOUT", "600"))
         self.planned = []
 
@@ -206,7 +247,7 @@ class Gcloud:
         env = dict(os.environ)
         env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
         try:
-            p = subprocess.run([self.bin] + args, capture_output=True, text=True, timeout=self.timeout, env=env)
+            p = subprocess.run(self.cmd + args, capture_output=True, text=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired:
             raise Stop("gcloud timed out after %.0fs: %s" % (self.timeout, " ".join(args)), EXIT_UNKNOWN)
         except OSError as e:
@@ -250,10 +291,12 @@ class Gcloud:
             raise Stop("internal: the project must be pinned exactly once in a mutating call")
         return self._run(args)
 
-    def remote(self, args, target, timeout):
+    def remote(self, args, target, timeout, monitor=None, interval=60.0):
         """ssh/scp to one node of this run. Returns (status, stdout, stderr)
         without raising on a non-zero status: a failed test step keeps its
-        whole output and exit code."""
+        whole output and exit code. While the command runs, monitor() is called
+        every `interval` seconds; if it raises Stop, the command is killed and
+        the Stop is re-raised with the output collected so far attached."""
         check_target(self.rid, target)
         if not _prefix_ok(args, REMOTE_PREFIXES):
             raise Stop("internal: not an ssh/scp call")
@@ -266,12 +309,58 @@ class Gcloud:
             return 0, "", ""
         env = dict(os.environ)
         env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
+        # its own process group, so a stop kills ssh and everything it started
+        p = subprocess.Popen(self.cmd + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                             start_new_session=True)
+        start = time.monotonic()
+        while True:
+            left = timeout - (time.monotonic() - start)
+            try:
+                out, err = p.communicate(timeout=max(0.1, min(interval, left)))
+                return p.returncode, out, err
+            except subprocess.TimeoutExpired:
+                pass
+            except KeyboardInterrupt:
+                # Ctrl-C, or SIGTERM/SIGHUP turned into this by main(): the step's own process
+                # group does not get the terminal's signal, so stop it here
+                rc_out_err = _kill_group(p)
+                e = Stop("interrupted: the step on the node was stopped", EXIT_REMOTE)
+                e.partial = rc_out_err
+                raise e
+            stop = None
+            if time.monotonic() - start >= timeout:
+                stop = Stop("the command ran longer than %.0fs" % timeout, EXIT_REMOTE)
+            elif monitor is not None:
+                try:
+                    monitor()
+                except Stop as e:
+                    stop = e
+                except Exception as e:  # noqa: BLE001 - a monitor that cannot run stops the step
+                    stop = Stop("the monitor failed while the command ran (%s)" % e, EXIT_GUARD)
+            if stop is not None:
+                stop.partial = _kill_group(p)
+                raise stop
+
+
+def _kill_group(p):
+    """TERM then KILL the whole process group; never wait without a bound.
+    Returns (status, stdout, stderr) with whatever output could be collected."""
+    for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 5.0)):
         try:
-            p = subprocess.run([self.bin] + args, capture_output=True, text=True, timeout=timeout, env=env)
-        except subprocess.TimeoutExpired as e:
-            return 124, (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), \
-                "timed out after %.0fs" % timeout
-        return p.returncode, p.stdout, p.stderr
+            os.killpg(p.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            out, err = p.communicate(timeout=grace)
+            return p.returncode, out or "", err or ""
+        except subprocess.TimeoutExpired:
+            continue
+    for stream in (p.stdout, p.stderr):
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return -9, "", "(output lost: the process group did not end after SIGKILL)"
 
 
 def P():
@@ -430,10 +519,41 @@ def cost_report(recs, t):
             future += NODES[n][3] * _unit_cost(n) + PRICE_NAT_GIB * EST_NAT_GIB_PER_NODE
     if "nat" not in life:
         future += MAX_HOURS * PRICE_NAT_IP_HOUR
+    assumed = ASSUMED_EGRESS_USD_PER_GIB * EST_EGRESS_GIB_TOTAL + PRICE_NAT_GIB * EST_NAT_GIB_PER_NODE * sum(
+        1 for p in life if p in NODES)
     accrued += ASSUMED_EGRESS_USD_PER_GIB * EST_EGRESS_GIB_TOTAL
-    return {"accrued_usd": round(accrued, 4), "projected_usd": round(accrued + remaining + future, 4),
+    return {"accrued_usd": round(accrued, 4), "assumed_part_usd": round(assumed, 4),
+            "projected_usd": round(accrued + remaining + future, 4),
             "elapsed_hours": round(elapsed, 3), "overrun": overrun, "running_nodes": running,
             "final": False, "unpriced": list(UNPRICED)}
+
+
+def unattended_bound():
+    """Upper estimate if nobody runs the harness after creating every node:
+    each node lives until GCE deletes it at its max run duration (never more
+    than planned x 1.5 or the run's time limit), plus NAT data and assumed
+    egress. Leftover NAT IP hours are not included (they last until removed)."""
+    total = sum(min(NODES[n][3] * NODE_OVERRUN, MAX_HOURS) * _unit_cost(n) + PRICE_NAT_GIB * EST_NAT_GIB_PER_NODE
+                for n in NODES)
+    return round(total + ASSUMED_EGRESS_USD_PER_GIB * EST_EGRESS_GIB_TOTAL + MAX_HOURS * PRICE_NAT_IP_HOUR, 2)
+
+
+def cost_text(rep, recs, t):
+    life = lifetimes(recs)
+    running = [p for p, (_s, e, _v) in life.items() if p in NODES and e is None]
+    net_left = [p for p, (_s, e, _v) in life.items() if p in NETWORK_PARTS and e is None]
+    lines = ["cost (USD, Tokyo list prices; an estimate, NOT the Google Cloud bill):",
+             "  harness estimate, accrued so far: US$%.2f, of which US$%.2f is assumed (egress, NAT data)"
+             % (rep["accrued_usd"], rep["assumed_part_usd"]),
+             "  projection for the planned run:  US$%.2f" % rep["projected_usd"],
+             "  assumed, not verified: %s" % "; ".join(UNPRICED),
+             "  actual billing: not known to the harness; check Cloud Billing"]
+    if running:
+        lines.append("  if the harness stopped now: GCE deletes %s at their max run duration" % ", ".join(running))
+    if net_left:
+        lines.append("  still recorded as present and never deleted by GCE itself: %s (NAT IP US$%.3f/h)"
+                     % (", ".join(net_left), PRICE_NAT_IP_HOUR))
+    return "\n".join(lines)
 
 
 def limits_from(appr):
@@ -456,9 +576,11 @@ def guard(recs, t, creating=False, limits=None):
         raise Stop("accrued cost US$%.2f >= US$%.2f: stop, keep evidence, tear down this run's resources"
                    % (rep["accrued_usd"], lim["stop_all"]), EXIT_GUARD, teardown=True)
     if rep["elapsed_hours"] >= lim["max_hours"]:
-        raise Stop("elapsed %.2fh >= %.2fh: stop" % (rep["elapsed_hours"], lim["max_hours"]), EXIT_GUARD)
+        raise Stop("elapsed %.2fh >= %.2fh: stop and tear down this run's resources"
+                   % (rep["elapsed_hours"], lim["max_hours"]), EXIT_GUARD, teardown=True)
     if rep["overrun"]:
-        raise Stop("node over its planned time by more than 50%%: %s" % ", ".join(rep["overrun"]), EXIT_GUARD)
+        raise Stop("node over its planned time by more than 50%%: %s: stop and tear down this run's resources"
+                   % ", ".join(rep["overrun"]), EXIT_GUARD, teardown=True)
     if creating and rep["projected_usd"] >= lim["stop_new"]:
         raise Stop("projected cost US$%.2f >= US$%.2f: no new resource" % (rep["projected_usd"], lim["stop_new"]),
                    EXIT_GUARD)
@@ -475,6 +597,61 @@ def harness_sha256():
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def repo_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+
+def check_approval_file(path, state_dir=None):
+    """What the harness can check about who could have written the approval.
+    It cannot tell the Owner from another process of the same OS user; that
+    part stays procedural (README)."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        raise Stop("approval file unreadable: %s" % e)
+    if stat.S_ISLNK(st.st_mode):
+        raise Stop("approval file is a symbolic link: refused")
+    if not stat.S_ISREG(st.st_mode):
+        raise Stop("approval file is not a regular file: refused")
+    if st.st_uid != os.getuid():
+        raise Stop("approval file is owned by another user: refused")
+    if st.st_mode & 0o022:
+        raise Stop("approval file is writable by group or others: refused")
+    # judge the place the kernel will actually open, not the spelling of the path
+    parent = os.path.dirname(os.path.realpath(path))
+    pst = os.lstat(parent)
+    if stat.S_ISLNK(pst.st_mode) or pst.st_mode & 0o022 or pst.st_uid != os.getuid():
+        raise Stop("the directory holding the approval file must be the user's own, not a link, and not "
+                   "writable by group or others")
+    if st.st_nlink != 1:
+        raise Stop("approval file has more than one hard link: refused")
+    if _inside(path, repo_root()):
+        raise Stop("approval file is inside the repository: refused (keep it where only the Owner writes)")
+    if state_dir and os.path.isdir(state_dir) and _inside(path, state_dir):
+        raise Stop("approval file is inside the run's state directory: refused")
+
+
+def _inside(path, directory):
+    """Is path below directory? Compared by device and inode of every parent,
+    so letter case or links in the spelling do not matter."""
+    try:
+        target = os.stat(directory)
+    except OSError:
+        return False
+    d = os.path.dirname(os.path.realpath(path))
+    while True:
+        try:
+            st = os.stat(d)
+        except OSError:
+            return False
+        if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
 def load_approval(path, rid, op):
     """None => dry-run. A valid approval for this run and operation AND
     HS6_EXECUTE=<rid> => execute. Anything else stops. For cleanup operations
@@ -483,8 +660,14 @@ def load_approval(path, rid, op):
         if os.environ.get("HS6_EXECUTE"):
             raise Stop("HS6_EXECUTE is set but no approval file was given")
         return None
+    check_approval_file(path)
     try:
-        with open(path) as f:
+        before = os.lstat(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            if (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino) or st.st_nlink != 1 or st.st_mode & 0o022:
+                raise Stop("approval file changed while it was being read: refused")
             a = json.load(f)
     except (OSError, ValueError) as e:
         raise Stop("approval file unreadable: %s" % e)
@@ -637,12 +820,17 @@ class Run:
                 f.write("%s %s\n" % (iso(now()), msg))
 
     def gcloud(self, op):
+        if self.args.approval:
+            check_approval_file(self.args.approval, self.state_dir)
         appr = load_approval(self.args.approval, self.rid, op)
         self.appr = appr
         execute = appr is not None
         g = Gcloud(self.rid, execute, self.log, appr["account"] if appr else None)
         if execute:
-            self.check_account(g, appr["account"])
+            try:
+                self.check_account(g, appr["account"])
+            except (RuntimeError, NotFound, ValueError) as e:
+                raise Stop("could not check the gcloud account (%s)" % e, EXIT_UNKNOWN)
         return g, appr
 
     def limits(self):
@@ -883,6 +1071,9 @@ class Run:
                 "--labels=purpose=hagistack-verify,temporary=true,run-id=%s,hs-node=%s" % (self.rid, part), P()]
 
     def _refuse_new_work(self, recs):
+        if recorded_stops(self.state_dir):
+            raise Stop("a limit or monitor failure was recorded earlier (stops.jsonl): nothing new is created and "
+                       "no test step runs; run teardown")
         if unresolved(recs):
             raise Stop("unresolved resources %s: nothing new is created and no test step runs; run teardown"
                        % unresolved(recs))
@@ -895,6 +1086,7 @@ class Run:
             return 0
         with Lock(self.lockf):
             recs, base = self.load()
+            guard(recs, now(), limits=self.limits())   # limits that tear down come first
             self._refuse_new_work(recs)
             guard(recs, now(), creating=True, limits=self.limits())
             self.report_foreign(check_unexpected(g, self.rid, recs, base))
@@ -912,6 +1104,7 @@ class Run:
             return 0
         with Lock(self.lockf):
             recs, base = self.load()
+            guard(recs, now(), limits=self.limits())   # limits that tear down come first
             self._refuse_new_work(recs)
             st = state_of(recs)
             for p in NETWORK_PARTS:
@@ -1021,7 +1214,7 @@ class Run:
             present = True
         except NotFound:
             present = False
-        except (Stop, RuntimeError) as e:
+        except (Stop, RuntimeError, ValueError) as e:
             self.ledger.append({"kind": "resource", "part": part, "name": name, "event": "delete-failed",
                                 "error": "could not confirm deletion: %s" % e}, recs)
             raise Stop("could not confirm that %s is gone: stop" % name, EXIT_CLEANUP)
@@ -1043,7 +1236,7 @@ class Run:
             left = "still present"
         except NotFound:
             return
-        except (Stop, RuntimeError) as e:
+        except (Stop, RuntimeError, ValueError) as e:
             left = "unreadable (%s)" % e
         self.ledger.append({"kind": "resource", "part": part, "name": name, "event": "delete-failed",
                             "error": "boot disk %s %s" % (created["disk_name"], left)}, recs)
@@ -1074,7 +1267,8 @@ class Run:
             print("%s: %s" % (name_of(self.rid, part), self._delete(g, recs, part)))
         return 0
 
-    def teardown(self):
+    def teardown(self, reason=None):
+        """Never refused by the cost or time guards: cleaning up is always allowed."""
         g, _ = self.gcloud("teardown")
         order = list(NODES) + ["nat", "router", "fw-int", "fw-iap", "subnet", "net"]
         if not g.execute:
@@ -1084,17 +1278,25 @@ class Run:
         failures = []
         with Lock(self.lockf):
             recs, _base = self.load()
+            if reason:
+                self.ledger.append({"kind": "event", "event": "guard-stop", "reason": reason}, recs)
+            self.ledger.append({"kind": "event", "event": "teardown-started", "reason": reason or "requested"}, recs)
             for p in order:
                 if p == "nat" and failures:
                     break  # the network cannot go while a node may remain
                 try:
                     print("%s: %s" % (name_of(self.rid, p), self._delete(g, recs, p)))
-                except Stop as e:
-                    failures.append(str(e))
+                except Exception as e:  # noqa: BLE001 - any failure leaves this part for the residual check
+                    failures.append("%s: %s" % (p, e))
                     if p not in NODES:
                         break
+            left = [p for p, r in state_of(recs).items() if r["event"] not in ("deleted", "create-failed")]
+            self.ledger.append({"kind": "event", "event": "teardown-incomplete" if failures else "teardown-complete",
+                                "remaining": left, "failures": failures}, recs)
         if failures:
-            raise Stop("teardown incomplete: " + " | ".join(failures), EXIT_CLEANUP)
+            raise Stop("teardown incomplete; still recorded as present or unresolved: %s; reasons: %s; "
+                       "run residual and remove what is left by hand" % (", ".join(left) or "none", " | ".join(failures)),
+                       EXIT_CLEANUP)
         print("teardown complete")
         return 0
 
@@ -1124,6 +1326,7 @@ class Run:
             if p in st:
                 print("%-8s %-17s %s" % (p, st[p]["event"], st[p].get("gce_id", "")))
         rep = cost_report(recs, now())
+        print(cost_text(rep, recs, now()))
         print(json.dumps(rep, sort_keys=True))
         try:
             guard(recs, now())
@@ -1154,10 +1357,10 @@ class Run:
         # so a teardown is never blocked by a running test step.
         with Lock(self.lockf):
             recs, _b = self.load()
+            guard(recs, now(), limits=self.limits())   # limits that tear down come first
             self._refuse_new_work(recs)
             if state_of(recs).get(part, {}).get("event") != "created":
                 raise Stop("%s is not a created node of this run" % name)
-            guard(recs, now(), limits=self.limits())
             want_keys = ssh_keys_of(recs[0]["project_metadata"])
             if ssh_keys_of(project_metadata(g)) != want_keys:
                 raise Stop("project-wide ssh-keys differ from the baseline before %s: stop" % op)
@@ -1166,9 +1369,25 @@ class Run:
         stamp = "%s-%s-%s" % (iso(now()).replace(":", ""), part, op)
         rc, out, err = 0, "", ""
         status = EXIT_REMOTE
+        stopped = None
+        interval = watch_interval()
+
+        def monitor():
+            # the same guards as everywhere, re-evaluated while the step runs
+            guard(self.load_retry()[0], now(), limits=self.limits())
+
         try:
-            rc, out, err = g.remote(args, name, timeout)
-            if op == "upload" and rc == 0:
+            try:
+                rc, out, err = g.remote(args, name, timeout, monitor, interval)
+            except Stop as e:
+                if not hasattr(e, "partial"):
+                    raise
+                rc, out, err = e.partial
+                err = (err or "") + "\n# stopped while running: %s\n" % e
+                stopped = e
+                if e.code == EXIT_GUARD and not e.teardown:
+                    record_stop(self.state_dir, {"event": "monitor-failed", "reason": str(e), "by": op})
+            if op == "upload" and rc == 0 and stopped is None:
                 with open(cmd_args[0], "rb") as f:
                     want = hashlib.sha256(f.read()).hexdigest()
                 rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
@@ -1186,17 +1405,96 @@ class Run:
             self.log("remote %s %s rc=%s log=remote/%s.log" % (op, name, rc, stamp))
             sys.stdout.write(out)
             sys.stderr.write(err)
+            also = "; the step was also stopped: %s" % stopped if stopped else ""
             try:
                 keys_now = ssh_keys_of(project_metadata(g))
             except (Stop, RuntimeError, NotFound, ValueError) as e:
                 raise Stop("could not check the project ssh-keys after %s (%s): stop and check; the step's "
-                           "result (rc=%s) is in remote/%s.log" % (op, e, rc, stamp), EXIT_UNKNOWN)
+                           "result (rc=%s) is in remote/%s.log%s" % (op, e, rc, stamp, also), EXIT_UNKNOWN,
+                           teardown=bool(stopped and stopped.teardown))
             if keys_now != want_keys:
                 raise Stop("project-wide ssh-keys changed during %s (a key was written to the project?): "
-                           "stop and check; Sinter's VMs share them" % op)
+                           "stop and check; Sinter's VMs share them%s" % (op, also), EXIT_REFUSED,
+                           teardown=bool(stopped and stopped.teardown))
+        if stopped is not None:
+            raise stopped
         if status:
             print("STOP: %s on %s exited %s (output kept in remote/%s.log)" % (op, name, rc, stamp), file=sys.stderr)
         return status
+
+    def load_retry(self):
+        """Read the ledger without the lock (monitoring). Another process may be
+        appending at that moment, so a failed read is retried briefly before it
+        counts as a monitor failure."""
+        last = None
+        for _ in range(5):
+            try:
+                return self.load()
+            except Stop as e:
+                last = e
+                time.sleep(0.2)
+        raise Stop("ledger unreadable while monitoring (%s)" % last, EXIT_GUARD)
+
+    def watch(self):
+        """Watch the run's limits from a second terminal; tear down when a limit
+        is reached, and keep retrying until the teardown is complete. It holds
+        no lock while it waits and calls GCE only to check the account at start
+        and to tear down. A failure is recorded in stops.jsonl (which blocks new
+        work) and retried at the next interval; watch does not give up. If this
+        process is killed, nothing watches any more: GCE still deletes each node
+        at its max run duration, but the NAT, router, firewall rules, subnet and
+        network stay until removed by hand."""
+        g, _ = self.gcloud("teardown")
+        interval = watch_interval()
+        loops = int(os.environ.get("HS6_WATCH_MAX_LOOPS", "0")) if _TEST_MODE["on"] else 0
+        if not g.execute:
+            print("DRY-RUN: would check the cost and time limits every %.0fs and tear down when one is reached"
+                  % interval)
+            return 0
+        n, tripped, seen = 0, False, set()
+
+        def note(event, reason):
+            # print every time, record each kind of event once (stops.jsonl only needs to exist)
+            print("watch: %s: %s" % (event, reason))
+            if event not in seen:
+                record_stop(self.state_dir, {"event": event, "reason": reason, "by": "watch"})
+                seen.add(event)
+
+        while True:
+            try:
+                recs = self.load_retry()[0]
+            except Stop as e:
+                note("monitor-failed", str(e))
+            else:
+                alive = [p for p, r in state_of(recs).items() if r["event"] not in ("deleted", "create-failed")]
+                if not alive and any(r.get("event") == "teardown-complete" for r in recs):
+                    print("watch: the run has been torn down; nothing of it is recorded as present")
+                    return EXIT_GUARD if tripped else 0
+                try:
+                    guard(recs, now(), limits=self.limits())
+                except Stop as e:
+                    if not e.teardown:
+                        note("monitor-failed", str(e))
+                    else:
+                        tripped = True
+                        note("limit", str(e))
+                        try:
+                            self.teardown(reason=str(e))
+                        except Exception as t:  # noqa: BLE001 - retried at the next interval
+                            note("teardown-retry", str(t))
+            n += 1
+            if loops and n >= loops:
+                print("watch: %s after %d check(s)" % ("limit reached" if tripped else "within limits", n))
+                return EXIT_GUARD if tripped else 0
+            time.sleep(interval)
+
+    def remaining_text(self):
+        try:
+            recs = self.ledger.load()
+        except Stop as e:
+            return "the ledger is unreadable (%s); run residual" % e
+        left = [p for p, r in state_of(recs).items() if r["event"] not in ("deleted", "create-failed")]
+        return "recorded as present or unresolved: %s; run residual" % (", ".join(left) or "nothing")
 
     def report_foreign(self, foreign):
         for f in foreign:
@@ -1215,18 +1513,32 @@ class Run:
         for p in ["n1", "n2", "n3", "u1", "nat", "router", "fw-int", "fw-iap", "subnet", "net"]:
             g.mutate(self.delete_args(p), name_of(self.rid, p))
         rep = cost_report([{"kind": "header"}], now())
-        print("planned cost before creation: US$%.2f projected (not final; %s)" % (rep["projected_usd"],
-                                                                                   "; ".join(UNPRICED)))
+        print("cost (USD, Tokyo list prices; an estimate, NOT the Google Cloud bill):")
+        print("  projection for the planned run: US$%.2f" % rep["projected_usd"])
+        print("  assumed, not verified: %s" % "; ".join(UNPRICED))
+        print("  if the harness stops entirely after creating the nodes: GCE deletes each node at its max run")
+        print("    duration. Estimate up to then: about US$%.2f, assuming all five nodes at their longest possible"
+              % unattended_bound())
+        print("    duration, list prices, the assumed egress and NAT data volumes, and 6 h of NAT IP. It is an")
+        print("    estimate, not a guarantee; US$8 is then NOT guaranteed, and the NAT IP keeps costing")
+        print("    US$%.3f/h after that until the network is removed by hand." % PRICE_NAT_IP_HOUR)
+        print("  actual billing: not known to the harness; check Cloud Billing")
         return 0
 
 
+def _interrupt(signum, _frame):
+    raise KeyboardInterrupt("signal %d" % signum)
+
+
 def main(argv=None):
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _interrupt)
     ap = argparse.ArgumentParser(description="Hagistack stage 6 GCE harness (dry-run unless approved)")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--approval")
     ap.add_argument("command", choices=["plan", "init", "create-network", "create-node", "delete-node",
-                                        "teardown", "status", "residual", "ssh", "upload"])
+                                        "teardown", "status", "residual", "ssh", "upload", "watch"])
     ap.add_argument("rest", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     r = None
@@ -1249,6 +1561,8 @@ def main(argv=None):
             return r.status()
         if a.command == "residual":
             return r.residual()
+        if a.command == "watch":
+            return r.watch()
         if a.command == "ssh":
             if len(rest) < 2:
                 raise Stop("ssh NODE -- COMMAND")
@@ -1260,13 +1574,22 @@ def main(argv=None):
     except Stop as e:
         print("STOP: %s" % e, file=sys.stderr)
         if e.teardown and r is not None and r.appr is not None:
-            print("accrued cost limit reached: tearing down this run's resources", file=sys.stderr)
+            record_stop(r.state_dir, {"event": "limit", "reason": str(e), "by": a.command})
+            print("limit reached: tearing down this run's resources", file=sys.stderr)
             try:
-                r.teardown()
+                r.teardown(reason=str(e))
             except Stop as t:
-                print("STOP: %s" % t, file=sys.stderr)
-                return t.code
+                print("STOP: teardown did not complete: %s" % t, file=sys.stderr)
+                print("STOP: %s" % r.remaining_text(), file=sys.stderr)
+                return t.code if t.code != EXIT_GUARD else EXIT_CLEANUP
+            except Exception as t:  # noqa: BLE001
+                print("STOP: teardown could not run (%s: %s)" % (type(t).__name__, t), file=sys.stderr)
+                print("STOP: %s" % r.remaining_text(), file=sys.stderr)
+                return EXIT_CLEANUP
         return e.code
+    except KeyboardInterrupt:
+        print("STOP: interrupted; check status and the ledger before going on", file=sys.stderr)
+        return EXIT_UNKNOWN
     except Exception as e:  # noqa: BLE001 - fail closed: an unexpected error is a stop
         print("STOP: unexpected error (%s: %s); state is unknown, check the ledger" % (type(e).__name__, e),
               file=sys.stderr)

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,16 +66,15 @@ class Base(unittest.TestCase):
         with open(os.path.join(bindir, "gcloud"), "w") as f:
             f.write("#!/bin/sh\ntouch '%s'\nexit 99\n" % self.marker)
         os.chmod(os.path.join(bindir, "gcloud"), 0o755)
-        self.mockbin = os.path.join(self.tmp, "gcloud-mock")
-        with open(self.mockbin, "w") as f:
-            f.write("#!/bin/sh\nexec '%s' -I '%s' \"$@\"\n" % (sys.executable, MOCK))
-        os.chmod(self.mockbin, 0o755)
+        # the mock is run as "python3 -I mock_gcloud.py" (an existing file): creating a new
+        # executable per test made macOS stall on its first execution
+        self.mockbin = MOCK
         self.t = T0
         self.approval = os.path.join(self.tmp, "approval.json")
         self.write_approval()
         self.env = {"PATH": bindir + os.pathsep + "/usr/bin:/bin", "HOME": self.tmp,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
-                    "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "3",
+                    "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10",
                     "HS6_REGISTRY": os.path.join(self.tmp, "registry")}
         # in-process calls (Protection tests) must not reach the real gcloud either
         self._saved_env = {k: os.environ.get(k) for k in ("HS6_GCLOUD", "PATH")}
@@ -98,6 +98,7 @@ class Base(unittest.TestCase):
         a.update(over)
         with open(self.approval, "w") as f:
             json.dump(a, f)
+        os.chmod(self.approval, 0o600)
 
     def hs(self, *args, approval=True, env=None, rid=RID):
         e = dict(self.env, HS6_NOW=str(self.t))
@@ -539,11 +540,20 @@ class CostGuards(Base):
         with self.assertRaises(hs6.Stop) as c:
             hs6.guard(self.recs({"nat": 6.0, "n1": 5.5}), self.t)
         self.assertIn("elapsed", str(c.exception))
+        self.assertTrue(c.exception.teardown)
 
     def test_node_overrun(self):
         with self.assertRaises(hs6.Stop) as c:
             hs6.guard(self.recs({"n4": 3.8}), self.t)
         self.assertIn("50%", str(c.exception))
+        self.assertTrue(c.exception.teardown)
+
+    def test_monitor_failure_does_not_tear_down(self):
+        r = self.recs({"n1": 1.0})
+        r[-1]["created_at"] = "not a time"
+        with self.assertRaises(hs6.Stop) as c:
+            hs6.guard(r, self.t)
+        self.assertFalse(c.exception.teardown)  # cost unknown: stop new work, never act on a broken view
 
     def test_unknown_and_failed_resources_in_cost(self):
         r = self.recs({"n1": 1.0})
@@ -565,14 +575,13 @@ class CostGuards(Base):
     def test_guards_end_to_end(self):
         self.up("n1", "n2")
         self.t += 4.6 * 3600  # n2 is more than 50 % over its 3 h
-        rc, out = self.hs("create-node", "n3")
+        rc, out = self.hs("status", approval=False)  # status only reports
         self.assertEqual(rc, hs6.EXIT_GUARD, out)
-        rc, out = self.hs("ssh", "n1", "--", "true")
-        self.assertEqual(rc, hs6.EXIT_GUARD, out)
-        rc, out = self.hs("status", approval=False)
-        self.assertEqual(rc, hs6.EXIT_GUARD, out)
-        rc, out = self.hs("teardown")  # cleanup is always allowed
+        self.assertIn("NOT the Google Cloud bill", out)
+        self.assertIn("hagistack-s6-%s-n1" % RID, self.mock()["res"]["instances"])
+        rc, out = self.hs("teardown")  # an explicit teardown is never refused by the guards
         self.assertEqual(rc, 0, out)
+        self.assertEqual([n for k, v in self.mock()["res"].items() for n in v if n.startswith("hagistack")], [])
 
     def test_plan_estimate_within_budget(self):
         rep = hs6.cost_report([{"kind": "header"}], self.t)
@@ -810,6 +819,331 @@ class GateHardening(Base):
         rc, out = self.hs("teardown")
         self.assertEqual(rc, hs6.EXIT_CLEANUP, out)
         self.assertIn("hagistack-s6-%s-nat" % RID, self.mock()["res"]["nats"])
+
+
+class R2Teardown(Base):
+    def gone(self):
+        return [n for k, v in self.mock()["res"].items() for n in v if n.startswith("hagistack")] == []
+
+    def events_kind(self):
+        return [r["event"] for r in self.ledger() if r.get("kind") == "event"]
+
+    def test_six_hours_stops_and_tears_down(self):
+        self.up()
+        self.t += 2 * 3600
+        self.assertEqual(self.hs("create-node", "n1")[0], 0)
+        self.t += 4.05 * 3600  # elapsed 6.05 h, n1 only 4.05 h (no overrun)
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertIn("elapsed", out)
+        self.assertTrue(self.gone())
+        self.assertEqual(self.events_kind(), ["guard-stop", "teardown-started", "teardown-complete"])
+
+    def test_node_overrun_stops_and_tears_down(self):
+        self.up("n1", "n4")
+        self.t += 3.8 * 3600
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertIn("50%", out)
+        self.assertTrue(self.gone())
+        self.assertEqual(self.events("n2"), [])
+
+    def test_accrued_limit_records_stop_and_completion_separately(self):
+        self.up("n1", "n2", "n3", "n4")
+        self.t += 8 * 3600
+        rc, out = self.hs("ssh", "n2", "--", "true")
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        ev = [r for r in self.ledger() if r.get("kind") == "event"]
+        self.assertEqual([e["event"] for e in ev], ["guard-stop", "teardown-started", "teardown-complete"])
+        self.assertIn("accrued", ev[0]["reason"])
+        self.assertEqual(ev[-1]["remaining"], [])
+
+    def test_failed_auto_teardown_is_not_success_and_keeps_the_network(self):
+        self.up("n1")
+        self.inject("instances delete", "DELETE_NOOP")
+        self.t += 6.1 * 3600
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertEqual(rc, hs6.EXIT_CLEANUP, out)
+        self.assertIn("teardown incomplete", out)
+        self.assertIn("n1", out)
+        self.assertIn("hagistack-s6-%s-net" % RID, self.mock()["res"]["networks"])
+        self.assertEqual(self.events_kind()[-1], "teardown-incomplete")
+
+    def test_auto_teardown_refuses_a_foreign_id(self):
+        self.up("n1")
+        n = "hagistack-s6-%s-n1" % RID
+        self.set_mock(lambda s: s["res"]["instances"][n].update(id="555"))
+        self.t += 6.1 * 3600
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertEqual(rc, hs6.EXIT_CLEANUP, out)
+        self.assertIn(n, self.mock()["res"]["instances"])
+        self.assertIn("hagistack-s6-%s-net" % RID, self.mock()["res"]["networks"])
+
+    def test_vm_deleted_by_gce_leaves_the_network_until_teardown(self):
+        self.up("n1")
+        n = "hagistack-s6-%s-n1" % RID
+
+        def gce_max_run(s):
+            s["res"]["instances"].pop(n)
+            s["res"]["disks"].pop(n)
+        self.set_mock(gce_max_run)
+        rc, out = self.hs("residual")
+        self.assertEqual(rc, hs6.EXIT_CLEANUP, out)
+        self.assertIn("nat hagistack-s6-%s-nat" % RID, out)
+        self.assertIn("networks hagistack-s6-%s-net" % RID, out)
+        rc, out = self.hs("status", approval=False)
+        self.assertIn("never deleted by GCE itself", out)
+        rc, out = self.hs("teardown")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("%s: absent" % n, out)
+        self.assertEqual(self.hs("residual")[0], 0)
+
+    def _popen(self, args, extra):
+        e = dict(self.env, HS6_EXECUTE=RID, HS6_WATCH_INTERVAL="1")
+        e.update(extra)
+        return subprocess.Popen([sys.executable, "-I", HS6, "--run-id", RID, "--state-dir", self.sdir,
+                                 "--approval", self.approval] + args,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=e)
+
+    def test_ssh_is_monitored_and_stopped_while_it_runs(self):
+        self.up("n1")
+        clock = os.path.join(self.tmp, "clock")
+        with open(clock, "w") as f:
+            f.write(str(self.t))
+        self.inject("compute ssh", "SLEEP")
+        start = time.monotonic()
+        p = self._popen(["ssh", "n1", "--", "long-step"], {"HS6_CLOCK_FILE": clock, "MOCK_SLEEP": "30"})
+        time.sleep(3)
+        with open(clock, "w") as f:
+            f.write(str(self.t + 7 * 3600))
+        out, _ = p.communicate(timeout=60)
+        self.assertLess(time.monotonic() - start, 25, out)
+        self.assertEqual(p.returncode, hs6.EXIT_GUARD, out)
+        self.assertNotIn("ssh_finished", self.mock())  # the step was killed
+        logs = os.listdir(os.path.join(self.sdir, "remote"))
+        with open(os.path.join(self.sdir, "remote", logs[0])) as f:
+            self.assertIn("stopped while running", f.read())
+        self.assertTrue(self.gone())
+
+    def test_watch_tears_down_on_a_limit(self):
+        self.up("n1")
+        rc, out = self.hs("watch", env={"HS6_WATCH_MAX_LOOPS": "1", "HS6_WATCH_INTERVAL": "0"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("within limits", out)
+        self.t += 6.1 * 3600
+        rc, out = self.hs("watch", env={"HS6_WATCH_INTERVAL": "0"})
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertTrue(self.gone())
+        rc, out = self.hs("watch", env={"HS6_WATCH_INTERVAL": "0"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("has been torn down", out)
+
+    def test_watch_killed_leaves_no_lock_and_teardown_still_works(self):
+        self.up("n1")
+        p = self._popen(["watch"], {"HS6_NOW": str(self.t), "HS6_WATCH_INTERVAL": "30"})
+        time.sleep(3)
+        p.kill()
+        p.communicate()
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "run.lock")))
+        rc, out = self.hs("teardown")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.gone())
+
+    def test_sigterm_during_ssh_stops_the_step(self):
+        self.up("n1")
+        self.inject("compute ssh", "SLEEP")
+        p = self._popen(["ssh", "n1", "--", "long-step"], {"HS6_NOW": str(self.t), "MOCK_SLEEP": "20"})
+        time.sleep(3)
+        p.terminate()
+        out, _ = p.communicate(timeout=60)
+        time.sleep(1)
+        self.assertNotIn("ssh_finished", self.mock())  # the step did not keep running
+        self.assertIn("interrupted", out)
+
+    def test_harness_killed_during_ssh_leaves_no_lock(self):
+        self.up("n1")
+        self.inject("compute ssh", "SLEEP")
+        p = self._popen(["ssh", "n1", "--", "long-step"], {"HS6_NOW": str(self.t), "MOCK_SLEEP": "20"})
+        time.sleep(3)
+        p.kill()
+        p.communicate()
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "run.lock")))
+        rc, out = self.hs("teardown")
+        self.assertEqual(rc, 0, out)
+
+
+class R2Approval(Base):
+    def test_symlinked_approval_refused(self):
+        link = os.path.join(self.tmp, "link.json")
+        os.symlink(self.approval, link)
+        e = dict(self.env, HS6_EXECUTE=RID, HS6_NOW=str(self.t))
+        p = subprocess.run([sys.executable, "-I", HS6, "--run-id", RID, "--state-dir", self.sdir, "--approval", link,
+                            "init"], capture_output=True, text=True, env=e)
+        self.assertEqual(p.returncode, hs6.EXIT_REFUSED, p.stderr)
+        self.assertIn("symbolic link", p.stderr)
+        self.assertNotIn("calls", self.mock())
+
+    def test_writable_approval_refused(self):
+        os.chmod(self.approval, 0o664)
+        rc, out = self.hs("init")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("writable by group or others", out)
+        os.chmod(self.approval, 0o644)
+        os.chmod(self.tmp, 0o777)
+        try:
+            rc, out = self.hs("init")
+            self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+            self.assertIn("directory holding the approval", out)
+        finally:
+            os.chmod(self.tmp, 0o700)
+        self.assertNotIn("calls", self.mock())
+
+    def test_approval_inside_repository_or_state_dir_refused(self):
+        with self.assertRaises(hs6.Stop) as c:
+            hs6.check_approval_file(HS6)  # any file in the repository
+        self.assertIn("inside the repository", str(c.exception))
+        inside = os.path.join(self.sdir, "approval.json")
+        shutil.copy(self.approval, inside)
+        os.chmod(inside, 0o644)
+        e = dict(self.env, HS6_EXECUTE=RID, HS6_NOW=str(self.t))
+        p = subprocess.run([sys.executable, "-I", HS6, "--run-id", RID, "--state-dir", self.sdir, "--approval", inside,
+                            "init"], capture_output=True, text=True, env=e)
+        self.assertEqual(p.returncode, hs6.EXIT_REFUSED, p.stderr)
+        self.assertIn("state directory", p.stderr)
+
+    def test_hard_linked_or_case_variant_approval_refused(self):
+        os.link(self.approval, os.path.join(self.tmp, "second-name.json"))
+        rc, out = self.hs("init")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("hard link", out)
+        variant = HS6.replace("acceptance", "ACCEPTANCE")
+        with self.assertRaises(hs6.Stop) as c:
+            hs6.check_approval_file(variant)
+        if os.path.exists(variant):  # a case-insensitive volume: must be caught as inside the repository
+            self.assertIn("inside the repository", str(c.exception))
+        # a path that walks through a link into the repository and back out
+        lnk = os.path.join(self.tmp, "lnk")
+        os.symlink(os.path.dirname(HS6), lnk)
+        dotted = os.path.join(lnk, "..", "stage6", "hs6.py")
+        if os.path.exists(dotted):
+            with self.assertRaises(hs6.Stop) as c:
+                hs6.check_approval_file(dotted)
+            self.assertIn("inside the repository", str(c.exception))
+
+    def test_watch_loop_hook_refused_with_a_real_account(self):
+        self.write_approval(account="owner@example.com")
+        rc, out = self.hs("watch", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None,
+                                        "HS6_WATCH_MAX_LOOPS": "1"})
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+
+    def test_clock_file_refused_with_a_real_account(self):
+        self.write_approval(account="owner@example.com")
+        rc, out = self.hs("init", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None,
+                                       "HS6_CLOCK_FILE": "/x"})
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("tests only", out)
+
+    def test_harness_change_after_approval_refused(self):
+        self.write_approval(harness_sha256=hashlib.sha256(b"an older harness").hexdigest())
+        rc, out = self.hs("init")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("harness_sha256", out)
+
+
+class R2Fixes(R2Teardown):
+    def test_forking_ssh_is_killed_promptly_by_the_monitor(self):
+        self.up("n1")
+        clock = os.path.join(self.tmp, "clock")
+        with open(clock, "w") as f:
+            f.write(str(self.t))
+        self.inject("compute ssh", "SLEEP")
+        start = time.monotonic()
+        p = self._popen(["ssh", "n1", "--", "long-step"],
+                        {"HS6_CLOCK_FILE": clock, "MOCK_SLEEP": "40", "MOCK_FORK": "1"})
+        time.sleep(3)
+        with open(clock, "w") as f:
+            f.write(str(self.t + 7 * 3600))
+        out, _ = p.communicate(timeout=90)
+        self.assertLess(time.monotonic() - start, 25, out)
+        self.assertEqual(p.returncode, hs6.EXIT_GUARD, out)
+        self.assertTrue(self.gone())
+
+    def test_forking_ssh_step_timeout_returns_promptly(self):
+        self.up("n1")
+        self.inject("compute ssh", "SLEEP")
+        start = time.monotonic()
+        rc, out = self.hs("ssh", "n1", "--", "long-step",
+                          env={"MOCK_SLEEP": "40", "MOCK_FORK": "1", "HS6_REMOTE_TIMEOUT": "3",
+                               "HS6_WATCH_INTERVAL": "1"})
+        self.assertLess(time.monotonic() - start, 25, out)
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertIn("ran longer than", out)
+        self.assertFalse(self.gone())  # a slow step is not a limit: nothing is torn down
+
+    def test_monitor_failure_during_ssh_kills_the_step_and_deletes_nothing(self):
+        self.up("n1")
+        self.inject("compute ssh", "SLEEP")
+        p = self._popen(["ssh", "n1", "--", "long-step"], {"HS6_NOW": str(self.t), "MOCK_SLEEP": "40"})
+        time.sleep(3)
+        with open(os.path.join(self.sdir, "ledger.head"), "w") as f:
+            f.write("{}")
+        out, _ = p.communicate(timeout=90)
+        self.assertEqual(p.returncode, hs6.EXIT_GUARD, out)
+        self.assertIn("ledger", out)
+        self.assertNotIn("ssh_finished", self.mock())
+        self.assertFalse(self.gone())
+        self.assertTrue(hs6.recorded_stops(self.sdir))
+
+    def test_watch_retries_while_the_lock_is_busy(self):
+        self.up("n1")
+        lock = os.path.join(self.sdir, "run.lock")
+        open(lock, "w").close()
+        self.t += 6.1 * 3600
+        rc, out = self.hs("watch", env={"HS6_WATCH_MAX_LOOPS": "2", "HS6_WATCH_INTERVAL": "0"})
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertIn("teardown-retry", out)
+        self.assertFalse(self.gone())
+        stops = hs6.recorded_stops(self.sdir)
+        self.assertTrue(any("teardown-retry" in x for x in stops))
+        self.assertEqual(len(stops), 2)  # one "limit" and one "teardown-retry", not one per check
+        os.unlink(lock)
+        rc, out = self.hs("watch", env={"HS6_WATCH_INTERVAL": "0"})
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertTrue(self.gone())
+
+    def test_auto_teardown_that_cannot_start_is_recorded_and_reported(self):
+        self.up("n1")
+        self.t += 6.1 * 3600
+        self.inject("config get-value account", "CRASH", times=5, skip=1)
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("teardown did not complete", out)
+        self.assertIn("recorded as present or unresolved: net", out)
+        self.assertIn("n1", out)
+        self.assertTrue(any('"limit"' in x for x in hs6.recorded_stops(self.sdir)))
+        self.assertFalse(self.gone())
+        self.set_mock(lambda s: s.update(fail=[]))
+        rc, out = self.hs("create-node", "n2")  # the limit still applies: this tears down
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertTrue(self.gone())
+
+    def test_a_recorded_stop_blocks_new_work(self):
+        self.up("n1")
+        hs6.record_stop(self.sdir, {"event": "monitor-failed", "reason": "test"})
+        for args in (("create-node", "n2"), ("ssh", "n1", "--", "true")):
+            rc, out = self.hs(*args)
+            self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+            self.assertIn("stops.jsonl", out)
+        self.assertEqual(self.hs("teardown")[0], 0)
+
+    def test_limit_in_create_node_is_recorded_and_torn_down(self):
+        self.up("n1")
+        self.t += 6.1 * 3600
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_GUARD, out)
+        self.assertTrue(any('"limit"' in x for x in hs6.recorded_stops(self.sdir)))
+        self.assertTrue(self.gone())
+        self.assertEqual(self.events("n2"), [])
 
 
 if __name__ == "__main__":

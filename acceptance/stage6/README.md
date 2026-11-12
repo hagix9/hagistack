@@ -55,9 +55,10 @@ Execution needs **all** of the following:
 3. The configured gcloud account, and the only active one, equal to the approved account.
    - No service-account impersonation and no `CLOUDSDK_*` identity override.
    - Every call carries `--account=<approved>`.
-4. No test hook. `HS6_GCLOUD` and `HS6_NOW` work only with an approval whose account
-   is in the reserved `.invalid` domain, as in the tests. With a real account they are
-   refused.
+4. No test hook. `HS6_GCLOUD`, `HS6_NOW`, `HS6_CLOCK_FILE`, `HS6_REGISTRY` and
+   `HS6_WATCH_MAX_LOOPS` work only with an approval whose account is in the reserved
+   `.invalid` domain, as in the tests. With a real account they are refused. Outside
+   the tests, `HS6_WATCH_INTERVAL` is kept between 5 s and 300 s.
 
 The approval can lower the cost and time limits, never raise them. `teardown` and
 `residual` still work after it has expired, so a run can always be cleaned up.
@@ -134,19 +135,121 @@ is not verified, so it is assumed high: US$0.20/GiB for 2 GiB. Every report says
 |---|---|
 | projected total ≥ US$7 | no new resource |
 | accrued ≥ US$8 | stop, and tear this run's resources down automatically |
-| 6 h since the first creation | stop |
-| a node over its planned hours by more than 50 % | stop |
-| the monitor cannot compute | stop |
+| the run's time limit (6 h, or less if approved) since the first creation | stop, and tear down automatically |
+| a node over its planned hours by more than 50 % | stop, and tear down automatically |
+| the monitor cannot compute | stop new work and test steps; no automatic teardown (the view is broken) |
 
-Teardown is always allowed. GCE itself puts no cap on billing. The
-`--max-run-duration` on each node is the server-side backstop for nodes. The network
-and NAT have no such backstop: the NAT IP costs about US$0.005 per hour while it is
-left.
+**What counts as torn down.** A limit is first written to `stops.jsonl`, without the
+lock, so it is recorded even when the lock is busy or the teardown cannot start. Any
+entry there blocks new resources and test steps for the rest of the run. The ledger
+then records the stop (`guard-stop`) separately from its outcome:
+- `teardown-complete`: nothing of the run is recorded as present any more;
+- `teardown-incomplete`: lists what remains and why.
 
-The harness cannot prove who wrote an approval file. It is a procedural control:
-- writing the file is the Owner's act;
+A teardown never deletes against a broken ledger, a different GCE id or an unclear
+owner. An incomplete teardown exits with code 8 and names what is left.
+
+**When the guards run.** The guards are checked on:
+- every harness command;
+- every `HS6_WATCH_INTERVAL` seconds (default 60) while an `ssh`/`upload` step runs.
+  - A step that reaches a limit is killed together with everything it started (its
+    own process group, TERM then KILL, with bounded waits).
+  - Its output so far is kept, and the teardown follows.
+  - A failed monitor kills the step, deletes nothing and records the failure.
+- every interval by `hs6.py watch`, a monitor for a second terminal.
+  - It holds no lock while it waits.
+  - It calls GCE only to check the account at start and to tear down.
+  - It does not give up: a lock held by another command, an incomplete teardown or a
+    ledger read failure is recorded and retried at the next interval.
+  - It ends once the run has been torn down.
+
+**Cost figures, kept apart** (`status` and `plan` print them):
+- the projection for the planned run;
+- the harness's estimate of what has accrued, with the part that rests on assumptions
+  shown separately;
+- what is assumed or not priced: egress, and the NAT data volume;
+- the actual Google Cloud bill, which the harness does not know (check Cloud Billing).
+
+US$8 is a limit the harness enforces while it runs. It is not a cap that Google Cloud
+guarantees.
+
+Teardown is always allowed and is never refused by the cost or time guards.
+
+## If the harness is not running
+
+If the harness process dies, the terminal disconnects or the Mac sleeps or shuts
+down, nothing in this harness acts any more.
+
+- **Nodes.** GCE deletes each node by itself at its `--max-run-duration`, which is
+  never more than planned × 1.5 and never past the run's time limit.
+- **Unattended cost.** If every node was created and nobody ran the harness again,
+  the estimate up to the nodes' deletion is about **US$8.54** (`hs6.py plan` prints
+  it). It assumes:
+  - all five nodes at their longest possible duration;
+  - list prices;
+  - the assumed egress (2 GiB) and NAT data (3 GiB per node);
+  - 6 hours of NAT IP.
+
+  It is an estimate, not a bound the harness can guarantee, and **US$8 is then not
+  guaranteed**. The NAT IP charge after that is not included.
+- **Network.** The NAT, router, firewall rules, subnet and network are **never**
+  deleted by GCE itself. The NAT IP keeps costing about US$0.005/h, roughly US$0.12 a
+  day, until it is removed.
+- **No extra infrastructure.** Making that cleanup automatic would need something
+  that keeps running and costs money: a VM, Cloud Scheduler or Cloud Functions. The
+  harness adds none of these.
+
+**Operating conditions for a real run (required):**
+1. Run `hs6.py watch` in a second terminal for the whole run. Keep the Mac awake
+   (`caffeinate -i`) and use a terminal session that survives disconnects (for example
+   `tmux`). If `watch` itself is killed, nothing records it.
+2. After the run, or after any interruption, run `hs6.py teardown` then
+   `hs6.py residual`, and do not finish until `residual` reports nothing left. If the
+   harness cannot do it, remove what `residual` names by hand, by exact name.
+3. If the operator's machine was off or disconnected during the run, check `residual`
+   as soon as it is back.
+4. If the harness is interrupted (Ctrl-C, SIGTERM, SIGHUP), it stops the running step
+   on the node. If it is killed outright (SIGKILL, power loss), the step may keep
+   running on the node until the node is deleted. That costs nothing extra, but its
+   output is lost.
+
+**Resuming after a recorded stop.** A run whose `stops.jsonl` has an entry does not
+create anything or run test steps again, whatever the cause. It can only be torn
+down. To go on testing:
+1. tear the run down;
+2. confirm `residual` reports nothing left;
+3. the Owner approves a **new run id**, with a new approval file and a new state
+   directory.
+
+Do not edit or delete `stops.jsonl` to continue a run.
+
+**Known limit of the approval-file checks.** The checks look at the real path. They
+cannot prevent a process of the same OS user from writing a valid approval file. That
+part is procedural.
+
+**Checks the harness makes on the approval file:**
+- it must be a regular file, not a symbolic link, and it is opened without following
+  links;
+- it must be owned by the user running the harness, have a single hard link, and
+  not be writable by group or others. It is re-checked on the open file
+  descriptor;
+- the directory that actually holds it (its real path) must be the user's own and
+  not writable by group or others. A link elsewhere in the spelled path is
+  followed, then judged by where it leads;
+- it must lie outside the repository and outside the run's state directory, compared
+  by device and inode, so letter case and links do not matter.
+
+On a volume mounted with `noowners` (the external SSD is), every file appears owned
+by the current user, so the owner check proves nothing there. Keep the approval file
+on a volume that records owners, for example in the Owner's home directory.
+
+**What the harness cannot tell.** It cannot tell the Owner from another process of
+the same OS user. Writing the approval file therefore stays the Owner's act:
 - implementers and automation must never write one;
-- keep the file outside the repository, in a place only the Owner writes to.
+- keep it where only the Owner writes.
+
+A change to `hs6.py` after the approval makes the SHA-256 differ, and the harness then
+refuses every operation except cleanup.
 
 ## Order the harness enforces
 
