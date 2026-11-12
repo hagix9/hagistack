@@ -772,7 +772,13 @@ def load_approval(path, rid, op):
     if a.get("owner_statement") != owner_statement(rid):
         problems.append("owner_statement does not match the required text")
     if a.get("harness_sha256") != harness_sha256():
-        problems.append("harness_sha256 is not this harness (re-approve after any change)")
+        if op in CLEANUP_OPS:
+            # a run must always be cleanable: a harness fixed after init can still
+            # tear the run down and check it, under the Owner's signed approval
+            print("WARNING: hs6.py differs from the approved harness; allowed for %s only" % op,
+                  file=sys.stderr)
+        else:
+            problems.append("harness_sha256 is not this harness (re-approve after any change)")
     ops = a.get("operations")
     if not isinstance(ops, list) or not ops or any(o not in OPERATIONS for o in ops):
         problems.append("operations must be a non-empty subset of %s" % (OPERATIONS,))

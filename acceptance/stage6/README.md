@@ -237,7 +237,7 @@ from the chat, so it cannot tell the Owner's message from text the agent produce
 **Once:** the Owner creates an approval key and the public half is pinned:
 
 ```sh
-python3 acceptance/stage6/hs6_approve.py --setup        # or --setup --sk for a FIDO security key
+python3 -I acceptance/stage6/hs6_approve.py --setup        # or --setup --sk for a FIDO security key
 ```
 
 It asks for a passphrase (or a touch of the security key) and prints one public-key
@@ -248,15 +248,15 @@ passphrase.
 **For each run:** the implementer gives the Owner one command, for example:
 
 ```sh
-python3 acceptance/stage6/hs6_approve.py --run-id h6abc1 --ops init,network,n2,ssh,upload,teardown,residual
+python3 -I acceptance/stage6/hs6_approve.py --run-id h6abc1 --ops init,network,n2,ssh,upload,teardown,residual
 ```
 
 The Owner runs it in their own terminal. It:
 - refuses without a terminal, or in a shell an AI agent runs (`CLAUDECODE` and
   similar variables);
-- refuses if `hs6.py` does not trust the Owner's key (the pinned list was changed),
-  if the key is loaded in `ssh-agent`, if `hs6.py` has uncommitted changes, or if the
-  run id was used before;
+- refuses if the pinned keys are not exactly the Owner's key, if the key is loaded
+  in `ssh-agent`, if anything in `acceptance/stage6/` is uncommitted or untracked,
+  or if the run id was used before (except for a cleanup-only approval);
 - shows the run id, project, zone, account, operations, nodes, limits, validity
   and the harness's SHA-256 and commit;
 - asks the Owner to type the run id, then signs with `ssh-keygen -Y sign` (the
@@ -271,13 +271,30 @@ An approval for one run id is refused for any other, and an approval that has st
 a run (`init`) is recorded in `~/.config/hagistack-stage6/used-approvals` and cannot
 start another. While `OWNER_SIGNING_KEYS` is empty, nothing can be executed.
 
-**What it does not protect against.** The harness runs as the same OS user as the
-implementer. Someone who edits `hs6.py` (for example, the pinned key) or calls
-`gcloud` directly is not stopped by it. Such a change alters the harness SHA-256 and
-shows in git. `hs6_approve.py` refuses to sign while the pinned key is not the
-Owner's or `hs6.py` has uncommitted changes, so the Owner never signs for a harness
-that trusts another key. The key's passphrase or security key, and the Owner's
-review of harness changes, are what an approval rests on.
+**What it does not protect against.** The harness and `hs6_approve.py` run as the
+same OS user as the implementer. A same-user process can:
+- edit and commit `hs6.py` (for example the pinned key) or `hs6_approve.py` (for
+  example what it displays before signing);
+- call `gcloud` directly, or use the tests' hooks: an approval for an `.invalid`
+  account, signed with any key named in `HS6_OWNER_SIGNERS`, makes the unmodified
+  harness send its calls to whatever program `HS6_GCLOUD` names. That gives nothing
+  beyond calling `gcloud` directly, and the ledger then shows the `.invalid` account.
+
+What makes such a change visible:
+- `hs6_approve.py` reads `hs6.py` from its source (never a cached `.pyc`) and refuses
+  to sign unless the pinned keys are exactly the Owner's key and the whole
+  `acceptance/stage6` directory is committed and unchanged; it shows that directory's
+  last commit;
+- any change to `hs6.py` changes the SHA-256 inside the signed approval.
+
+So an approval rests on the key's passphrase (or security key) and on the Owner
+reviewing the committed changes to `acceptance/stage6/` before signing. Run the tool
+as `python3 -I`, from a checkout whose history you have looked at.
+
+**Cleanup is always possible.** `teardown` and `residual` accept an expired
+approval and a changed `hs6.py` (with a warning), so a harness fixed after `init`
+can still remove the run. For a run id that has been used, `hs6_approve.py` signs
+only a cleanup approval (`--ops teardown,residual`).
 
 **Known limit of the approval-file checks.** The checks look at the real path. They
 cannot prevent a process of the same OS user from writing a file; the signature is

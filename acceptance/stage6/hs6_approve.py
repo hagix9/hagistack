@@ -7,7 +7,8 @@ your security-key touch). The AI agent cannot do that step: it does not have the
 passphrase or the key, and this tool refuses to run without a terminal.
 
     One time:  python3 hs6_approve.py --setup [--sk]
-    Each run:  python3 hs6_approve.py --run-id RID --ops init,network,n2,ssh,upload,teardown,residual
+    Each run:  python3 -I hs6_approve.py --run-id RID --ops init,network,n2,ssh,upload,teardown,residual
+    Cleanup :  python3 -I hs6_approve.py --run-id RID --ops teardown,residual   (a used run id)
 
 Writes ~/hagistack-approvals/<RID>.json and <RID>.json.sig. hs6.py executes
 nothing without a valid signature by a key pinned in hs6.OWNER_SIGNING_KEYS.
@@ -20,12 +21,30 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-import hs6  # noqa: E402
+HS6_PATH = os.path.join(HERE, "hs6.py")
+
+
+def _load_hs6():
+    """hs6.py from its source text, never from a cached .pyc: what is checked in
+    git is what this tool trusts (a planted .pyc could carry other keys)."""
+    with open(HS6_PATH, "rb") as f:
+        src = f.read()
+    mod = types.ModuleType("hs6_from_source")
+    mod.__file__ = HS6_PATH
+    exec(compile(src, HS6_PATH, "exec"), mod.__dict__)
+    return mod
+
+
+sys.dont_write_bytecode = True
+hs6 = _load_hs6()
+GIT = "/usr/bin/git"
+SSH_ADD = "/usr/bin/ssh-add"
 
 DEFAULT_KEY = os.path.expanduser("~/.ssh/hagistack-owner-approval")
 APPROVAL_DIR = os.path.expanduser("~/hagistack-approvals")
@@ -66,7 +85,10 @@ def build_approval(rid, ops, budget, max_hours, valid_hours, account, harness_sh
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=60, **kw)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60, **kw)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise Refused("could not run %s: %s" % (cmd[0], e))
 
 
 def need_terminal():
@@ -87,23 +109,37 @@ def pub_line(key):
 
 
 def key_in_agent(pub):
-    p = run(["ssh-add", "-L"]) if os.environ.get("SSH_AUTH_SOCK") else None
+    p = run([SSH_ADD, "-L"]) if os.environ.get("SSH_AUTH_SOCK") and os.path.exists(SSH_ADD) else None
     return bool(p and p.returncode == 0 and any(" ".join(l.split()[:2]) == pub for l in p.stdout.splitlines()))
 
 
 def harness_state():
-    """hs6.py must be committed and unchanged, so you approve code that can be reviewed."""
-    repo = run(["git", "-C", HERE, "rev-parse", "--show-toplevel"])
+    """The whole stage 6 directory (hs6.py, this tool, the mock and the tests) must
+    be committed and unchanged, so you approve code that can be reviewed."""
+    repo = run([GIT, "-C", HERE, "rev-parse", "--show-toplevel"])
     if repo.returncode != 0:
         raise Refused("hs6.py is not in a git checkout")
     top = repo.stdout.strip()
-    rel = os.path.relpath(os.path.join(HERE, "hs6.py"), top)
-    if run(["git", "-C", top, "ls-files", "--error-unmatch", rel]).returncode != 0:
-        raise Refused("hs6.py is not committed")
-    if run(["git", "-C", top, "diff", "--quiet", "HEAD", "--", rel]).returncode != 0:
-        raise Refused("hs6.py has uncommitted changes: approve only committed code")
-    head = run(["git", "-C", top, "log", "-1", "--format=%h %s", "--", rel]).stdout.strip()
-    return head
+    rel = os.path.relpath(HERE, top)
+    for f in ("hs6.py", "hs6_approve.py"):
+        if run([GIT, "-C", top, "ls-files", "--error-unmatch", os.path.join(rel, f)]).returncode != 0:
+            raise Refused("%s is not committed" % f)
+    st = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=all", "--", rel])
+    if st.returncode != 0 or st.stdout.strip():
+        raise Refused("%s has uncommitted or untracked changes: approve only committed code\n%s"
+                      % (rel, st.stdout.strip()))
+    return run([GIT, "-C", top, "log", "-1", "--format=%h %s", "--", rel]).stdout.strip()
+
+
+def pinned_ok(pub, pinned):
+    """The harness must trust your key and only your key."""
+    keys = {" ".join(k.split()[:2]) for k in pinned}
+    if pub not in keys:
+        raise Refused("hs6.py does not trust this key (it is not in OWNER_SIGNING_KEYS). If you did not "
+                      "change that list, someone else did: do not approve, and check the git history")
+    if keys != {pub}:
+        raise Refused("hs6.py also trusts %d other key(s) in OWNER_SIGNING_KEYS. Only your key may be "
+                      "there: do not approve, and check the git history" % (len(keys) - 1))
 
 
 def setup(args):
@@ -115,9 +151,9 @@ def setup(args):
     kind = "ed25519-sk" if args.sk else "ed25519"
     print("Creating your approval key %s (%s)." % (key, kind))
     print("Choose a passphrase you do not tell anyone, including the AI agent.")
-    if subprocess.run(["ssh-keygen", "-t", kind, "-a", "100", "-C", "hagistack-owner-approval", "-f", key]).returncode:
+    if subprocess.run([hs6.ssh_keygen(), "-t", kind, "-a", "100", "-C", "hagistack-owner-approval", "-f", key]).returncode:
         raise Refused("ssh-keygen failed")
-    if not args.sk and run(["ssh-keygen", "-y", "-P", "", "-f", key]).returncode == 0:
+    if not args.sk and run([hs6.ssh_keygen(), "-y", "-P", "", "-f", key]).returncode == 0:
         os.replace(key, key + ".no-passphrase")
         raise Refused("the key has no passphrase, so anyone with your account could sign. It was moved to "
                       "%s.no-passphrase; delete it and run --setup again with a passphrase" % key)
@@ -134,18 +170,21 @@ def approve(args):
     need_terminal()
     key = os.path.expanduser(args.key)
     pub = pub_line(key)
-    if pub not in [" ".join(k.split()[:2]) for k in hs6.OWNER_SIGNING_KEYS]:
-        raise Refused("hs6.py does not trust this key (it is not in OWNER_SIGNING_KEYS). If you did not "
-                      "change that list, someone else did: do not approve, and check the git history")
+    pinned_ok(pub, hs6.OWNER_SIGNING_KEYS)
     if key_in_agent(pub):
         raise Refused("your approval key is loaded in ssh-agent, so it could sign without you. Remove it "
                       "(ssh-add -d %s.pub) and run this again" % key)
     head = harness_state()
-    used = os.path.join(hs6.registry_dir(), "used-run-ids")
-    if os.path.exists(used) and args.run_id in open(used).read().split():
-        raise Refused("run id %s was used before; choose a new one" % args.run_id)
-    acct = run(["gcloud", "config", "get-value", "account"]).stdout.strip()
     ops = [o.strip() for o in args.ops.split(",") if o.strip()]
+    used = os.path.join(hs6.registry_dir(), "used-run-ids")
+    if os.path.exists(used) and args.run_id in open(used).read().split() \
+            and not set(ops) <= set(hs6.CLEANUP_OPS):
+        raise Refused("run id %s was used before. Choose a new one, or approve only its cleanup "
+                      "(--ops teardown,residual)" % args.run_id)
+    gcloud = shutil.which("gcloud")
+    if not gcloud:
+        raise Refused("gcloud is not on PATH; the approval must name the gcloud account")
+    acct = run([gcloud, "config", "get-value", "account"]).stdout.strip()
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     doc = build_approval(args.run_id, ops, args.budget, args.max_hours, args.valid_hours, acct,
                          hs6.harness_sha256(), now, secrets.token_hex(16))
@@ -177,7 +216,7 @@ def approve(args):
     print("Signing (enter your key's passphrase, or touch your security key) / 署名します")
     done = False
     try:
-        if subprocess.run(["ssh-keygen", "-Y", "sign", "-f", key, "-n", hs6.SIG_NAMESPACE, out]).returncode:
+        if subprocess.run([hs6.ssh_keygen(), "-Y", "sign", "-f", key, "-n", hs6.SIG_NAMESPACE, out]).returncode:
             raise Refused("signing failed; nothing is approved")
         os.chmod(out + ".sig", 0o600)
         with open(out + ".sig", "rb") as f:

@@ -1395,6 +1395,21 @@ class SignedApproval(Base):
         self.assertTrue(any("instances create hagistack-s6-%s-n2" % RID in " ".join(c) for c in self.mutations()))
 
 
+    def test_cleanup_still_works_after_a_harness_change(self):
+        self.write_approval()
+        self.up()
+        self.write_approval(harness_sha256=hashlib.sha256(b"the harness before a fix").hexdigest(),
+                            nonce="ef" * 16)
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("harness_sha256", out)
+        rc, out = self.hs("teardown")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("allowed for teardown only", out)
+        rc, out = self.hs("residual")
+        self.assertEqual(rc, 0, out)
+
+
 class ApproveTool(unittest.TestCase):
     """hs6_approve.py's own guards (the signing step itself needs the Owner)."""
     def tool(self, *args, env=None):
@@ -1410,6 +1425,38 @@ class ApproveTool(unittest.TestCase):
         self.assertIn("terminal", out)
         rc, out = self.tool("--setup")
         self.assertEqual(rc, 2, out)
+
+    def test_trusts_only_the_owners_key_and_reads_hs6_from_source(self):
+        import hs6_approve
+        owner = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnerOwnerOwnerOwnerOwnerOwnerOwnerOwner0"
+        other = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherOtherOtherOtherOtherOtherOtherOther0"
+        hs6_approve.pinned_ok(owner, (owner + " comment",))
+        for pinned in ((), (other,), (owner, other)):
+            with self.assertRaises(hs6_approve.Refused):
+                hs6_approve.pinned_ok(owner, pinned)
+        self.assertEqual(hs6_approve.hs6.__name__, "hs6_from_source")
+        self.assertEqual(hs6_approve.hs6.harness_sha256(), hs6.harness_sha256())
+
+    def test_refuses_in_an_agent_shell_even_with_a_terminal(self):
+        import hs6_approve
+        saved = (sys.stdin.isatty, sys.stdout.isatty, os.environ.get("CLAUDECODE"))
+        try:
+            sys.stdin.isatty = sys.stdout.isatty = lambda: True
+            os.environ["CLAUDECODE"] = "1"
+            with self.assertRaises(hs6_approve.Refused) as c:
+                hs6_approve.need_terminal()
+            self.assertIn("AI agent", str(c.exception))
+        finally:
+            sys.stdin.isatty, sys.stdout.isatty = saved[0], saved[1]
+            if saved[2] is None:
+                os.environ.pop("CLAUDECODE", None)
+            else:
+                os.environ["CLAUDECODE"] = saved[2]
+
+    def test_missing_program_is_a_refusal_not_a_traceback(self):
+        import hs6_approve
+        with self.assertRaises(hs6_approve.Refused):
+            hs6_approve.run(["/nonexistent/gcloud", "config", "get-value", "account"])
 
     def test_build_refuses_out_of_range_conditions(self):
         import datetime

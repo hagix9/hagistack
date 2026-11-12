@@ -22,7 +22,8 @@
 #   THIRD_PARTY_NOTICES.md                 which licence covers what
 #
 # Runs on Rocky/EL (needs rpm, tar, sha256sum, python3). Exits non-zero on any
-# failed check; a candidate that fails a check is not written.
+# failed check. A failed check stops before the assets and the lock are written;
+# --out may then hold partial files (PACKAGE_MANIFEST.tsv): discard it.
 set -euo pipefail
 
 die(){ printf 'STOP: %s\n' "$*" >&2; exit 1; }
@@ -109,6 +110,8 @@ missing="$(awk -F'\t' 'NR>1{print $8}' "$OUT/PACKAGE_MANIFEST.tsv" | sort -u \
 [ -z "$missing" ] || die "source RPMs missing for: $missing"
 ok "every binary RPM has its source RPM"
 # ... and srpms/ holds nothing else, so the source asset is exactly the set's sources.
+odd="$(cd "$SET_DIR/srpms" && find . -mindepth 1 \( ! -type f -o -path './*/*' \) -printf '%P\n')"
+[ -z "$odd" ] || die "srpms/ holds something that is not a plain file (would be published): $odd"
 extra="$(cd "$SET_DIR/srpms" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
          | comm -23 - <(awk -F'\t' 'NR>1{print $8}' "$OUT/PACKAGE_MANIFEST.tsv" | LC_ALL=C sort -u))"
 [ -z "$extra" ] || die "srpms/ holds files no binary RPM comes from (would be published): $extra"
