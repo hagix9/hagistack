@@ -92,9 +92,10 @@ On every node:
    - Earlier acceptance runs used command-line options and did not see it. This run
      used command-line options after the first attempt failed in 0 s.
    - Not caused by the own packaging.
-   - Fixed after the run: `rocky10.2/hagistack` now defines `CONFIG_KEYS_FLAT` as the
-     Ubuntu installer does, and `rocky10.2/tests/test-env-file.sh` covers the file
-     reader. Not re-run on a real machine.
+   - Fixed after the run in `e65204d`: `rocky10.2/hagistack` now defines
+     `CONFIG_KEYS_FLAT` as the Ubuntu installer does, and
+     `rocky10.2/tests/test-env-file.sh` covers the file reader. Verified on a real
+     machine in run h6r4env (below): **closed**.
 2. **Harness defect, fixed in `a772d57`.** Cloud NAT allocates its external IP
    (`nat-auto-ip-*`) only when a node first sends traffic out. The harness treated it
    as an unexpected address and refused new nodes. Now only an address whose every
@@ -116,3 +117,47 @@ On every node:
 - SELinux enforcing, a physical provider network and floating-IP reachability from
   outside, live migration, `%check` (unchanged scope).
 - Which package makes stage 5's 104 differ from A's 103 (N7).
+
+## Run h6r4env (2026-11-12): config-file install after the fix
+
+Stage 6-1-R4. The implementer ran it; **it is not an independent audit.** Raw logs are
+in `<TMP_WORKSPACE>/hagistack-stage6-h6r4env/`.
+
+| Item | Value |
+|---|---|
+| Local verification before the run | `test-env-file.sh` 18/18 on a locally built bash 5.3; with the `CONFIG_KEYS_FLAT` line removed, 14 fail with `unbound variable`. Independent audit (a separate agent): GO, 0 BLOCKER/HIGH/MEDIUM; LOW-1 (no check of `mktemp`) fixed in `b20c1fb`, LOW-2 accepted, LOW-3 (`HAGISTACK_ETC` comes from the environment, pre-existing) out of scope. |
+| Approval | Owner approved by chat (method A); the AI agent wrote the approval record; the sender was not verified. Operations `init`, `network`, `n2`, `ssh`, `upload`, `teardown`, `residual`; US$8; 6 h. |
+| Harness | `hs6.py` `35e5610…` (unchanged) |
+| Code under test | `git archive b20c1fb rocky10.2 LICENSE`; RPM set `6c43da…`, not rebuilt |
+| GCE | `<GCP_PROJECT>` / `asia-northeast1-a`; a VPC for this run only; n2 only (n2-standard-4, `pd-standard` 60 GB) |
+| Times (UTC) | init 18:01:34; network 18:02:00; n2 created 18:03:40; n2 deleted 18:42:28; teardown complete 18:43:20; elapsed 0.69 h |
+| Cost | harness estimate US$0.70 at list prices, of which US$0.54 is assumed. Not the bill. |
+| Cleanup | `teardown` complete; `residual` none; a direct listing showed 0 resources of the run. `watch` ended by itself; no stop recorded. |
+
+Result: **PASS.**
+- `hagistack.env` held every setting (9 keys, quotes included, `TENANT_CIDR=10.20.30.0/24`
+  not the default, `RPM_SOURCE=bundle` with its path and the expected set); the installer
+  ran as `hagistack all-in-one` with no options.
+- `--check`: rc 0, `config file: ./hagistack.env (parsed, not executed)`, every one of
+  the 9 values shown with source `[config file]`.
+- Install rc 0 in 551 s, 0 `unbound variable` lines. Recorded role all-in-one, source
+  bundle, set `6c43da…`; 103 set packages, 0 header-digest mismatches; `rpm -V` 1088 lines,
+  as in configuration A.
+- Keystone token OK; 15 endpoints in `RegionOne`; nova-scheduler, conductor and compute
+  up; 1 hypervisor up; 2 Neutron agents alive; CirrOS image active; Placement (its API
+  queried directly) 1 provider with VCPU 4, MEMORY_MB 15727, DISK_GB 59.
+- The tenant subnet is `10.20.30.0/24`, so the file's value was applied.
+- 0 failed units (11 active), 0 tracebacks, 0 `ERROR` lines in the nova, neutron, glance,
+  keystone and placement logs. The journal's 2 error-priority lines are from boot (smbus,
+  chrony), not OpenStack.
+- Two guests ACTIVE (25 s, 22 s) on `10.20.30.x`; SSH with the metadata key; metadata
+  hostname; ping 3/5. A second pair of guests, booted after the re-run, gave ping 4/5
+  (as A in h6n121). Horizon admin sign-in PASS.
+- Re-run rc 0 in 192 s, 0 restarts, the file read again, 0 `unbound variable` lines.
+- During the run another product created `mkg-f5r23-*` resources (3 VMs and a network)
+  in the project. The harness did not touch them. The one `nat-auto-ip-*` address left
+  in the project belongs to Sinter's `sinter-v180-relv-router`, not to this run.
+
+Not verified: the Google Cloud bill; the bash 5.3 source's signature (gpg not available;
+the tarball's SHA-256 matched both the GNU download and the Homebrew formula).
+
