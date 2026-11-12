@@ -28,6 +28,37 @@ ACCOUNT = "tester@example.invalid"
 T0 = calendar.timegm((2026, 11, 20, 1, 0, 0))
 SINTER_INSTANCE = "sinter-v180-gate-o6s1a"
 
+# Test signing keys, made once per test run in a temporary directory: OWNER stands
+# for the Owner's approval key (pinned through the HS6_OWNER_SIGNERS test hook),
+# OTHER for a key anyone else, such as the AI agent, could make.
+KEYDIR = tempfile.mkdtemp(prefix="hs6keys-")
+SSH_KEYGEN = "/usr/bin/ssh-keygen"
+
+
+def _make_key(name):
+    k = os.path.join(KEYDIR, name)
+    subprocess.run([SSH_KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", k], check=True)
+    return k
+
+
+OWNER_KEY = _make_key("owner")
+OTHER_KEY = _make_key("other")
+SIGNERS = os.path.join(KEYDIR, "signers")
+with open(OWNER_KEY + ".pub") as _f, open(SIGNERS, "w") as _g:
+    _g.write(_f.read())
+
+
+def tearDownModule():
+    shutil.rmtree(KEYDIR, ignore_errors=True)
+
+
+def sign(path, key=OWNER_KEY, namespace=hs6.SIG_NAMESPACE):
+    if os.path.lexists(path + ".sig"):
+        os.unlink(path + ".sig")
+    subprocess.run([SSH_KEYGEN, "-q", "-Y", "sign", "-f", key, "-n", namespace, path], check=True,
+                   capture_output=True)
+    os.chmod(path + ".sig", 0o600)
+
 
 def base_state():
     q = lambda m, lim, use: {"metric": m, "limit": lim, "usage": use}  # noqa: E731
@@ -73,6 +104,7 @@ class Base(unittest.TestCase):
         self.approval = os.path.join(self.tmp, "approval.json")
         self.write_approval()
         self.env = {"PATH": bindir + os.pathsep + "/usr/bin:/bin", "HOME": self.tmp,
+                    "HS6_OWNER_SIGNERS": SIGNERS,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
                     "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10",
                     "HS6_REGISTRY": os.path.join(self.tmp, "registry")}
@@ -90,15 +122,21 @@ class Base(unittest.TestCase):
         self.assertFalse(os.path.exists(self.marker), "the real gcloud was called")
         shutil.rmtree(self.tmp)
 
-    def write_approval(self, **over):
-        a = {"format": 1, "run_id": RID, "project": hs6.PROJECT, "zone": hs6.ZONE, "account": ACCOUNT,
+    def write_approval(self, key=OWNER_KEY, **over):
+        """An approval as the Owner would sign it (key=None: no signature)."""
+        a = {"format": 2, "run_id": RID, "project": hs6.PROJECT, "zone": hs6.ZONE, "account": ACCOUNT,
              "owner_statement": hs6.owner_statement(RID), "harness_sha256": hs6.harness_sha256(),
              "operations": list(hs6.OPERATIONS), "budget_usd": 8, "max_hours": 6,
-             "approved_at": hs6.iso(T0 - 60), "expires_at": hs6.iso(T0 + 20 * 3600)}
+             "approved_at": hs6.iso(T0 - 60), "expires_at": hs6.iso(T0 + 20 * 3600), "nonce": "ab" * 16}
         a.update(over)
+        a = {k: v for k, v in a.items() if v is not None}
         with open(self.approval, "w") as f:
             json.dump(a, f)
         os.chmod(self.approval, 0o600)
+        if os.path.lexists(self.approval + ".sig"):
+            os.unlink(self.approval + ".sig")
+        if key:
+            sign(self.approval, key)
 
     def hs(self, *args, approval=True, env=None, rid=RID):
         e = dict(self.env, HS6_NOW=str(self.t))
@@ -200,7 +238,7 @@ class ApprovalAndIdentity(Base):
                  dict(budget_usd=9), dict(max_hours=7), dict(operations=["n1"]), dict(operations=["n1", "rm"]),
                  dict(expires_at=hs6.iso(T0 - 1)), dict(approved_at=hs6.iso(T0 + 60)),
                  dict(approved_at=hs6.iso(T0 - 60), expires_at=hs6.iso(T0 + 30 * 3600)), dict(account="nobody"),
-                 dict(format=2)]
+                 dict(format=1), dict(nonce="short"), dict(nonce=None)]
         for c in cases:
             self.write_approval(**c)
             self.assert_refused_no_calls("init")
@@ -1210,6 +1248,181 @@ class NatAutoIp(Base):
             rc, out = self.hs("create-node", "n2")
             self.assertEqual(rc, hs6.EXIT_REFUSED, out)
             self.assertIn("unexpected external address", out)
+
+
+# Stage 6-2: the approval is valid only with the Owner's SSH signature
+class SignedApproval(Base):
+    def refused(self, *args, want=None, **kw):
+        rc, out = self.hs(*args, **kw)
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        if want:
+            self.assertIn(want, out)
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "ledger.jsonl")), out)
+        return out
+
+    def test_no_approval_is_dry_run_and_execute_without_approval_is_refused(self):
+        rc, out = self.hs("create-network", approval=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("DRY-RUN", out)
+        rc, out = self.hs("create-network", approval=False, env={"HS6_EXECUTE": RID})
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertNotIn("calls", self.mock())
+
+    def test_unsigned_approval_refused(self):
+        self.write_approval(key=None)
+        self.refused("init", want="no Owner signature")
+        self.assertNotIn("calls", self.mock())
+
+    def test_ai_written_chat_record_refused(self):
+        # the shape of the method-A records an AI agent wrote from a chat message
+        self.write_approval(key=None, format=1, nonce=None, approval_basis="Owner said so in chat",
+                            owner_message={"text": "承認します"}, written_by="AI agent")
+        self.refused("init", want="format must be 2")
+        # even with a .sig the AI made with its own key
+        self.write_approval(key=OTHER_KEY, approval_basis="Owner said so in chat", written_by="AI agent")
+        self.refused("init", want="not a valid Owner signature")
+        self.assertNotIn("calls", self.mock())
+
+    def test_signature_by_another_key_refused(self):
+        self.write_approval(key=OTHER_KEY)
+        self.refused("init", want="not a valid Owner signature")
+
+    def test_signature_in_another_namespace_refused(self):
+        self.write_approval(key=None)
+        sign(self.approval, OWNER_KEY, namespace="file")
+        self.refused("init", want="not a valid Owner signature")
+
+    def test_tampered_after_signing_refused(self):
+        for field, value in (("budget_usd", 7.5), ("operations", ["init", "n1", "teardown"]),
+                             ("expires_at", hs6.iso(T0 + 23 * 3600))):
+            self.write_approval()
+            with open(self.approval) as f:
+                a = json.load(f)
+            a[field] = value
+            with open(self.approval, "w") as f:
+                json.dump(a, f)
+            self.refused("init", want="not a valid Owner signature")
+        # one byte of whitespace is enough
+        self.write_approval()
+        with open(self.approval, "a") as f:
+            f.write(" ")
+        self.refused("init", want="not a valid Owner signature")
+
+    def test_signature_copied_from_another_approval_refused(self):
+        self.write_approval(run_id="t6zzz", owner_statement=hs6.owner_statement("t6zzz"))
+        with open(self.approval + ".sig", "rb") as f:
+            other_sig = f.read()
+        self.write_approval(key=None)
+        with open(self.approval + ".sig", "wb") as f:
+            f.write(other_sig)
+        os.chmod(self.approval + ".sig", 0o600)
+        self.refused("init", want="not a valid Owner signature")
+
+    def test_signed_for_another_run_id_refused(self):
+        self.write_approval(run_id="t6zzz", owner_statement=hs6.owner_statement("t6zzz"))
+        self.refused("init", want="run_id is not %s" % RID)
+
+    def test_expired_signed_approval_refused_for_new_work(self):
+        self.write_approval(approved_at=hs6.iso(T0 - 25 * 3600), expires_at=hs6.iso(T0 - 3600))
+        self.refused("init", want="not valid now")
+
+    def test_operation_outside_the_signed_scope_refused(self):
+        self.write_approval(operations=["init", "network", "n2", "ssh", "upload", "teardown", "residual"])
+        self.up()
+        rc, out = self.hs("create-node", "n1")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("operation n1 is not approved", out)
+        self.assertFalse([c for c in self.mutations() if "hagistack-s6-%s-n1" % RID in " ".join(c)])
+
+    def test_budget_or_hours_over_the_limit_refused_even_if_signed(self):
+        for over in (dict(budget_usd=8.01), dict(max_hours=6.5)):
+            self.write_approval(**over)
+            self.refused("init", want="budget_usd must be")
+
+    def test_approval_starts_one_run_only(self):
+        self.write_approval()
+        rc, out = self.hs("init")
+        self.assertEqual(rc, 0, out)
+        hdr = self.ledger()[0]
+        with open(self.approval, "rb") as f:
+            self.assertEqual(hdr["approval_sha256"], hashlib.sha256(f.read()).hexdigest())
+        # a second init with the same approval, even if the run-id registry entry were removed
+        reg = os.path.join(self.tmp, "registry", "used-run-ids")
+        with open(reg, "w") as f:
+            f.write("")
+        self.sdir = os.path.join(self.tmp, "run2")
+        os.makedirs(self.sdir)
+        self.refused("init", want="already started a run")
+
+    def test_no_pinned_key_means_nothing_executes(self):
+        empty = os.path.join(self.tmp, "no-signers")
+        open(empty, "w").close()
+        self.write_approval()
+        self.refused("init", env={"HS6_OWNER_SIGNERS": empty}, want="no Owner signing key is pinned")
+        self.assertEqual(hs6.OWNER_SIGNING_KEYS, ())   # until the Owner's key is pinned
+        self.refused("init", env={"HS6_OWNER_SIGNERS": None}, want="no Owner signing key is pinned")
+
+    def test_signers_hook_refused_with_a_real_account(self):
+        self.write_approval(account="owner@example.com")
+        self.refused("init", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None}, want="tests only")
+
+    def test_symlinked_or_writable_signature_refused(self):
+        self.write_approval()
+        real = self.approval + ".real-sig"
+        os.rename(self.approval + ".sig", real)
+        os.symlink(real, self.approval + ".sig")
+        self.refused("init", want="symbolic link")
+        os.unlink(self.approval + ".sig")
+        os.rename(real, self.approval + ".sig")
+        os.chmod(self.approval + ".sig", 0o666)
+        self.refused("init", want="writable by group or others")
+
+    def test_owner_signed_approval_runs(self):
+        # what hs6_approve.py builds, signed with the Owner's key
+        import datetime
+        import hs6_approve
+        doc = hs6_approve.build_approval(RID, ["init", "network", "n2", "ssh", "upload", "teardown", "residual"],
+                                         8.0, 6.0, 12.0, ACCOUNT, hs6.harness_sha256(),
+                                         datetime.datetime.fromtimestamp(T0 - 60, datetime.timezone.utc), "cd" * 16)
+        with open(self.approval, "wb") as f:
+            f.write((json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode())
+        os.chmod(self.approval, 0o600)
+        sign(self.approval)
+        for args in (("init",), ("create-network",), ("create-node", "n2"), ("teardown",), ("residual",)):
+            rc, out = self.hs(*args)
+            self.assertEqual(rc, 0, (args, out))
+        self.assertTrue(any("instances create hagistack-s6-%s-n2" % RID in " ".join(c) for c in self.mutations()))
+
+
+class ApproveTool(unittest.TestCase):
+    """hs6_approve.py's own guards (the signing step itself needs the Owner)."""
+    def tool(self, *args, env=None):
+        e = {"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()}
+        e.update(env or {})
+        p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "hs6_approve.py")] + list(args),
+                           capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=60)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_refuses_without_a_terminal(self):
+        rc, out = self.tool("--run-id", "t6abc")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("terminal", out)
+        rc, out = self.tool("--setup")
+        self.assertEqual(rc, 2, out)
+
+    def test_build_refuses_out_of_range_conditions(self):
+        import datetime
+        import hs6_approve
+        now = datetime.datetime(2026, 11, 20, tzinfo=datetime.timezone.utc)
+        ok = dict(rid=RID, ops=["init", "teardown"], budget=8.0, max_hours=6.0, valid_hours=12.0, account=ACCOUNT,
+                  harness_sha="0" * 64, now=now, nonce="ab" * 16)
+        hs6_approve.build_approval(**ok)
+        for bad in (dict(rid="X"), dict(ops=["init"]), dict(ops=["init", "rm", "teardown"]),
+                    dict(ops=["init", "init", "teardown"]), dict(budget=9.0), dict(max_hours=7.0),
+                    dict(valid_hours=25.0), dict(account="")):
+            with self.assertRaises(hs6_approve.Refused):
+                hs6_approve.build_approval(**dict(ok, **bad))
 
 
 if __name__ == "__main__":

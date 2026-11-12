@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""hs6_approve.py — the Owner approves one stage 6 GCE run by signing it.
+
+Run it yourself, in your own terminal. It shows the exact conditions, asks you
+to type the run id, and signs the approval with your SSH key (your passphrase or
+your security-key touch). The AI agent cannot do that step: it does not have the
+passphrase or the key, and this tool refuses to run without a terminal.
+
+    One time:  python3 hs6_approve.py --setup [--sk]
+    Each run:  python3 hs6_approve.py --run-id RID --ops init,network,n2,ssh,upload,teardown,residual
+
+Writes ~/hagistack-approvals/<RID>.json and <RID>.json.sig. hs6.py executes
+nothing without a valid signature by a key pinned in hs6.OWNER_SIGNING_KEYS.
+Python 3.9+, standard library only. Network: only `gcloud config get-value account`.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import hs6  # noqa: E402
+
+DEFAULT_KEY = os.path.expanduser("~/.ssh/hagistack-owner-approval")
+APPROVAL_DIR = os.path.expanduser("~/hagistack-approvals")
+AGENT_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_HOME")
+
+
+class Refused(Exception):
+    pass
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_approval(rid, ops, budget, max_hours, valid_hours, account, harness_sha, now, nonce):
+    """The approval document. Pure: the tests call it to build what the Owner would sign."""
+    if not hs6.RUN_ID_RE.fullmatch(rid or ""):
+        raise Refused("run id must match %s" % hs6.RUN_ID_RE.pattern)
+    if not ops or any(o not in hs6.OPERATIONS for o in ops) or len(set(ops)) != len(ops):
+        raise Refused("operations must be distinct names from %s" % ", ".join(hs6.OPERATIONS))
+    if "teardown" not in ops:
+        raise Refused("operations must include teardown, so the run can always be cleaned up")
+    if not (0 < budget <= hs6.COST_STOP_ALL):
+        raise Refused("budget must be more than 0 and at most US$%.0f" % hs6.COST_STOP_ALL)
+    if not (0 < max_hours <= hs6.MAX_HOURS):
+        raise Refused("max hours must be more than 0 and at most %.0f" % hs6.MAX_HOURS)
+    if not (0 < valid_hours <= hs6.MAX_APPROVAL_HOURS):
+        raise Refused("validity must be more than 0 and at most %.0f hours" % hs6.MAX_APPROVAL_HOURS)
+    if not isinstance(account, str) or "@" not in account:
+        raise Refused("no gcloud account is configured")
+    return {
+        "format": hs6.APPROVAL_FORMAT, "run_id": rid, "project": hs6.PROJECT, "zone": hs6.ZONE,
+        "account": account, "owner_statement": hs6.owner_statement(rid), "harness_sha256": harness_sha,
+        "operations": list(ops), "budget_usd": budget, "max_hours": max_hours,
+        "approved_at": iso(now), "expires_at": iso(now + datetime.timedelta(hours=valid_hours)),
+        "nonce": nonce, "signed_with": "hs6_approve.py (ssh-keygen -Y sign, namespace %s)" % hs6.SIG_NAMESPACE,
+    }
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=60, **kw)
+
+
+def need_terminal():
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise Refused("run this yourself in a terminal (it needs your typed confirmation)")
+    hit = [k for k in AGENT_ENV if os.environ.get(k)]
+    if hit:
+        raise Refused("this looks like an AI agent's shell (%s is set): run it in your own terminal" % ", ".join(hit))
+
+
+def pub_line(key):
+    try:
+        with open(key + ".pub") as f:
+            parts = f.read().split()
+    except OSError:
+        raise Refused("public key %s.pub not found (run --setup first)" % key)
+    return " ".join(parts[:2])
+
+
+def key_in_agent(pub):
+    p = run(["ssh-add", "-L"]) if os.environ.get("SSH_AUTH_SOCK") else None
+    return bool(p and p.returncode == 0 and any(" ".join(l.split()[:2]) == pub for l in p.stdout.splitlines()))
+
+
+def harness_state():
+    """hs6.py must be committed and unchanged, so you approve code that can be reviewed."""
+    repo = run(["git", "-C", HERE, "rev-parse", "--show-toplevel"])
+    if repo.returncode != 0:
+        raise Refused("hs6.py is not in a git checkout")
+    top = repo.stdout.strip()
+    rel = os.path.relpath(os.path.join(HERE, "hs6.py"), top)
+    if run(["git", "-C", top, "ls-files", "--error-unmatch", rel]).returncode != 0:
+        raise Refused("hs6.py is not committed")
+    if run(["git", "-C", top, "diff", "--quiet", "HEAD", "--", rel]).returncode != 0:
+        raise Refused("hs6.py has uncommitted changes: approve only committed code")
+    head = run(["git", "-C", top, "log", "-1", "--format=%h %s", "--", rel]).stdout.strip()
+    return head
+
+
+def setup(args):
+    need_terminal()
+    key = os.path.expanduser(args.key)
+    if os.path.exists(key):
+        raise Refused("%s already exists; it is kept. Use it, or choose another --key" % key)
+    os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
+    kind = "ed25519-sk" if args.sk else "ed25519"
+    print("Creating your approval key %s (%s)." % (key, kind))
+    print("Choose a passphrase you do not tell anyone, including the AI agent.")
+    if subprocess.run(["ssh-keygen", "-t", kind, "-a", "100", "-C", "hagistack-owner-approval", "-f", key]).returncode:
+        raise Refused("ssh-keygen failed")
+    if not args.sk and run(["ssh-keygen", "-y", "-P", "", "-f", key]).returncode == 0:
+        os.replace(key, key + ".no-passphrase")
+        raise Refused("the key has no passphrase, so anyone with your account could sign. It was moved to "
+                      "%s.no-passphrase; delete it and run --setup again with a passphrase" % key)
+    print()
+    print("Done. Give the AI agent this public key line to pin in hs6.py (OWNER_SIGNING_KEYS):")
+    print()
+    print("    " + pub_line(key))
+    print()
+    print("Do not add the key to ssh-agent or the macOS keychain: then signing would need no passphrase.")
+    return 0
+
+
+def approve(args):
+    need_terminal()
+    key = os.path.expanduser(args.key)
+    pub = pub_line(key)
+    if pub not in [" ".join(k.split()[:2]) for k in hs6.OWNER_SIGNING_KEYS]:
+        raise Refused("hs6.py does not trust this key (it is not in OWNER_SIGNING_KEYS). If you did not "
+                      "change that list, someone else did: do not approve, and check the git history")
+    if key_in_agent(pub):
+        raise Refused("your approval key is loaded in ssh-agent, so it could sign without you. Remove it "
+                      "(ssh-add -d %s.pub) and run this again" % key)
+    head = harness_state()
+    used = os.path.join(hs6.registry_dir(), "used-run-ids")
+    if os.path.exists(used) and args.run_id in open(used).read().split():
+        raise Refused("run id %s was used before; choose a new one" % args.run_id)
+    acct = run(["gcloud", "config", "get-value", "account"]).stdout.strip()
+    ops = [o.strip() for o in args.ops.split(",") if o.strip()]
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    doc = build_approval(args.run_id, ops, args.budget, args.max_hours, args.valid_hours, acct,
+                         hs6.harness_sha256(), now, secrets.token_hex(16))
+    nodes = [o for o in ops if o in hs6.NODES]
+    print()
+    print("You are approving these GCE operations / 次の GCE 操作を承認します")
+    print("  run id      : %s" % doc["run_id"])
+    print("  project/zone: %s / %s" % (doc["project"], doc["zone"]))
+    print("  account     : %s" % doc["account"])
+    print("  operations  : %s" % ", ".join(ops))
+    print("  nodes       : %s" % (", ".join("%s (%s, %s GB)" % (n, hs6.NODES[n][0], hs6.NODES[n][2]) for n in nodes) or "none"))
+    print("  limits      : US$%s, %s h from the first creation (then automatic teardown)" % (doc["budget_usd"], doc["max_hours"]))
+    print("  valid       : %s to %s (UTC)" % (doc["approved_at"], doc["expires_at"]))
+    print("  harness     : hs6.py %s, last commit %s" % (doc["harness_sha256"][:16], head))
+    print()
+    typed = input("To approve, type the run id (anything else cancels) / 承認する場合は run ID を入力: ").strip()
+    if typed != args.run_id:
+        print("Cancelled. Nothing was written.")
+        return 1
+    os.makedirs(APPROVAL_DIR, mode=0o700, exist_ok=True)
+    out = os.path.join(APPROVAL_DIR, "%s.json" % args.run_id)
+    for p in (out, out + ".sig"):
+        if os.path.lexists(p):
+            raise Refused("%s already exists; an approval is never overwritten" % p)
+    data = (json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode()
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    print("Signing (enter your key's passphrase, or touch your security key) / 署名します")
+    done = False
+    try:
+        if subprocess.run(["ssh-keygen", "-Y", "sign", "-f", key, "-n", hs6.SIG_NAMESPACE, out]).returncode:
+            raise Refused("signing failed; nothing is approved")
+        os.chmod(out + ".sig", 0o600)
+        with open(out + ".sig", "rb") as f:
+            hs6.verify_owner_signature(data, f.read())
+        done = True
+    except hs6.Stop as e:
+        raise Refused("the harness does not accept the signature: %s" % e)
+    finally:
+        if not done:   # nothing half-made is left behind
+            for p in (out, out + ".sig"):
+                if os.path.lexists(p):
+                    os.unlink(p)
+    print()
+    print("Approved and signed: %s (+ .sig), sha256 %s" % (out, hashlib.sha256(data).hexdigest()[:16]))
+    print("Tell the AI agent: \"approved %s\". It cannot change this file without breaking the signature." % args.run_id)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Owner approval for one stage 6 GCE run (signed).")
+    ap.add_argument("--setup", action="store_true", help="create your approval key (once)")
+    ap.add_argument("--sk", action="store_true", help="with --setup: use a FIDO security key (ed25519-sk)")
+    ap.add_argument("--key", default=DEFAULT_KEY)
+    ap.add_argument("--run-id")
+    ap.add_argument("--ops", default="init,network,n1,n2,n3,n4,u1,ssh,upload,teardown,residual")
+    ap.add_argument("--budget", type=float, default=hs6.COST_STOP_ALL)
+    ap.add_argument("--max-hours", type=float, default=hs6.MAX_HOURS)
+    ap.add_argument("--valid-hours", type=float, default=12.0)
+    a = ap.parse_args(argv)
+    try:
+        if a.setup:
+            return setup(a)
+        if not a.run_id or not re.fullmatch(r"[a-z][a-z0-9]{3,7}", a.run_id):
+            raise Refused("--run-id is required (a lowercase letter, then 3-7 lowercase letters or digits)")
+        return approve(a)
+    except Refused as e:
+        print("REFUSED: %s" % e, file=sys.stderr)
+        return 2
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled. Nothing was approved.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

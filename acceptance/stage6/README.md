@@ -16,7 +16,8 @@ gcloud.
 | `hs6.py` | the harness (Python 3.9+, standard library only) |
 | `mock_gcloud.py` | a gcloud stand-in for the tests; it contacts nothing and reads no credentials |
 | `test_hs6.py` | local tests: `python3 test_hs6.py` (put `TMPDIR` on the external SSD) |
-| `APPROVAL.template.json` | the shape of an Owner approval; not valid as it is |
+| `hs6_approve.py` | the Owner's tool: shows the conditions and signs one run's approval |
+| `APPROVAL.template.json` | the shape of an Owner approval; not valid as it is (it has no signature) |
 
 ## Fixed in the code, not on the command line
 
@@ -42,8 +43,11 @@ The command line gives only the run id, the node name and the state directory.
 
 Execution needs **all** of the following:
 
-1. An approval file (`--approval FILE`, kept outside the repository) with:
-   - `format` 1;
+1. An approval file (`--approval FILE`, kept outside the repository) **and**
+   `FILE.sig`, the Owner's SSH signature of exactly that file (see "Approving a run").
+   The signature must verify against a key pinned in `OWNER_SIGNING_KEYS` in
+   `hs6.py`, in the namespace `hagistack-stage6-approval`. The file has:
+   - `format` 2 and a random `nonce`;
    - the run id, project and zone;
    - the gcloud account;
    - the exact `owner_statement` the harness prints for the run;
@@ -223,9 +227,61 @@ down. To go on testing:
 
 Do not edit or delete `stops.jsonl` to continue a run.
 
+## Approving a run
+
+Only an approval the Owner signed is executed. An approval written by anyone else,
+including an AI agent writing down a chat message, has no valid signature and is
+refused. Chat approval cannot be accepted: the harness gets no verifiable sender
+from the chat, so it cannot tell the Owner's message from text the agent produced.
+
+**Once:** the Owner creates an approval key and the public half is pinned:
+
+```sh
+python3 acceptance/stage6/hs6_approve.py --setup        # or --setup --sk for a FIDO security key
+```
+
+It asks for a passphrase (or a touch of the security key) and prints one public-key
+line. That line goes into `OWNER_SIGNING_KEYS` in `hs6.py` and is committed. Do not
+add the key to `ssh-agent` or the macOS keychain: then signing would need no
+passphrase.
+
+**For each run:** the implementer gives the Owner one command, for example:
+
+```sh
+python3 acceptance/stage6/hs6_approve.py --run-id h6abc1 --ops init,network,n2,ssh,upload,teardown,residual
+```
+
+The Owner runs it in their own terminal. It:
+- refuses without a terminal, or in a shell an AI agent runs (`CLAUDECODE` and
+  similar variables);
+- refuses if `hs6.py` does not trust the Owner's key (the pinned list was changed),
+  if the key is loaded in `ssh-agent`, if `hs6.py` has uncommitted changes, or if the
+  run id was used before;
+- shows the run id, project, zone, account, operations, nodes, limits, validity
+  and the harness's SHA-256 and commit;
+- asks the Owner to type the run id, then signs with `ssh-keygen -Y sign` (the
+  passphrase or the touch);
+- writes `~/hagistack-approvals/<run id>.json` and `.json.sig`, mode 600, never
+  overwriting, and checks that `hs6.py` accepts the signature.
+
+**What the signature fixes.** The run id, project, zone, account, operations, budget,
+hours, validity, nonce and the harness's SHA-256 are all inside the signed bytes:
+changing any byte breaks the signature. A signature cannot be moved to another file.
+An approval for one run id is refused for any other, and an approval that has started
+a run (`init`) is recorded in `~/.config/hagistack-stage6/used-approvals` and cannot
+start another. While `OWNER_SIGNING_KEYS` is empty, nothing can be executed.
+
+**What it does not protect against.** The harness runs as the same OS user as the
+implementer. Someone who edits `hs6.py` (for example, the pinned key) or calls
+`gcloud` directly is not stopped by it. Such a change alters the harness SHA-256 and
+shows in git. `hs6_approve.py` refuses to sign while the pinned key is not the
+Owner's or `hs6.py` has uncommitted changes, so the Owner never signs for a harness
+that trusts another key. The key's passphrase or security key, and the Owner's
+review of harness changes, are what an approval rests on.
+
 **Known limit of the approval-file checks.** The checks look at the real path. They
-cannot prevent a process of the same OS user from writing a valid approval file. That
-part is procedural.
+cannot prevent a process of the same OS user from writing a file; the signature is
+what makes such a file useless.
 
 **Checks the harness makes on the approval file:**
 - it must be a regular file, not a symbolic link, and it is opened without following
@@ -243,10 +299,10 @@ On a volume mounted with `noowners` (the external SSD is), every file appears ow
 by the current user, so the owner check proves nothing there. Keep the approval file
 on a volume that records owners, for example in the Owner's home directory.
 
-**What the harness cannot tell.** It cannot tell the Owner from another process of
-the same OS user. Writing the approval file therefore stays the Owner's act:
-- implementers and automation must never write one;
-- keep it where only the Owner writes.
+The same checks apply to `FILE.sig`.
+
+**Who may sign.** Only the Owner, with the key and passphrase that only the Owner
+holds. Implementers and automation never write, sign or edit an approval.
 
 A change to `hs6.py` after the approval makes the SHA-256 differ, and the harness then
 refuses every operation except cleanup.

@@ -16,6 +16,9 @@ read-only gcloud).
     hs6.py --run-id RID --state-dir DIR status        (local only: ledger, cost, guards)
     hs6.py --run-id RID --state-dir DIR [--approval FILE] residual
 
+An approval FILE is executed only with FILE.sig, the Owner's SSH signature made
+by hs6_approve.py with a key pinned in OWNER_SIGNING_KEYS.
+
 See README.md for the safety model. Python 3.9+, standard library only.
 """
 import argparse
@@ -26,9 +29,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 # ---------------------------------------------------------------- constants --
@@ -122,7 +127,22 @@ class NotFound(Exception):
 # ".invalid" domain, which no real Google account can have; with a real account
 # they make the harness refuse to run. Without an approval nothing is called.
 _TEST_MODE = {"on": False}
-TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WATCH_MAX_LOOPS")
+TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WATCH_MAX_LOOPS",
+              "HS6_OWNER_SIGNERS")
+
+# ------------------------------------------------------- Owner signing keys --
+# An approval is executed only if it carries the Owner's SSH signature
+# (`ssh-keygen -Y sign`, namespace below) made with one of these keys. Only the
+# public halves are here; the private key stays with the Owner, protected by a
+# passphrase or a hardware key, and is never given to the AI agent or to
+# ssh-agent. hs6_approve.py --setup prints the line to put here. While the tuple
+# is empty, nothing can be executed. Changing it changes this file's SHA-256, so
+# it needs the Owner's review like any other harness change (README).
+OWNER_SIGNING_KEYS = ()
+SIG_NAMESPACE = "hagistack-stage6-approval"
+SIGNER_ID = "hagistack-owner"
+APPROVAL_FORMAT = 2
+SSH_KEYGEN_PATHS = ("/usr/bin/ssh-keygen",)
 
 
 def watch_interval():
@@ -652,31 +672,99 @@ def _inside(path, directory):
         d = parent
 
 
-def load_approval(path, rid, op):
-    """None => dry-run. A valid approval for this run and operation AND
-    HS6_EXECUTE=<rid> => execute. Anything else stops. For cleanup operations
-    an approval that has expired still counts, so a run can always be torn down."""
-    if not path:
-        if os.environ.get("HS6_EXECUTE"):
-            raise Stop("HS6_EXECUTE is set but no approval file was given")
-        return None
+def _read_checked(path):
+    """The bytes of an approval or signature file, read once through a
+    descriptor that is checked to be the file that was inspected."""
     check_approval_file(path)
     try:
         before = os.lstat(path)
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(fd) as f:
+        with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())
             if (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino) or st.st_nlink != 1 or st.st_mode & 0o022:
                 raise Stop("approval file changed while it was being read: refused")
-            a = json.load(f)
-    except (OSError, ValueError) as e:
+            data = f.read(1 << 16)
+    except OSError as e:
+        raise Stop("approval file unreadable: %s" % e)
+    return data
+
+
+def owner_signing_keys():
+    """The public keys an approval signature must verify against. The test hook
+    HS6_OWNER_SIGNERS works only in test mode (an .invalid account)."""
+    hook = os.environ.get("HS6_OWNER_SIGNERS")
+    if hook and _TEST_MODE["on"]:
+        with open(hook) as f:
+            return tuple(x.strip() for x in f if x.strip() and not x.startswith("#"))
+    return OWNER_SIGNING_KEYS
+
+
+def ssh_keygen():
+    for p in SSH_KEYGEN_PATHS:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    raise Stop("ssh-keygen not found at %s: cannot verify the Owner's signature" % " or ".join(SSH_KEYGEN_PATHS))
+
+
+def verify_owner_signature(data, sig):
+    """Raises Stop unless sig is the Owner's SSH signature of exactly data."""
+    keys = owner_signing_keys()
+    if not keys:
+        raise Stop("no Owner signing key is pinned in hs6.py (OWNER_SIGNING_KEYS): nothing can be executed. "
+                   "See README, 'Approving a run'.")
+    for k in keys:
+        if not re.fullmatch(r"(ssh-ed25519|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( [^\n]*)?", k):
+            raise Stop("a pinned Owner signing key is not an ed25519 public key line: refused")
+    tmp = tempfile.mkdtemp(prefix="hs6-verify-")
+    try:
+        signers = os.path.join(tmp, "allowed_signers")
+        sigf = os.path.join(tmp, "approval.sig")
+        with open(signers, "w") as f:
+            for k in keys:
+                f.write('%s namespaces="%s" %s\n' % (SIGNER_ID, SIG_NAMESPACE, " ".join(k.split()[:2])))
+        with open(sigf, "wb") as f:
+            f.write(sig)
+        try:
+            p = subprocess.run([ssh_keygen(), "-Y", "verify", "-f", signers, "-I", SIGNER_ID, "-n", SIG_NAMESPACE,
+                                "-s", sigf], input=data, capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise Stop("could not run ssh-keygen to verify the Owner's signature: %s" % e)
+        if p.returncode != 0:
+            raise Stop("the approval's .sig is not a valid Owner signature of exactly this file "
+                       "(another key, another file, or a changed file): refused")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def load_approval(path, rid, op):
+    """None => dry-run. A valid approval for this run and operation AND
+    HS6_EXECUTE=<rid> => execute. Anything else stops. For cleanup operations
+    an approval that has expired still counts, so a run can always be torn down.
+
+    The approval is PATH (JSON) plus PATH.sig, the Owner's SSH signature of
+    exactly those bytes. A file without a valid signature by a pinned Owner key
+    is refused, whoever wrote it."""
+    if not path:
+        if os.environ.get("HS6_EXECUTE"):
+            raise Stop("HS6_EXECUTE is set but no approval file was given")
+        return None
+    data = _read_checked(path)
+    try:
+        a = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
         raise Stop("approval file unreadable: %s" % e)
     if not isinstance(a, dict):
         raise Stop("approval file is not a JSON object")
     _decide_test_mode(a.get("account"))
+    if a.get("format") != APPROVAL_FORMAT:
+        raise Stop("approval format must be %d (an Owner-signed approval from hs6_approve.py); "
+                   "unsigned or chat-based approval records are refused" % APPROVAL_FORMAT)
+    if not os.path.lexists(path + ".sig"):
+        raise Stop("approval has no Owner signature (%s.sig is missing): refused" % os.path.basename(path))
+    verify_owner_signature(data, _read_checked(path + ".sig"))
     problems = []
-    if a.get("format") != 1:
-        problems.append("format must be 1")
+    if not isinstance(a.get("nonce"), str) or not re.fullmatch(r"[0-9a-f]{32,64}", a.get("nonce", "")):
+        problems.append("nonce must be 32-64 lowercase hex digits")
     if a.get("run_id") != rid:
         problems.append("run_id is not %s" % rid)
     if a.get("project") != PROJECT or a.get("zone") != ZONE:
@@ -711,6 +799,7 @@ def load_approval(path, rid, op):
         problems.append("account must be the gcloud account to use")
     if problems:
         raise Stop("approval refused: " + "; ".join(problems))
+    a["_sha256"] = hashlib.sha256(data).hexdigest()
     if os.environ.get("HS6_EXECUTE") != rid:
         raise Stop("approval found, but HS6_EXECUTE is not set to the run id: refusing to execute")
     bad_env = [k for k in FORBIDDEN_ENV if os.environ.get(k)]
@@ -901,6 +990,10 @@ class Run:
             used = open(used_path).read().split() if os.path.exists(used_path) else []
             if self.rid in used:
                 raise Stop("run id %s was used before: a run id is never reused" % self.rid)
+            used_appr_path = os.path.join(reg, "used-approvals")
+            used_appr = open(used_appr_path).read().split() if os.path.exists(used_appr_path) else []
+            if appr["_sha256"] in used_appr:
+                raise Stop("this approval has already started a run: an approval starts one run only")
             inv = inventory(g)
             ours = [n for items in inv.values() for n, _ in items if n.startswith(PREFIX)]
             if ours:
@@ -932,10 +1025,13 @@ class Run:
                    "project_metadata": project_metadata(g),
                    "image": {"project": IMAGE_PROJECT, "name": img["name"], "id": str(img["id"])},
                    "quota_free": {"%s/%s" % k: v for k, v in quotas.items() if k in need},
-                   "harness_sha256": harness_sha256()}
+                   "harness_sha256": harness_sha256(),
+                   "approval_sha256": appr["_sha256"], "approval_nonce": appr["nonce"]}
             self.ledger.append(hdr, [])
             with open(used_path, "a") as f:
                 f.write(self.rid + "\n")
+            with open(used_appr_path, "a") as f:
+                f.write(appr["_sha256"] + "\n")
         print("init: baseline of %d existing resources recorded; image %s (%s)"
               % (sum(len(v) for v in inv.values()), img["name"], img["id"]))
         return 0
