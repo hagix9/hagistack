@@ -136,13 +136,15 @@ changes to upstream files; they are new files under the MIT License.
   and its favicon are replaced in the built HTML with Hagistack's own; see
   "Trademarks". The documentation text and the theme's other files are
   unchanged.
-- **Recorded only.** rpm's shebang rewriting also touches one test helper script
-  each in openstacksdk (`openstack/tests/ansible/hooks/post_test_hook.sh`,
-  `#!/bin/sh` becomes `#!/usr/bin/sh`) and os-ken
-  (`os_ken/tests/mininet/run_mnet-test.sh`, the same rewriting). It is recorded
-  here. Those two packages' binary RPMs carry no `HAGISTACK-CHANGES` for it,
-  because their HTML documentation notice does not cover it (an Owner decision,
-  stage 6-5-R1).
+- **Recorded only here.** rpm's shebang rewriting also touches one test helper
+  script each in two packages; whether their notices list it is an Owner
+  decision (stage 6-5-R1).
+  - **openstacksdk:** `openstack/tests/ansible/hooks/post_test_hook.sh`
+    (`#!/bin/sh` becomes `#!/usr/bin/sh`). openstacksdk builds no HTML
+    documentation, so its RPMs carry no `HAGISTACK-CHANGES`.
+  - **os-ken:** `os_ken/tests/mininet/run_mnet-test.sh`, the same rewriting.
+    os-ken's RPMs carry `HAGISTACK-CHANGES` for the documentation logos, and
+    that list does not include this line.
 - **Shebangs, every package.** rpm's build policy (`brp-mangle-shebangs`, part of
   Rocky Linux's `redhat-rpm-config`) rewrites `#!/usr/bin/env python3` and similar
   interpreter lines of executable files to `#!/usr/bin/python3`; in Neutron this
@@ -231,8 +233,9 @@ OpenStack's documentation theme, `openstackdocstheme`.
   (`_static/images/logo-full`, `logo-vert`, `openstack-logo-full` and
   `openstack-logo-vert`, as `.svg` and `.png`) and its favicon
   (`_static/favicon.ico`) are replaced with Hagistack's.
-- The build stops if any file in the HTML tree whose name says "logo", or any
-  `.ico`, is not one of Hagistack's.
+- The build stops if one of those files is missing, or if any file under
+  `_static/` whose name says "logo", or any `.ico` there, is not one of
+  Hagistack's.
 - `make-rpm-release.sh` refuses a release in which any RPM carries one of the
   theme's logo images, or a documentation tree lacks Hagistack's.
 

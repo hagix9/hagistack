@@ -10,9 +10,30 @@ What was not done:
 - Nothing was pushed, tagged or released.
 
 Branch: `feat/rocky-own-packaging-s65r1`, started from
-`ba3395cf9389986be7564873f302386e640be380`. The 21 untracked files are untouched,
-and `rocky10.2/packaging/__pycache__/` still has the 15:36 timestamp of the stage
-6-5 incident. Every Python run in this stage used `-B`.
+`ba3395cf9389986be7564873f302386e640be380`. Every Python run in this stage used
+`-B`, so no bytecode was written.
+
+**Incident, found by the independent audit.**
+- **What happened.** The implementation commit was staged with
+  `git add rocky10.2/packaging`, a directory. That swept the protected untracked
+  `rocky10.2/packaging/__pycache__/genspec.cpython-313.pyc` into the commit. The
+  file holds a local absolute path. This record's first version wrongly said the
+  21 untracked files were untouched.
+- **The file on disk** was never changed. It still has the 15:36 timestamp of the
+  stage 6-5 incident and 43,079 bytes.
+- **What was done about it:**
+  - The file was taken out of the index with `git rm --cached`, so the untracked
+    count is 21 again.
+  - With the Owner's approval, the two commits of this branch were replayed
+    without it: `3ec77b0` became `59d5936`, and `7296da8` became `eed76af`.
+  - Each replayed commit has the same change (`git patch-id`), author, date and
+    message as its original. The final tree equals the old tree minus the
+    `.pyc`.
+  - No ref reaches the old commits.
+  - The original branch `feat/rocky-own-packaging` (`ba3395c`) is unchanged, and
+    nothing was pushed.
+- **Since then** files are staged by explicit path only. No `.gitignore` was
+  added, so the protected item's untracked status stays as it was.
 
 ## Owner decisions implemented
 
@@ -25,8 +46,9 @@ and `rocky10.2/packaging/__pycache__/` still has the 15:36 timestamp of the stag
 
 | Commit | Change |
 |---|---|
-| `3ec77b0` | D2 in `genspec.py` and `make-branding.py`; Keystone, Placement and Nova `changes`; 47 release raises; `release_check.py` and `make-rpm-release.sh`; `build-own.sh`; notices; tests |
-| (this record) | stage 6-5-R1 record |
+| `59d5936` (was `3ec77b0`) | D2 in `genspec.py` and `make-branding.py`; Keystone, Placement and Nova `changes`; 47 release raises; `release_check.py` and `make-rpm-release.sh`; `build-own.sh`; notices; tests |
+| `eed76af` (was `7296da8`) | this record, first version |
+| (this update) | audit fixes (M1, M2 wording, L1–L4) and the record's corrections |
 
 ## 1. What the documentation theme puts in the documentation packages
 
@@ -80,10 +102,15 @@ rejected:
   - `hagistack-doc-favicon.ico`.
 - **Replacement.** After `sphinx-build`, each of the 9 theme paths that exists is
   replaced (`test ! -e … || cp -p …`).
-- **Guard.** The build then stops if any file in the HTML tree whose name
-  contains "logo", or any `.ico`, is not byte-identical to one of Hagistack's
-  five images. A theme that renamed or added a logo file therefore cannot slip
-  through.
+- **Guard.** The build stops in two cases:
+  - one of the 9 theme files is missing (since the audit; `release_check.py`
+    requires all 9 as well);
+  - any file under `_static/` whose name contains "logo", or any `.ico` there,
+    is not byte-identical to one of Hagistack's five images.
+
+  A theme logo under a name without "logo" would not be caught by the guard.
+  The release check refuses the theme's five known logos by content, but not a
+  new logo under another name.
 - **Notice.** The change is stated automatically (`DOC_CHANGE`). It is written
   into `HAGISTACK-CHANGES` and `%changelog`, and every binary package of these
   source packages carries the notice and `HAGISTACK-LICENSE`, as in B2.
@@ -113,7 +140,7 @@ of this was checked on the old set.
 | qrcode | 1 shebang line removed | B2 (already) |
 | Horizon | outside `site-packages` (`/usr/share/openstack-dashboard`) | B2 (already) |
 | **Keystone** | `/etc/keystone/keystone.conf`, generated and scrubbed (placeholders); `/usr/share/keystone/sample_data.sh`, shebang rewritten by rpm | **added** |
-| **Placement** | `placement.conf` and `policy.yaml`, generated and scrubbed (placeholders) | **added** |
+| **Placement** | `/etc/placement/placement.conf`, and `policy.yaml.sample` installed as documentation, both generated and scrubbed (placeholders) | **added** |
 | **Nova** | `nova/tests/unit/ssl_cert/new_cert.sh`, shebang rewritten by rpm; generated samples only checked, not edited | **added** |
 | openstacksdk | `openstack/tests/ansible/hooks/post_test_hook.sh`, `#!/bin/sh` rewritten to `#!/usr/bin/sh` by rpm | recorded in the notices (Owner decision) |
 | os-ken | `os_ken/tests/mininet/run_mnet-test.sh`, the same | recorded in the notices (Owner decision) |
@@ -127,9 +154,14 @@ Two of the flagged differences were false positives of the comparison:
 
 **openstacksdk and os-ken** are left to the Owner, as the instruction asks for
 build-tool-only changes. Each has a single test helper script rewritten from
-`/bin/sh` to `/usr/bin/sh`. Both already build HTML documentation, so they
-already carry `HAGISTACK-CHANGES` for the documentation logos. Adding the
-shebang line would add one line to each notice.
+`/bin/sh` to `/usr/bin/sh`.
+- **os-ken** builds HTML documentation, so it carries `HAGISTACK-CHANGES` for
+  the documentation logos. That list does not include this line, although
+  Keystone's and Nova's lists include the same kind of change.
+- **openstacksdk** builds no HTML documentation and carries no notice. (This
+  record's first version said both build it, which was wrong.)
+- **Options:** add one line to os-ken's `changes`, and give openstacksdk a
+  `changes` entry. Or keep both as recorded in `THIRD_PARTY_NOTICES.md` only.
 
 ## 4. Release checks
 
@@ -155,7 +187,7 @@ documentation images, and its git-cleanliness list includes
 
 | Suite | Python | Result |
 |---|---|---|
-| `packaging/test_genspec.py` | 3.13 | **31** OK |
+| `packaging/test_genspec.py` | 3.13 | **32** OK (31 before the audit fixes) |
 | `packaging/branding/test_branding.py` | 3.13 and 3.9 | **5** OK |
 | `tests/test_release_check.py` | 3.13 and 3.9 | **15** OK |
 | `bash -n` | bash 3.2 | OK: `make-rpm-release.sh`, `build-own.sh`, `run-all.sh`, `hagistack` |
@@ -214,11 +246,54 @@ re-evaluated:
 
 ## Independent audit
 
-(below)
+**Audit** (separate agent, of `3ec77b0`/`7296da8`, with its own checks):
+- **Its checks:**
+  - it regenerated the 69 specs (exactly 50 change);
+  - it traced every theme image and every CSS and HTML reference (9 paths, 5
+    hashes, identical in all 47 trees);
+  - it ran the guard in a mock tree under `sh -e`: spaces in names, `.PNG`,
+    `.ico`, and the exit status through the pipe;
+  - it checked the Keystone and Nova notices against the old set's payloads.
+- **BLOCKER B1:** the protected `.pyc` committed (see "Incident").
+- **MEDIUM:**
+  - **M1:** the Placement notice placed `policy.yaml` in `/etc/placement`, but it
+    is installed as documentation.
+  - **M2:** the os-ken and openstacksdk wording in the notices was circular and
+    inaccurate.
+- **LOW:**
+  - **L1:** the guard's "cannot slip through" claim was overstated.
+  - **L2:** the guard also scanned HTML pages outside `_static`.
+  - **L3:** genspec skipped missing theme files, while `release_check` required
+    them.
+  - **L4:** no test held genspec's and `release_check`'s tables equal.
+  - **L5:** the vertical logo shows at about 59 × 34 inside 59 × 54.
+- **Verdicts:** D2 GO; the 47 packages CONDITIONAL GO (B1); Keystone and Nova
+  notices GO; Placement CONDITIONAL GO (M1); spec generation, release checks and
+  local tests GO; GCE readiness NOT READY (B1, and the Owner's key).
+
+**Fixes:**
+- **B1:** untracked, and the history rewritten with the Owner's approval (see
+  "Incident").
+- **M1:** the Placement notice now says what is installed where.
+- **M2:** the notices give each package's situation, and the record is corrected.
+- **L1:** the record states the guard's limit.
+- **L2:** the guard scans `_static/` only.
+- **L3:** genspec requires all 9 theme files.
+- **L4:** a test compares the two tables.
+- **L5:** not changed. It is the aspect ratio, kept; the layout does not break.
+- **After the fixes:**
+  - the same 50 specs change;
+  - `test_genspec` 32, `test_branding` 5 (3.13 and 3.9) and
+    `test_release_check` 15 (3.13 and 3.9) all pass.
+
+**Re-audit:** (below)
 
 ## Owner decisions
 
 1. The GCE run (section 6), after the key is pinned.
+   - The guard and the release check now require all 9 theme files.
+   - A builder whose `openstackdocstheme` differs from the one that built the
+     old set stops early.
 2. openstacksdk and os-ken: whether their one-line rpm shebang change goes into
    their notice. Today it is recorded in `THIRD_PARTY_NOTICES.md` only.
 3. Unchanged from stage 6-5: §4(b) sufficiency, `%doc` with `nodocs` (L2), and

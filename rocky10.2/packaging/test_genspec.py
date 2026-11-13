@@ -202,11 +202,18 @@ class ChangesNotice(unittest.TestCase):
                 for h in dirs:
                     after = build.split(f'rm -rf {h}/.buildinfo\n', 1)[1]
                     for rel, f in genspec.DOC_BRANDING:
-                        self.assertIn(f"test ! -e '{h}/_static/{rel}' || cp -p '%{{SOURCE{80 + genspec.DOC_SOURCES.index(f)}}}' "
-                                      f"'{h}/_static/{rel}'", after)
-                    # the guard: any logo-named file or icon left that is not Hagistack's stops the build
-                    self.assertRegex(after, r"find '%s' -type f .*-iname '\*logo\*' -o -iname '\*\.ico'.* \|\| exit 1" % h)
+                        self.assertIn(f"test -f '{h}/_static/{rel}' || {{", after)
+                        self.assertIn(f"cp -p '%{{SOURCE{80 + genspec.DOC_SOURCES.index(f)}}}' '{h}/_static/{rel}'", after)
+                    # the guard: any logo-named file or icon left under _static that is not Hagistack's stops the build
+                    self.assertRegex(after, r"find '%s/_static' -type f .*-iname '\*logo\*' -o -iname '\*\.ico'.* \|\| exit 1" % h)
         self.assertEqual(built, 47)
+
+    def test_release_check_uses_the_same_doc_table(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('release_check', os.path.join(HERE, '..', 'release_check.py'))
+        rc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rc)
+        self.assertEqual(rc.DOC_BRANDING, dict(genspec.DOC_BRANDING))
 
     def test_doc_branding_files_exist_and_say_hagistack(self):
         for f in genspec.DOC_SOURCES:
