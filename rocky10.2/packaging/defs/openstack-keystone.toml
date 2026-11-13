@@ -21,8 +21,8 @@ changes = [
 # Changed files that are installed and have # comments: genspec.py puts a
 # comment line into each (after a #! line), saying that it is changed.
 mark_files = [
-  { path = "tools/sample_data.sh" },
-  { path = "etc/keystone.conf.sample", stage = "build" },
+  { path = "tools/sample_data.sh", installed = "/usr/share/keystone/sample_data.sh" },
+  { path = "etc/keystone.conf.sample", stage = "build", installed = "/etc/keystone/keystone.conf" },
 ]
 epoch = 1
 tarball = "keystone-29.1.0.tar.gz"

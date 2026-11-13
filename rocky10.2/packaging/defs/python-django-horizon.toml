@@ -49,7 +49,7 @@ changes = [
 # Changed files that are installed and have # comments: genspec.py puts a
 # comment line into each (after a #! line), saying that it is changed.
 mark_files = [
-  { path = "manage.py" },
+  { path = "manage.py", installed = "/usr/share/openstack-dashboard/manage.py" },
 ]
 # The dashboard shows Hagistack's own logo, not the OpenStack logo: every image
 # of upstream's that shows it (the default theme's four images and the Safari

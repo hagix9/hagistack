@@ -161,8 +161,12 @@ def load(path):
         need(isinstance(src['changelog_date'], str) and re.fullmatch(CHANGELOG_DATE_RE, src['changelog_date']),
              f'{path}: changelog_date must look like "Fri Nov 13 2026"')
     for it in src.get('mark_files', []):
-        need(isinstance(it, dict) and set(it) <= {'path', 'stage'} and 'path' in it,
-             f'{path}: mark_files entries are {{ path = "...", stage = "prep"|"build" }}')
+        need(isinstance(it, dict) and set(it) <= {'path', 'stage', 'installed'} and 'path' in it,
+             f'{path}: mark_files entries are {{ path = "...", stage = "prep"|"build", installed = "/..." }}')
+        if 'installed' in it:
+            need(isinstance(it['installed'], str) and re.fullmatch(r'/[A-Za-z0-9_./-]+', it['installed'])
+                 and '..' not in it['installed'].split('/'),
+                 f'{path}: mark_files installed must be the absolute installed path')
         need(it.get('stage', 'prep') in MARK_STAGES, f'{path}: mark_files stage must be prep or build')
         mp = it['path']
         need(isinstance(mp, str) and re.fullmatch(r'[A-Za-z0-9_./-]+', mp) and not mp.startswith('/')
@@ -294,6 +298,9 @@ def mark_lines(src, stage):
         if it.get('stage', 'prep') != stage:
             continue
         f = it['path']
+        if it.get('installed'):
+            # read by release_check.py: where the RPMs install this file
+            out.append(f"# hagistack-mark-installed: {f} {it['installed']}")
         out.append(f"test -f '{f}' || {{ echo '{f}: the file to mark is missing' >&2; exit 1; }}")
         # The first two lines are held back: the mark goes after a #! on line 1 and
         # after a coding line on line 1 or 2 (PEP 263), whichever is later.

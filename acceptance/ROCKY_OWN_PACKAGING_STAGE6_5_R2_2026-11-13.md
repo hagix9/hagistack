@@ -176,7 +176,7 @@ What did not change:
 | `packaging/test_genspec.py` | 3.13 | **36** OK |
 | `packaging/branding/test_branding.py` | 3.13, 3.9 | 5 OK |
 | `tests/test_release_check.py` | 3.13 / 3.9 | **20** OK / 20 OK (1 skipped on 3.9: genspec needs 3.11) |
-| `acceptance/stage6/test_hs6.py` | 3.13, 3.9 | **151** OK on each (143 before; 8 `CommitBinding` tests added) |
+| `acceptance/stage6/test_hs6.py` | 3.13, 3.9 | **151** OK on each at `e4d72a8`; **152** on 3.13 after the audit fixes (L2 test added) |
 | marking steps on real upstream files | bash and BSD awk | OK (section 3) |
 | `bash -n` | bash 3.2 | OK: `make-rpm-release.sh`, `build-own.sh`, `run-all.sh`, `hagistack` (none changed in this stage) |
 
@@ -296,7 +296,48 @@ final, and any later commit needs a new approval.
   - the full harness run is below;
   - still 54 specs change.
 
-**Re-audit:** (below)
+**Re-audit 1** (same agent, of `aab4f48`):
+- **Resolved:** B1, M2, L1 and L2. It re-ran the new awk on all edge cases,
+  including the latin-1 case, which now compiles. Modes are kept, a second run
+  adds nothing, and no temp file is left. The comparison is still 54 specs
+  changed, 15 identical, and only openstacksdk's release raised.
+- **New BLOCKER R1, caused by the M1 fix:** Keystone's `tools/sample_data.sh` is
+  installed as `/usr/share/keystone/sample_data.sh`. The strict full-path match
+  could not find it, so `release_check.py notices` would always have refused a
+  real build. The test covered only site-packages files and samples.
+
+**Fix of R1** (this update):
+- A `mark_files` entry may name its installed path (`installed = "/…"`).
+  `genspec.py` writes it into the spec as
+  `# hagistack-mark-installed: <path> <installed>`, and `release_check.py` then
+  looks for the mark at exactly that path.
+- File names are no longer guessed. A unique-name fallback would have brought M1
+  back.
+- The entries with a named place:
+  - Keystone's `sample_data.sh`;
+  - Horizon's `manage.py`;
+  - all 13 generated samples (Neutron 10, Keystone 1, Placement 2). A test
+    requires the installed path for every build-stage entry.
+
+  The other 20 entries are site-packages files, matched by their full relative
+  path.
+- Against the old set's file lists, each of the 35 entries maps to exactly one
+  installed file, read from the generated specs the same way `release_check.py`
+  reads them.
+- New tests:
+  - `test_release_check.py`: a file installed elsewhere is found at its named
+    place, and refused there without the mark, even if another copy is marked;
+  - `test_genspec.py`: bad `installed` values are refused; the Keystone and
+    Horizon entries name their place; every build-stage entry names its place.
+- **Results:**
+  - `test_genspec` 38;
+  - `test_release_check` 22 (3.13), and 22 with 1 skipped (3.9);
+  - `test_branding` 5 (both);
+  - `test_hs6` **152/152** on 3.13. The harness is unchanged since `aab4f48`.
+    The 3.9 run is below.
+  - 54 specs change, and only openstacksdk's release is raised.
+
+**Re-audit 2:** (below)
 
 ## Owner steps after this stage
 

@@ -62,6 +62,8 @@ MARK = rc.MARK.decode()
 NOTICE_SPEC = """Name: x
 %prep
 test -f 'x/marked.py' || { echo 'x/marked.py: the file to mark is missing' >&2; exit 1; }
+# hagistack-mark-installed: tools/run.sh /usr/share/x/run.sh
+test -f 'tools/run.sh' || { echo 'tools/run.sh: the file to mark is missing' >&2; exit 1; }
 cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'
 Changes Hagistack made
 - 100%% done in %%prep
@@ -126,6 +128,7 @@ class Notices(Base):
             files['.' + where] = notice
         if marked:
             files['./usr/lib/python3.12/site-packages/x/marked.py'] = ('#!/usr/bin/python3\n%s\nx = 1\n' % MARK).encode()
+            files['./usr/share/x/run.sh'] = ('#!/usr/bin/sh\n%s\n' % MARK).encode()
         if licence_file:
             files['./usr/share/licenses/%s/HAGISTACK-LICENSE' % pkg] = b'MIT'
         files.update(extra or {})
@@ -177,6 +180,15 @@ class Notices(Base):
         self.assertEqual(rc.installed_as('n/tests/other/l3_agent.py', names), [])
         # a generated sample is installed under another name and directory
         self.assertEqual(rc.installed_as('etc/dhcp_agent.ini.sample', names), ['/etc/neutron/dhcp_agent.ini'])
+
+    def test_a_file_installed_elsewhere_is_found_by_its_named_place(self):
+        # the Keystone case: tools/sample_data.sh is installed as /usr/share/keystone/sample_data.sh
+        self.good()
+        rc.check_notices(self.set)
+        self.good(extra={'./usr/share/x/run.sh': b'#!/usr/bin/sh\nno mark\n',
+                         './usr/share/y/run.sh': ('#!/usr/bin/sh\n%s\n' % MARK).encode()})
+        self.refused(rc.check_notices, self.set, want='marks tools/run.sh, but no RPM built from it installs that file '
+                                                      'with the mark at /usr/share/x/run.sh')
 
     def test_a_marked_file_without_the_mark_is_refused(self):
         self.good(marked=False)

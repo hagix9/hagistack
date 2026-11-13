@@ -299,6 +299,7 @@ CHANGES_DIR = '/usr/share/hagistack/changes/'
 MARK = (b"# Hagistack: this file is changed from the upstream release; the changes are "
         b"listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.")
 MARKED_RE = re.compile(r"^test -f '([^']+)' \|\| \{ echo '[^']+: the file to mark is missing'", re.M)
+INSTALLED_RE = re.compile(r"^# hagistack-mark-installed: (\S+) (/\S+)$", re.M)
 
 
 def spec_text(srpm):
@@ -309,8 +310,9 @@ def spec_text(srpm):
 
 
 def marked_paths(text):
-    """The source-tree paths the spec puts the mark into."""
-    return MARKED_RE.findall(text)
+    """(source-tree path, installed path or None) for each file the spec marks."""
+    installed = dict(INSTALLED_RE.findall(text))
+    return [(rel, installed.get(rel)) for rel in MARKED_RE.findall(text)]
 
 
 def installed_as(rel, names):
@@ -404,9 +406,12 @@ def check_notices(set_dir):
     if covered != set(notices):
         raise Bad('no binary RPM from %s' % ', '.join(sorted(set(notices) - covered)))
     for s, rels in marks.items():
-        for rel in rels:
-            if not installed_as(rel, marked_found[s]):
-                raise Bad('%s marks %s, but no RPM built from it installs that file with the mark' % (s, rel))
+        for rel, inst in rels:
+            # a file installed elsewhere than its source-tree path names its place in the spec
+            found = [inst] if inst and inst in marked_found[s] else ([] if inst else installed_as(rel, marked_found[s]))
+            if not found:
+                raise Bad('%s marks %s, but no RPM built from it installs that file with the mark%s'
+                          % (s, rel, ' at %s' % inst if inst else ''))
 
 
 def check_licence(srpm, licence):

@@ -304,6 +304,25 @@ class ChangesNotice(unittest.TestCase):
                                   'openstack-keystone': 2, 'openstack-placement': 2, 'openstack-nova': 1,
                                   'python-openstacksdk': 1, 'python-os-ken': 1})
 
+    def test_files_installed_elsewhere_name_their_place(self):
+        # release_check.py matches these by the named path, not by file name
+        want = {'openstack-keystone': {'tools/sample_data.sh': '/usr/share/keystone/sample_data.sh'},
+                'python-django-horizon': {'manage.py': '/usr/share/openstack-dashboard/manage.py'}}
+        for name, places in want.items():
+            src, pkgs = genspec.load(os.path.join(HERE, 'defs', name + '.toml'))
+            spec = genspec.generate(src, pkgs)
+            for rel, inst in places.items():
+                self.assertIn(f'# hagistack-mark-installed: {rel} {inst}\n', spec)
+
+    def test_generated_samples_name_where_they_are_installed(self):
+        # a generated file is installed under another name: no guessing by file name
+        for d in DEFS:
+            src, _ = genspec.load(d)
+            for it in src.get('mark_files', []):
+                if it.get('stage') == 'build':
+                    with self.subTest(d=os.path.basename(d), path=it['path']):
+                        self.assertTrue(it.get('installed', '').startswith('/'))
+
     def test_mark_text_is_safe_in_the_shell_and_awk(self):
         self.assertNotIn("'", genspec.MARK)
         self.assertNotIn('%', genspec.MARK)
@@ -413,6 +432,9 @@ description = "d"
             with self.subTest(entry=entry):
                 self.refused(base + 'mark_files = [%s]\n' % entry + pkg)
         self.refused(self.BASE + 'mark_files = [{ path = "x.py" }]\n' + pkg)       # no changes
+        for inst in ('relative/x.sh', '/usr/../etc/x', "/x'y"):
+            with self.subTest(installed=inst):
+                self.refused(base + 'mark_files = [{ path = "x.sh", installed = "%s" }]\n' % inst + pkg)
         self.load(base + 'mark_files = [{ path = "x.py" }, { path = "etc/a.conf.sample", stage = "build" }]\n' + pkg)
 
     def test_changes_without_a_date_are_refused(self):

@@ -20,8 +20,8 @@ changes = [
 # Changed files that are installed and have # comments: genspec.py puts a
 # comment line into each (after a #! line), saying that it is changed.
 mark_files = [
-  { path = "etc/placement/placement.conf.sample", stage = "build" },
-  { path = "etc/placement/policy.yaml.sample", stage = "build" },
+  { path = "etc/placement/placement.conf.sample", stage = "build", installed = "/etc/placement/placement.conf" },
+  { path = "etc/placement/policy.yaml.sample", stage = "build", installed = "/usr/share/doc/openstack-placement-common/policy.yaml.sample" },
 ]
 tarball = "openstack_placement-15.0.0.tar.gz"
 sha256 = "b4825e2a37eef18d92a96aef089438327bce5e4580716a8478f0c1864b188800"
