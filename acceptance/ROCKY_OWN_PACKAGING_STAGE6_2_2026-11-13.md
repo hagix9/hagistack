@@ -74,6 +74,7 @@ last run, in h6n121, was before these changes).
 2. Whether to rewrite the unpushed history to drop the `.pyc` from the first commit before a
    push (decided in stage 6-3: rewritten).
 3. A run of `make-rpm-release.sh` on Rocky/EL with the current tree before publication.
+   (Done in stage 6-3, on Rocky Linux 10.2 aarch64.)
 4. Legal review, which this record does not settle: Apache-2.0 §4(b) notices for the
    Neutron patches, attribution for CC-BY/OFL (Font Awesome), trademarks (OpenStack,
    Rocky Linux, Font Awesome brand icons), and the unverified clean-room records

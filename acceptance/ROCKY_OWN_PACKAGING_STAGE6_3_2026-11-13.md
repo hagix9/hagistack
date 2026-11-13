@@ -9,7 +9,9 @@ deleted. Stage 6-1 was not re-run.
 | Commit | Change |
 |---|---|
 | `e6cfda3` | `THIRD_PARTY_NOTICES.md`: the changes made to the upstream sources, trademarks, and rc4's metadata as the source of names and paths |
-| (this record) | stage 6-3 record; stage 6-2 record updated to the rewritten commit ids |
+| `3a0bb8c` | this record (first version); stage 6-2 record updated to the rewritten commit ids |
+| `9b5aad0` | release guards and notice fixes from the independent audit (H-1, M-1, M-2, L-1–L-3); `release_check.py` |
+| (this update) | audit results and the re-run on Rocky |
 
 ## Git history (Owner approved the rewrite)
 
@@ -34,7 +36,8 @@ deleted. Stage 6-1 was not re-run.
 
   The branch was never pushed, so a normal push suffices and no force push is
   needed. The old commits stay in the local reflog only.
-- **Outgoing history.** These are the 45 commits in `origin/master..HEAD` that a
+- **Outgoing history.** These are the commits in `origin/master..HEAD` (45 when scanned, before this
+  record) that a
   push of this branch would publish.
   - Added lines, screened by pattern class:
     - credentials: 0;
@@ -67,7 +70,8 @@ The first copy of the set was made with macOS tar, which adds AppleDouble files
 (`._*.rpm`). The script refused it ("the RPMs do not match RPM-SHA256SUMS"). The
 set was then copied without them.
 
-Result: **28/28 checks passed** (`vmtest.sh`).
+Result: **28/28 checks passed** (`vmtest.sh`) with the guards of stage 6-2.
+After the audit fixes (`9b5aad0`): **40/40** (see "Independent audit").
 
 | Checked | Result |
 |---|---|
@@ -142,13 +146,83 @@ These were read with `rpm` on Rocky from the set itself, unless noted.
   marks are shipped as upstream ships them.
 
 **E. Source offer.** Every binary RPM has its SRPM, and every SRPM has a binary
-(refusal tested). The SRPM asset is published next to the binary asset, as
-`THIRD_PARTY_NOTICES.md` describes. No GPL licence tag exists, so no
-copyleft source obligation applies.
+(refusal tested). Since `9b5aad0`, the check also requires each binary's
+`SOURCEPKGID` to equal its SRPM's header digest (`SIGMD5`); all 195 match. The SRPM
+asset is published next to the binary asset, as `THIRD_PARTY_NOTICES.md`
+describes. No licence tag names the GPL or another copyleft licence. Whether any
+source obligation applies is a legal judgement; this record does not make it.
 
 ## Independent audit
 
-(see below)
+**First audit** (separate agent, of `3a0bb8c`):
+- It confirmed the candidate's contents independently: the asset and lock, 195
+  RPMs byte-identical, 69 SRPMs, `SOURCEPKGID` = `SIGMD5` for all 195,
+  `HAGISTACK-LICENSE` = `LICENSE`, the Neutron patches, Font Awesome identical to
+  its sdist (2,107 files), and the rewritten history.
+- Verdict: **release generation NO-GO**. Findings:
+  - **HIGH H-1.** `repo/` went into the asset whole, but only its top-level
+    `*.rpm` were checked. Extra files, a subdirectory with an unlisted RPM, or an
+    `--out` inside the set were published with rc 0, as an asset the installer's
+    member check refuses (reproduced).
+  - **MEDIUM M-1.** Binaries were matched to SRPMs by file name only, so a
+    swapped SRPM passed (reproduced). `HAGISTACK-LICENSE` was checked by name only.
+  - **MEDIUM M-2.** The list of changes to upstream files was incomplete: it
+    missed Horizon's `manage.py` shebang and rpm's `brp-mangle-shebangs`, and it
+    said "Patch lines and %prep".
+  - **LOW.**
+    - L-1: a relative `--out` gave a misleading refusal.
+    - L-2: `build-env.lock` was optional; `third-party/` was not checked against
+      its pins; uncommitted files could be shipped.
+    - L-3: the RDO-comparison sentence in the notices.
+    - L-4: record details (commit count; the stage 6-2 decision on running on
+      Rocky; the copyleft sentence).
+    - L-5: the GCE project id is in more files on the branch. It is already on
+      `origin/master`, so it is an Owner decision under the AGENTS.md hygiene rule.
+
+**Fixes** (`9b5aad0`, and this update for L-4):
+- `make-rpm-release.sh` with the new `release_check.py`:
+  - `repo/` must hold exactly the listed RPMs and `repodata/`.
+  - `repodata/` must hold exactly `repomd.xml` and the files it names, with their
+    sha256. The primary metadata must list exactly the listed RPMs, each with its
+    sha256.
+  - The written assets are checked member by member, and the asset is put
+    through the installer's own `TAR_CHECK_PY`, read from `hagistack`.
+  - `SOURCEPKGID` = `SIGMD5` for each binary.
+  - `HAGISTACK-LICENSE` must equal `LICENSE` byte for byte (read with `rpm2cpio`).
+  - `--set-dir`/`--out` are resolved, and `--out` inside the set is refused.
+  - `build-env.lock` is required.
+  - `third-party/` must be exactly the expected files, with the pinned ones
+    unaltered, and `third-party/neutron/LICENSE` must be the canonical
+    Apache-2.0 text.
+  - In a git work tree, uncommitted shipped files are refused.
+- The notices add the `manage.py` shebang, rpm's shebang rewriting (checked:
+  `neutron/cmd/destroy_patch_ports.py` is `#!/usr/bin/env python3` upstream and
+  `#!/usr/bin/python3` in the RPM) and the generated files. The RDO sentence now
+  says what was compared (all 24,877 files of the 264 packages, stage 5).
+
+**Re-run on Rocky** (same VM, tree `9b5aad0`): **40/40**.
+- The 16 earlier checks pass, and the asset is unchanged (`da5471b0…`).
+- 23 refusals pass: the 12 earlier ones plus these 11:
+  - an extra file in `repo/`;
+  - a subdirectory in `repo/`;
+  - `--out` inside the set;
+  - an extra file in `repodata/`;
+  - a swapped SRPM;
+  - `HAGISTACK-LICENSE` altered;
+  - no `build-env.lock`;
+  - an extra file in `third-party/`;
+  - a pinned patch altered;
+  - the Neutron licence text altered;
+  - uncommitted shipped files in a git work tree (tested with a stub `git`).
+
+  The earlier "SRPM without `HAGISTACK-LICENSE`" case now injects its fault
+  through a `rpm2cpio` wrapper, because the check now reads the payload; the old
+  `rpm -qpl` injection no longer reached the check (it passed with rc 0, as
+  expected). The "altered" case also uses a `rpm2cpio` wrapper.
+- A run with a relative `--set-dir`/`--out` and a clean (stub) git work tree gives
+  output identical to the first run.
+
+**Re-audit:** (below)
 
 ## Owner decisions and legal points
 
@@ -163,3 +237,9 @@ copyleft source obligation applies.
 4. Whether the SRPMs are attached to the release (they are generated and checked).
 5. Approval key for GCE (stage 6-2): still unpinned. It is not needed for release
    generation.
+6. The GCE project id is in the acceptance harness and its records on this branch
+   (already public on `origin/master`). Keep it, or replace it with a placeholder
+   before the push (AGENTS.md hygiene rule 5).
+7. Push only this branch (`git push origin feat/rocky-own-packaging`). A local
+   tool ref under `refs/codex/` reaches other `.pyc` files, so `--all` or
+   `--mirror` must not be used.
