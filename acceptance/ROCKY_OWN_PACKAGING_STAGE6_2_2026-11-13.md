@@ -8,14 +8,17 @@ changed or deleted, and stage 6-1 was not re-run.
 
 | Commit | Change |
 |---|---|
-| `656d43d` | `hs6.py` executes only an approval signed by the Owner (`FILE` + `FILE.sig`, `ssh-keygen -Y`, namespace `hagistack-stage6-approval`) with a key pinned in `OWNER_SIGNING_KEYS`; `hs6_approve.py`, the Owner's one-step tool |
-| `782b508` | `make-rpm-release.sh`: LICENSE and notices required, `srpms/` exactly the set's SRPMs, each with `HAGISTACK-LICENSE`; `THIRD_PARTY_NOTICES.md`: source offer, licence texts per package, external repositories |
-| `af3eab3` | audit fixes A1–A6, B1–B2 |
-| `4d33980` | re-audit fix A2' (`python3 -I` enforced before any import) |
+| `8e5578a` | `hs6.py` executes only an approval signed by the Owner (`FILE` + `FILE.sig`, `ssh-keygen -Y`, namespace `hagistack-stage6-approval`) with a key pinned in `OWNER_SIGNING_KEYS`; `hs6_approve.py`, the Owner's one-step tool |
+| `8ff77e2` | `make-rpm-release.sh`: LICENSE and notices required, `srpms/` exactly the set's SRPMs, each with `HAGISTACK-LICENSE`; `THIRD_PARTY_NOTICES.md`: source offer, licence texts per package, external repositories |
+| `947276e` | audit fixes A1–A6, B1–B2 |
+| `2556398` | re-audit fix A2' (`python3 -I` enforced before any import) |
 
-`656d43d` also added `acceptance/stage6/__pycache__/hs6.cpython-313.pyc`, which holds
-a local absolute path. `af3eab3` removes it from the tree, but it stays in the history
-of these unpushed commits (see "Owner decisions").
+The commit ids above are those after the history rewrite of stage 6-3 (Owner
+approved): before it, they were `656d43d`, `782b508`, `af3eab3` and `4d33980`, and
+this record was `afefcbf`. The first commit had also added
+`acceptance/stage6/__pycache__/hs6.cpython-313.pyc`, which holds a local absolute
+path; the rewrite took it out of the history. The changes, authors, dates and
+messages are otherwise unchanged (stage 6-3 record).
 
 ## GCE approval
 
@@ -29,8 +32,8 @@ of these unpushed commits (see "Owner decisions").
   asks for the run id, and signs with the passphrase or touch.
 - **Fail-closed now.** `OWNER_SIGNING_KEYS` is empty, so nothing can be executed until
   the Owner's key is pinned.
-- Tests (mock gcloud, no GCE): 137 on Python 3.9 and 3.13 after `af3eab3`; the
-  approval classes (36) again after `4d33980`. They cover: no approval, AI-written
+- Tests (mock gcloud, no GCE): 137 on Python 3.9 and 3.13 after `947276e`; the
+  approval classes (36) again after `2556398`. They cover: no approval, AI-written
   records, another key, another namespace, a copied signature, tampering (one byte),
   another run id, expiry, operations outside the scope, budget and hours over the
   limits, reuse of an approval for a second run, no pinned key, the test hooks with a
@@ -53,22 +56,23 @@ Checked on the real files, read on macOS with a header reader (no `rpm`):
 - RDO: 2 files identical to RDO packaging files (the two upstream Neutron commits),
   0 mentions (stage 5 evidence, reused).
 
-Not executed: `make-rpm-release.sh` after `782b508`/`af3eab3` (needs Rocky/EL; its
+Not executed: `make-rpm-release.sh` after `8ff77e2`/`947276e` (needs Rocky/EL; its
 last run, in h6n121, was before these changes).
 
 ## Independent audit
 
 - First audit: Part A NO-GO (MEDIUM A1 committed `.pyc`, A2 key-set and tool-integrity
   checks, A3 cleanup blocked after a harness change), Part B GO.
-- Re-audit of `af3eab3`: A1–A6 fixed; new MEDIUM A2' (planted module without `-I`).
-- Re-check of `4d33980`: **Part A GO, Part B GO**; BLOCKER/HIGH/MEDIUM 0. LOW: code
+- Re-audit of `947276e`: A1–A6 fixed; new MEDIUM A2' (planted module without `-I`).
+- Re-check of `2556398`: **Part A GO, Part B GO**; BLOCKER/HIGH/MEDIUM 0. LOW: code
   in the Owner's own environment can run before the `-I` guard when started without
   `-I` (same-user residual risk); the `.pyc` in history.
 
 ## Owner decisions
 
 1. Create the approval key and have its public line pinned, before any further GCE run.
-2. Whether to rewrite the unpushed history to drop the `.pyc` from `656d43d` before a push.
+2. Whether to rewrite the unpushed history to drop the `.pyc` from the first commit before a
+   push (decided in stage 6-3: rewritten).
 3. A run of `make-rpm-release.sh` on Rocky/EL with the current tree before publication.
 4. Legal review, which this record does not settle: Apache-2.0 §4(b) notices for the
    Neutron patches, attribution for CC-BY/OFL (Font Awesome), trademarks (OpenStack,
