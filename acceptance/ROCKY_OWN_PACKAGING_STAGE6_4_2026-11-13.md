@@ -15,7 +15,9 @@ What was not done:
 | Commit | Change |
 |---|---|
 | `9daac74` | `RELEASE-README.md` ships with every candidate; `make-rpm-release.sh` refuses a candidate that is not exactly the standard files, or whose `SHA256SUMS` does not list and verify each; notices: owner of the OpenStack marks, not "OpenStack Powered/Compatible", upstream changes sorted by kind |
-| (this record) | stage 6-4 record |
+| `bf7dd30` | stage 6-4 record (first version) |
+| `6b3c033` | one publication order in `RELEASE-README.md`, `rpm-release.lock` and the lock candidate (audit M1); README wording; script header |
+| (this update) | audit results, re-run, record corrections |
 
 ## 1. Apache-2.0 §4(b) (modified files must carry notices of the change)
 
@@ -31,7 +33,12 @@ with the upstream `neutron-28.0.2.tar.gz` inside the SRPM:
 | shebang only, Hagistack's `%prep` edit | 1 (`tests/fullstack/servers/metadata.py`, `env python` → `python3`) |
 | any other difference | **0** |
 
-The 858 entries without a tarball counterpart are directories.
+The 858 entries without a tarball counterpart are directories. The inventory
+script labels 7 of them, the alembic `versions/<release>` directories, as files;
+they are directories (`drwxr-xr-x`, checked by the auditor). Outside
+`site-packages/neutron/`, the auditor compared the installed `/etc/neutron`
+files and the dist-info: they are generated samples, or files identical to
+upstream (`api-paste.ini`, `rootwrap.*`), so the conclusion holds.
 
 **Classification:**
 
@@ -58,9 +65,12 @@ release (in `THIRD_PARTY_NOTICES.md` and `third-party/`) and in the SRPMs.
   - It also installs a short `HAGISTACK-CHANGES` file as `%doc` in each affected
     binary package.
   - **B1, Neutron only:** 1 SRPM, 15 binaries.
-  - **B2, every package with a Hagistack edit:** Neutron, Horizon, qrcode,
+  - **B2, every SRPM with a Hagistack edit:** Neutron, Horizon, qrcode,
     barbicanclient, keystoneauth1 and keystonemiddleware, which is 6 SRPMs and
-    25 binaries. The three documentation edits change no installed file.
+    25 binaries. The `doc/source/conf.py` edits of the last three change no
+    installed file, but the documentation built from the edited file is shipped.
+    A notice in their changelog covers that. B1 plus Horizon and qrcode
+    (3 SRPMs) is the smaller variant.
   - **B3:** B2, plus a changelog line about the build tool's shebang rewriting
     in all 69 SRPMs.
   - **Work for B1–B3:**
@@ -88,17 +98,21 @@ Findings:
   Foundation. The Linux Foundation's trademark page does not cover the OpenStack
   marks.
 - **The word "OpenStack" without a licence:** allowed only as nominative fair
-  use, under three conditions:
+  use, under these conditions:
   - the mark is used only as needed to refer to the project;
   - your own branding is more prominent;
-  - no endorsement or affiliation is implied.
+  - no endorsement or affiliation is implied;
+  - the marks are not used to brand a commercial product.
 - **Confusingly similar names** are prohibited.
 - **The OpenStack logo:**
   - Using it to brand a commercial product needs a signed licence.
   - The primary logo is generally limited to educational and community use.
   - Marks must be used unaltered.
-- **"OpenStack Powered" and "OpenStack Compatible"** (for distributions and
-  products) need a signed licence.
+- **"OpenStack Powered" and "OpenStack Compatible"** need a signed licence.
+  The brand page names distributions among the products that "OpenStack
+  Powered" covers. This release does not use those marks, but whether a
+  distribution may say what it contains without that programme is part of the
+  Owner's decision.
 - **Not addressed:** redistributing OpenStack software that contains the logo
   (for example, Horizon's default images), whether unmodified or modified, and
   any specific rule for packagers.
@@ -110,10 +124,12 @@ Use in this release:
 - `openstack-dashboard` contains Horizon's default `logo.svg`,
   `logo-splash.svg` and favicon, unmodified. Horizon shows them in its UI.
 
-Done here (no Owner decision needed): `THIRD_PARTY_NOTICES.md` and
-`RELEASE-README.md` now name OpenInfra as the owner of the marks. They say that
-the release is not an OpenStack release, is not "OpenStack Powered" or
-"OpenStack Compatible", and is not affiliated or endorsed.
+Done here (no Owner decision needed):
+- `THIRD_PARTY_NOTICES.md` names OpenInfra as the owner of the marks. It says
+  that the release is not an OpenStack release, is not "OpenStack Powered" or
+  "OpenStack Compatible", and is not affiliated or endorsed.
+- `RELEASE-README.md` says that the release is not an OpenStack Foundation
+  release, and refers to that section.
 
 **Options (Owner decision; the policy gives no clear basis for keeping the logo):**
 
@@ -152,10 +168,15 @@ packaging file were re-examined line by line.
 - **Records against files:**
   - Every one of the 16 files is covered by its `AUTHORING.md`, by name or in a
     group heading (for example `openstack-nova-{conductor,…}.service`).
-  - The `root_helper` lines are the installer's own: `hagistack` lines 2643–2645
-    and 3236–3238, present since 2026-09-29 (`c206073`). The clean-room file came
-    on 2026-11-11, which matches the record's stated source.
-  - The installer's sources say why each of the other lines is there.
+  - The `root_helper` lines are the installer's own, present since 2026-09-29
+    (`c206073`). They are now at `hagistack` lines 2643–2645 and 3236–3238. The
+    record cites lines 2622–2635 and 3215–3228, which are where they were in the
+    installer at authoring time (`c975b3f`, checked); the clean-room file came on
+    2026-11-11. This matches the record's stated source.
+  - `lock_path = $state_path/lock` is not from the installer. The record derives
+    it from upstream Neutron (`neutron/conf/common.py`, `state_path`).
+  - The other shared lines are systemd and logrotate syntax, or names upstream
+    gives (service users, console scripts).
 - **Conclusion (technical):** the shared parts are functional (syntax, service
   names, paths, settings that upstream or the installer dictate). No expression
   beyond them is shared.
@@ -176,7 +197,8 @@ The binary asset's bytes do not depend on the tag. The asset is unchanged by
 stage 6-4.
 
 **Verification on Rocky Linux 10.2 aarch64.** The VM was re-created with the
-Owner's approval, under the stage 6-3 conditions, and deleted afterwards.
+Owner's approval, under the stage 6-3 conditions. It is deleted at the end of
+stage 6-4 (see "Clean-up").
 - Tree `9daac74`: **46/46** checks.
   - These are the 41 checks of stage 6-3, re-run because the script changed.
   - New:
@@ -210,17 +232,61 @@ Owner's approval, under the stage 6-3 conditions, and deleted afterwards.
 
 ## Independent audit
 
-(see below)
+**Audit** (separate agent, of `9daac74`/`bf7dd30`; it re-ran the release on
+Rocky and re-derived the Neutron inventory and the 16-file comparison):
+- **MEDIUM M1:** the shipped `RELEASE-README.md` told users to install from the
+  tag holding a published lock. `rpm-release.lock` and the lock candidate said
+  to commit the lock only after publication, which would leave the tag with an
+  unpublished lock, so the documented install would stop. It is fail-closed,
+  but the documented steps could not work, and a shipped README cannot be fixed
+  after publication.
+- **LOW:**
+  - the script header about the final check;
+  - "`repo/` is a complete DNF repository";
+  - which lock the README meant;
+  - this record's claims about the README;
+  - the missing commercial-branding condition and the distributions note of
+    "OpenStack Powered";
+  - "the VM was deleted";
+  - the source of `lock_path` and the old line numbers;
+  - why the documentation edits are counted in B2;
+  - the inventory's scope.
+- Verdicts: §4(b) documentation GO; trademark CONDITIONAL GO; clean-room
+  CONDITIONAL GO; Git GO; Release Candidate NOT READY (M1).
+
+**Fixes:**
+- `6b3c033`: `RELEASE-README.md`, `rpm-release.lock` and the lock candidate now
+  state one order: commit the lock for an approved candidate, tag that commit,
+  create the release from the tag. The README wording is fixed and the script
+  header is corrected.
+- This update fixes the record's points.
+
+**Re-run on Rocky** (tree `6b3c033`): **46/46**, asset unchanged (`da5471b0…`).
+The lock candidate carries the new order.
+- The edited `rpm-release.lock` was parsed with the installer's own
+  `parse_kv_file`, in the VM. It is still `unpublished`, and
+  `--rpm-source github` stops with the unchanged explanation.
+- `tests/test-env-file.sh`: 18/18.
+- `tests/test-rpm-source.sh` was not run: it needs `rpmbuild`, which the VM
+  lacks and which was not installed (no extra download).
+
+**Re-audit:** (below)
 
 ## Owner decisions
 
 1. §4(b): option A, B1, B2 or B3.
 2. The Horizon logo: T1, T2 or T3.
 3. Rely on the clean-room records.
-4. Where to publish, then push, tag and release.
-   - Push only this branch.
-   - After publication, commit `rpm-release.lock` from
-     `rpm-release.lock.candidate`.
+4. Where to publish, then push, tag and release, in this order:
+   1. regenerate the candidate with the release tag on Rocky/EL;
+   2. commit `rpm-release.lock.candidate` as `rocky10.2/rpm-release.lock`;
+   3. push only this branch;
+   4. tag that commit;
+   5. create the release from the tag and upload the candidate's files.
+
+   Until the files are uploaded, the installer fails closed. Since stage 6-4 the
+   README shipped in the candidate, `rpm-release.lock` and the lock candidate
+   all describe this order (audit M1).
 5. The GCE project id on the branch: keep it or replace it.
 6. Pin the GCE approval key. It is needed only if option B or T2 asks for a
    rebuild or acceptance run on GCE.
