@@ -8,8 +8,11 @@
 # checkout you are running.
 #
 # It is parsed as KEY=VALUE data, never sourced. It is written by
-# rocky10.2/make-rpm-release.sh when a release is prepared, and committed only
-# after the release is actually published and audited.
+# rocky10.2/make-rpm-release.sh when a release is prepared. It is committed only
+# for a candidate that has been audited and approved for publication, in the
+# commit the release tag points to; the release is then created from that tag
+# and its files uploaded. Until they are uploaded, a download fails and
+# hagistack stops.
 #
 # LOCK_STATUS=unpublished means no release is pinned: --rpm-source github stops
 # with an explanation and downloads nothing. Use --rpm-source build or

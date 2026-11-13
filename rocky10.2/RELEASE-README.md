@@ -31,9 +31,11 @@ installs on Rocky Linux 10.2. It is not an OpenStack Foundation release (see
 
 ## Installing
 
-Use the `hagistack` installer from the Git tag of this release. The tag holds
-`rocky10.2/rpm-release.lock`, which pins this release's asset by sha256, size and
-RPM-set identity:
+Use the `hagistack` installer from the Git tag of this release. The release is
+published in this order: `rpm-release.lock.candidate` is committed as
+`rocky10.2/rpm-release.lock`, that commit is tagged `<TAG>`, and the release is
+created from the tag. So the tag holds the lock, which pins this release's asset
+by sha256, size and RPM-set identity:
 
 ```sh
 git clone --branch <TAG> https://github.com/hagix9/hagistack.git
@@ -46,8 +48,9 @@ every RPM against `RPM-SHA256SUMS`, the identity of that listing, the repository
 metadata and `rpm -K`. The trust anchor is the lock in the Git checkout, not
 `SHA256SUMS` next to the download. The RPMs are not GPG-signed.
 
-To use the RPMs without the installer, unpack the asset. `repo/` is then a
-complete DNF repository.
+To use the RPMs without the installer, unpack the asset. `repo/` is then a DNF
+repository with complete metadata. The packages also need the other
+repositories listed above.
 
 ## Checking a download by hand
 
@@ -55,7 +58,7 @@ complete DNF repository.
 sha256sum -c SHA256SUMS
 tar -xf hagistack-rpms-<TAG>-el10-x86_64.tar
 ( cd repo && sha256sum -c ../RPM-SHA256SUMS )
-sha256sum RPM-SHA256SUMS      # must equal RPM_SET_SHA256 in rpm-release.lock
+sha256sum RPM-SHA256SUMS      # must equal RPM_SET_SHA256 in rocky10.2/rpm-release.lock at <TAG>
 ```
 
 ## Known limitations

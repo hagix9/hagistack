@@ -25,8 +25,9 @@
 # Runs on Rocky/EL (needs rpm, rpm2cpio, tar, sha256sum, python3, realpath) from
 # a full checkout; in a git work tree the files it ships must be committed.
 # Exits non-zero on any failed check. A failed check before the assets stops
-# before they and the lock are written; one after them stops before the lock.
-# Either way --out may hold partial files: discard it.
+# before they and the lock are written; one after them stops before the lock;
+# the final check of the whole candidate runs after the lock and SHA256SUMS are
+# written. Whenever it exits non-zero, --out may hold partial files: discard it.
 set -euo pipefail
 
 die(){ printf 'STOP: %s\n' "$*" >&2; exit 1; }
@@ -208,8 +209,10 @@ ASIZE="$(stat -c %s "$OUT/$ASSET")"
 MSHA="$(sha256sum "$HERE/gazpacho.manifest" | cut -d' ' -f1)"
 cat > "$OUT/rpm-release.lock.candidate" <<EOF
 # Candidate lock for release $TAG, written by make-rpm-release.sh.
-# Commit it as rocky10.2/rpm-release.lock ONLY after the release is published
-# and audited. Until then it must not be used as the default lock.
+# Publication order, once the candidate is audited and the Owner approves:
+# commit this file as rocky10.2/rpm-release.lock, tag that commit $TAG, then
+# create the release from the tag and upload the candidate's files. Never commit
+# it for a candidate that will not be published.
 LOCK_FORMAT=1
 LOCK_STATUS=published
 RELEASE_TAG=$TAG
