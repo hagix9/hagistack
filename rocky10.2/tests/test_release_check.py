@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 
+sys.dont_write_bytecode = True   # importing release_check must not write bytecode
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(HERE)
 spec = importlib.util.spec_from_file_location('release_check', os.path.join(TOP, 'release_check.py'))

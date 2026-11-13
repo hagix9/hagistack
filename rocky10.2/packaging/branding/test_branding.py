@@ -15,6 +15,9 @@ import unittest
 import xml.etree.ElementTree as ET
 import zlib
 
+sys_dont_write = __import__('sys')
+sys_dont_write.dont_write_bytecode = True   # importing the generator must not write bytecode
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(HERE, '..', 'files', 'python-django-horizon')
 SVGS = ('hagistack-logo.svg', 'hagistack-logo-splash.svg', 'hagistack-safari-pinned-tab.svg',

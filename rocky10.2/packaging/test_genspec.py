@@ -12,6 +12,8 @@ import sys
 import tempfile
 import unittest
 
+# Never write bytecode next to the sources (packaging/__pycache__ must stay as it is).
+sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import genspec  # noqa: E402

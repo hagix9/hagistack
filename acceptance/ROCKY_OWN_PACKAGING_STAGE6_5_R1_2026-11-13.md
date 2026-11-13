@@ -48,7 +48,8 @@ Branch: `feat/rocky-own-packaging-s65r1`, started from
 |---|---|
 | `59d5936` (was `3ec77b0`) | D2 in `genspec.py` and `make-branding.py`; Keystone, Placement and Nova `changes`; 47 release raises; `release_check.py` and `make-rpm-release.sh`; `build-own.sh`; notices; tests |
 | `eed76af` (was `7296da8`) | this record, first version |
-| (this update) | audit fixes (M1, M2 wording, L1–L4) and the record's corrections |
+| `fda46d3` | audit fixes (M1, M2 wording, L1–L4) and the record's corrections |
+| (this update) | the three test suites never write bytecode (`sys.dont_write_bytecode`); re-audit result |
 
 ## 1. What the documentation theme puts in the documentation packages
 
@@ -286,7 +287,29 @@ re-evaluated:
   - `test_genspec` 32, `test_branding` 5 (3.13 and 3.9) and
     `test_release_check` 15 (3.13 and 3.9) all pass.
 
-**Re-audit:** (below)
+**Re-audit** (same agent):
+- **B1 resolved.** None of the 63 outgoing commits carries a `.pyc` or
+  `__pycache__/`. No ref reaches `3ec77b0`.
+  - The replayed commits equal the originals except the `.pyc` (patch-id,
+    author, date, message).
+  - The trees match minus the `.pyc`.
+  - The original branch is still `ba3395c`.
+  - There are 21 untracked files, and the 15:36 `.pyc` is intact.
+- **M1–L4 resolved**, L5 kept as recorded.
+- **Its checks:** the same 50 specs change; `test_genspec` 32,
+  `test_branding` 5 and `test_release_check` 15 pass.
+- **New LOW:** the tests wrote bytecode when run without `-B`, the same weakness
+  that caused the incident. Fixed in this update with
+  `sys.dont_write_bytecode = True` in all three suites. They were run once
+  without `-B` on 3.13, and the branding and release-check suites also on 3.9.
+  No `__pycache__` appeared, and the protected file's timestamp did not change.
+- **Verdicts:**
+  - D2, the 47 packages, the Keystone, Placement and Nova notices, spec
+    generation, release checks, local tests and Git publication safety: GO;
+  - other notices GO, with os-ken and openstacksdk recorded as an Owner
+    decision;
+  - GCE readiness READY within this stage. The Owner's key and signed approval,
+    and the real x86_64 build, are outside it.
 
 ## Owner decisions
 
