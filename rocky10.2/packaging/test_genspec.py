@@ -300,7 +300,7 @@ class ChangesNotice(unittest.TestCase):
                 if any(it.get('stage') == 'build' for it in src['mark_files']):
                     # marked after the samples are generated and scrubbed
                     self.assertGreater(build.index('grep -qxF'), build.index(src['build_extra'][-1][:40]))
-        self.assertEqual(marked, {'openstack-neutron': 27, 'python-django-horizon': 1, 'python3-qrcode': 1,
+        self.assertEqual(marked, {'openstack-neutron': 26, 'python-django-horizon': 1, 'python3-qrcode': 1,
                                   'openstack-keystone': 2, 'openstack-placement': 2, 'openstack-nova': 1,
                                   'python-openstacksdk': 1, 'python-os-ken': 1})
 

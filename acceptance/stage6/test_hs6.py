@@ -742,6 +742,14 @@ class CommitBinding(Base):
         rc, out = self.hs("create-node", "n2", env={"MOCK_GIT_HEAD": "d" * 40})
         self.assertNotEqual(rc, 0, out)
 
+    def test_cleanup_works_when_the_checkout_cannot_be_read(self):
+        self.up("n1")
+        rc, out = self.hs("residual", env={"MOCK_GIT_FAIL": "1"})
+        self.assertIn("allowed for residual only", out)
+        self.assertNotIn("cannot read the git checkout (", out.split("WARNING")[0])
+        rc, out = self.hs("teardown", env={"MOCK_GIT_FAIL": "1"})
+        self.assertEqual(rc, 0, out)
+
     def test_the_git_hook_is_refused_with_a_real_account(self):
         self.write_approval(account="owner@example.com")
         rc, out = self.hs("init", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None,

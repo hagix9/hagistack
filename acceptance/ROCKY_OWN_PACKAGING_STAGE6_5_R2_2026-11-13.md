@@ -86,7 +86,8 @@ can go inside it without breaking it:
 | Changed file | Inside the file | Otherwise |
 |---|---|---|
 | Neutron: 4 patched modules, `metadata.py` (Hagistack's shebang edit), 11 files with rpm's shebang rewriting | **comment line** | — |
-| Neutron: 11 generated configuration samples (placeholders), installed in `/etc/neutron` | **comment line** (after generation and checks) | — |
+| Neutron: 10 generated configuration samples (placeholders), installed in `/etc/neutron` | **comment line** (after generation and checks) | — |
+| Neutron: `macvtap_agent.ini.sample` (generated, not installed) | not inside: not shipped | `HAGISTACK-CHANGES` (the generic sample line) |
 | Keystone: `keystone.conf.sample` (generated, scrubbed), `sample_data.sh` (rpm shebang) | **comment line** | — |
 | Placement: `placement.conf.sample`, `policy.yaml.sample` (generated, scrubbed) | **comment line** | — |
 | Nova: `new_cert.sh`; openstacksdk: `post_test_hook.sh`; os-ken: `run_mnet-test.sh` (rpm shebang) | **comment line** | — |
@@ -105,8 +106,9 @@ can go inside it without breaking it:
   final `grep` that stops it if the line is absent.
 - **The line:** `# Hagistack: this file is changed from the upstream release;
   the changes are listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.`
-- **Where:** after a `#!` line and a Python coding line (PEP 263 needs it on line
-  1 or 2), so neither moves. rpm's later shebang rewriting changes line 1 only.
+- **Where:** after a `#!` line on line 1 and after a Python coding line on line 1
+  or 2 (PEP 263), whichever is later, so neither moves. rpm's later shebang
+  rewriting changes line 1 only.
 - **Idempotent:** a file that already has the line is left alone.
 - **Refused by the loader:**
   - a path outside the tree;
@@ -126,7 +128,11 @@ inserted.
   - Neutron's `constants.py`;
   - a file with a shebang and a coding line;
   - a file with a coding line only;
-  - an empty file.
+  - a comment line followed by a coding line (latin-1; audit L1);
+  - an empty file;
+  - a file without a final newline;
+  - a one-line file;
+  - an INI sample.
 - Results:
   - the mark is placed after the shebang and coding lines;
   - a second run adds nothing;
@@ -178,7 +184,7 @@ New or changed tests:
 - **`test_genspec.py`:**
   - every notice is at `/usr/share/hagistack/changes/<package>/`, listed once
     with its three directories, and never `%doc` or under `%{_docdir}`;
-  - the marked files per definition (Neutron 27, Horizon 1, qrcode 1,
+  - the marked files per definition (Neutron 26, Horizon 1, qrcode 1,
     Keystone 2, Placement 2, Nova 1, openstacksdk 1, os-ken 1) get the steps in
     the right stage and appear in the notice;
   - the mark is shell- and awk-safe;
@@ -235,7 +241,62 @@ final, and any later commit needs a new approval.
 
 ## Independent audit
 
-(below)
+**Audit** (separate agent, of `e4d72a8`/`8aefd6b`):
+- **Its checks:**
+  - regenerated the 69 specs (54 changed, 15 identical, only openstacksdk's
+    release raised);
+  - checked the 170 binary packages with a notice (one notice, one
+    `HAGISTACK-LICENSE`, three `%dir`, no `%doc`);
+  - matched the 16 shipped files with a rewritten shebang to `mark_files`
+    (none missed);
+  - ran the marking on edge cases (modes kept, idempotent);
+  - reviewed the key and approval flow in code;
+  - ran its own tests.
+- **Verdict NO-GO**, on one BLOCKER:
+  - **B1:** Neutron's `etc/neutron/plugins/ml2/macvtap_agent.ini.sample` was in
+    `mark_files`, but no RPM installs it (the macvtap agent package ships only
+    its `conf.d` directory). `release_check.py notices` would have refused the
+    set, after the GCE build had been spent, and the notice and this record
+    claimed it was installed and marked.
+- **MEDIUM:**
+  - **M1:** `installed_as` accepted the same file name in another place, so one
+    of Neutron's two `l3_agent.py` (or `ovs_agent.py`) could lose its mark and
+    still pass.
+  - **M2:** the commit binding covers the harness checkout, not what
+    `upload`/`ssh` send to a node, and a comment said "the commit is what runs".
+- **LOW:**
+  - **L1:** a comment line followed by a coding line put the mark before the
+    coding line, which would break a latin-1 file. No current target has one.
+  - **L2:** an unreadable checkout stopped `teardown`/`residual`.
+  - **L3:** `git status` does not show assume-unchanged or skip-worktree files
+    (same-user risk, already in the README).
+- **Not verified:** EL10's `%__docdir_path` value, real file flags and a nodocs
+  install, GNU awk, and `%{CHANGELOGNAME}` returning the newest entry. All are
+  in the GCE plan.
+
+**Fixes** (this update):
+- **B1:** the entry was removed (Neutron 27 → 26 marked files). All 10 other
+  samples were checked as installed in the old set.
+- **M1:** a marked path matches an installed path by its full relative path. The
+  file name is used only for `.sample` files, and only when no full-path match
+  exists. A test covers it.
+- **M2:** the README states the limit. Each upload's SHA-256 is checked against
+  the node and kept in `remote/*.log`, and the comment in `hs6_approve.py` is
+  corrected.
+- **L1:** the first two lines are held back, and the mark goes after the later of
+  a `#!` on line 1 and a coding line on line 1 or 2. Tested on the comment and
+  coding case: the latin-1 file compiles.
+- **L2:** for cleanup operations, an unreadable checkout gives a warning, not a
+  stop. A test covers it.
+- **L3:** not changed (README).
+- **After the fixes:**
+  - `test_genspec` 36, `test_branding` 5, and `test_release_check` 21 (3.13)
+    and 21 with 1 skipped (3.9) pass;
+  - the `CommitBinding` tests (9) pass;
+  - the full harness run is below;
+  - still 54 specs change.
+
+**Re-audit:** (below)
 
 ## Owner steps after this stage
 

@@ -143,8 +143,9 @@ def harness_state():
     if st.returncode != 0 or st.stdout.strip():
         raise Refused("%s has uncommitted or untracked changes: approve only committed code\n%s"
                       % (rel, st.stdout.strip()))
-    # The run is bound to one commit: the whole checkout must have no change to a
-    # tracked file (untracked files are allowed), so the commit is what runs.
+    # The approval names one commit: the whole checkout must have no change to a
+    # tracked file (untracked files are allowed), so the harness that runs is that
+    # commit's. What is uploaded or run on a node is not bound by this (README).
     tracked = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=no"])
     if tracked.returncode != 0 or tracked.stdout.strip():
         raise Refused("the checkout has changes to tracked files: commit or drop them first\n%s"

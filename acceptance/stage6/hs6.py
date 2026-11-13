@@ -811,7 +811,13 @@ def load_approval(path, rid, op):
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         problems.append("commit must be the full id of the approved commit")
     else:
-        head, dirty = repo_state()
+        try:
+            head, dirty = repo_state()
+        except Stop as e:
+            if op not in CLEANUP_OPS:
+                raise
+            print("WARNING: %s; allowed for %s only" % (e, op), file=sys.stderr)
+            head, dirty = commit, ""
         why = []
         if head != commit:
             why.append("HEAD is %s, not the approved commit %s" % (head[:12], commit[:12]))

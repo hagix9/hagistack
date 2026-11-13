@@ -64,7 +64,11 @@ Execution needs **all** of the following:
    - the full id of the **commit** to run. A non-cleanup operation runs only if the
      checkout's HEAD is that commit and no tracked file is changed (untracked
      files are allowed). `hs6_approve.py` writes the commit only for a checkout
-     with no change to a tracked file.
+     with no change to a tracked file. **Limit:** this binds the harness and the
+     checkout it runs from. It does not bind what `upload` sends or what `ssh`
+     runs on a node. Each upload's SHA-256 is checked against the node and kept
+     in `remote/*.log`, and the run's procedure uploads `git archive` of the
+     approved commit, but the harness does not prove that.
    - the approved `operations`, which must include `teardown`;
    - `budget_usd` of 8 or less, and `max_hours` of 6 or less;
    - `approved_at` and `expires_at`, at most 24 hours apart and covering now.

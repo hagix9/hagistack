@@ -168,6 +168,16 @@ class Notices(Base):
         self.good(logname='Hagistack - 2.0-3', evr='0:2.0-3.el10')
         rc.check_notices(self.set)
 
+    def test_marks_match_by_path_and_by_name_only_for_samples(self):
+        names = {'/usr/lib/python3.12/site-packages/n/tests/common/l3_agent.py',
+                 '/usr/lib/python3.12/site-packages/n/tests/fullstack/l3_agent.py', '/etc/neutron/dhcp_agent.ini'}
+        # the same file name elsewhere does not count for a source path
+        self.assertEqual(rc.installed_as('n/tests/common/l3_agent.py', names),
+                         ['/usr/lib/python3.12/site-packages/n/tests/common/l3_agent.py'])
+        self.assertEqual(rc.installed_as('n/tests/other/l3_agent.py', names), [])
+        # a generated sample is installed under another name and directory
+        self.assertEqual(rc.installed_as('etc/dhcp_agent.ini.sample', names), ['/etc/neutron/dhcp_agent.ini'])
+
     def test_a_marked_file_without_the_mark_is_refused(self):
         self.good(marked=False)
         self.refused(rc.check_notices, self.set, want='marks x/marked.py')

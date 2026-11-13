@@ -295,9 +295,13 @@ def mark_lines(src, stage):
             continue
         f = it['path']
         out.append(f"test -f '{f}' || {{ echo '{f}: the file to mark is missing' >&2; exit 1; }}")
+        # The first two lines are held back: the mark goes after a #! on line 1 and
+        # after a coding line on line 1 or 2 (PEP 263), whichever is later.
         out.append(f"grep -qxF '{MARK}' '{f}' || {{ awk -v m='{MARK}' "
-                   "'!d && !(NR == 1 && /^#!/) && !(NR <= 2 && /^[ \\t\\f]*#.*coding[:=][ \\t]*[-_.a-zA-Z0-9]+/) "
-                   "{ print m; d = 1 } { print } END { if (!d) print m }' "
+                   "'function flush(i) { if (!p) print m; for (i = 1; i <= n; i++) { print b[i]; if (i == p) print m } f = 1 } "
+                   "NR <= 2 { b[NR] = $0; n = NR; if (NR == 1 && /^#!/) p = 1; "
+                   "if (/^[ \\t\\f]*#.*coding[:=][ \\t]*[-_.a-zA-Z0-9]+/) p = NR; next } "
+                   "!f { flush() } { print } END { if (!f) flush() }' "
                    f"'{f}' > '{f}.hagistack-mark' && cat '{f}.hagistack-mark' > '{f}' && rm -f '{f}.hagistack-mark'; }} || exit 1")
         out.append(f"grep -qxF '{MARK}' '{f}' || exit 1")
     return out

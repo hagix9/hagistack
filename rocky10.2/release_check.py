@@ -315,11 +315,14 @@ def marked_paths(text):
 
 def installed_as(rel, names):
     """Installed paths that a marked source path became: the same relative path
-    (site-packages/…), or the same file name (a generated sample may lose
-    its .sample suffix when installed)."""
+    (site-packages/…). Only a generated sample (*.sample), which is installed
+    under another directory and loses its suffix, is matched by file name, and
+    only when no installed path ends with its relative path."""
+    full = [n for n in names if n.endswith('/' + rel)]
+    if full or not rel.endswith('.sample'):
+        return full
     base = rel.rsplit('/', 1)[-1]
-    alts = {base, base[:-len('.sample')]} if base.endswith('.sample') else {base}
-    return [n for n in names if n.endswith('/' + rel) or n.rsplit('/', 1)[-1] in alts]
+    return [n for n in names if n.rsplit('/', 1)[-1] in (base, base[:-len('.sample')])]
 
 
 def spec_notice(srpm, text=None):
