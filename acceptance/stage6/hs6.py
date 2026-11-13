@@ -1563,7 +1563,7 @@ class Run:
                             err += "\n%s appeared during the transfer: not overwritten" % final_file
                         else:
                             verified = True
-                        out += "download verified: %s %s -> downloads/%s\n" % (got_local, cmd_args[0], cmd_args[1])
+                            out += "download verified: %s %s -> downloads/%s\n" % (got_local, cmd_args[0], cmd_args[1])
                     else:
                         err += "\nSHA-256 check failed after the transfer (%s): %s" % (rc2, err2.strip())
                 if not verified:

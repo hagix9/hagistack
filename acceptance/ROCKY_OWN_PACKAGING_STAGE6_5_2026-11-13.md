@@ -23,7 +23,9 @@ What was not done:
 |---|---|
 | `5b5aa51` | branding generator and images; `genspec.py` `replace_files` and `changes`; the six definitions; `release_check.py` notices/branding; `make-rpm-release.sh`; notices; authoring record; `build-own.sh` and `run-all.sh` run the new tests |
 | `03da6df` | harness `download` operation (`hs6.py`, mock, tests, README); this record (first version) |
-| (this update) | audit fixes H1–H3, M1, M2, L1, L3, L4, L6, L7 |
+| `ee18d4d` | audit fixes H1–H3, M1, M2, L1, L3, L4, L6, L7 |
+| `a620095` | installer: no apostrophe in the Horizon block's comment (a heredoc inside a command substitution; bash 3.2 `bash -n` failed on it) |
+| (this update) | re-audit result; `download` prints "verified" only when the file is kept |
 
 ## 1. The Hagistack logo
 
@@ -338,7 +340,33 @@ of the OpenStack logo from Horizon was **NO-GO**.
   - L5 is outside the B2 scope, and is an Owner decision if the notices should
     cover every source package.
 
-**Re-audit:** (below)
+**Re-audit** (same agent, `git diff 03da6df..a620095`, with its own checks):
+- **All findings are resolved**, except L2 and L5, which are kept as Owner
+  material.
+- **BLOCKER/HIGH/MEDIUM 0.**
+- **Its checks:**
+  - **H1:** the `.svg.old` is removed before the copy; the hash matches upstream;
+    no template refers to the file.
+  - **H2:** recompressing `IDAT` still passes, and a one-pixel change fails.
+  - **M2:** idempotent; the block is compared whole and rewritten once on an
+    existing host. Bash 5 parsing was judged safe by reading only; no Bash 5 was
+    available.
+  - **L3:** `MIT-0` is not taken for MIT.
+  - **63 specs** are still byte-identical.
+- **New LOW:** `download` printed "download verified" even when `os.link` met an
+  existing file (the exit status was 1). Fixed in this update.
+- **After this update:** `acceptance/stage6/test_hs6.py`, the full suite, ran
+  **143/143** on Python 3.13 and 143/143 on 3.9 (implementer's run).
+  `test_genspec` (27), `test_branding` (3) and `test_release_check` (12) pass.
+- **Verdicts:**
+  - logo design GO;
+  - Horizon integration GO (its look in a running dashboard is checked in the
+    GCE acceptance);
+  - OpenStack logo removal from Horizon GO;
+  - B2 notices CONDITIONAL GO (real RPM build and `release_check` on real RPMs;
+    §4(b) and L2 are the Owner's);
+  - implementation GO. The build and acceptance stay NOT VERIFIED until the
+    Owner-approved GCE run.
 
 ## Owner decisions
 
