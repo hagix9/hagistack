@@ -176,7 +176,7 @@ What did not change:
 | `packaging/test_genspec.py` | 3.13 | **36** OK |
 | `packaging/branding/test_branding.py` | 3.13, 3.9 | 5 OK |
 | `tests/test_release_check.py` | 3.13 / 3.9 | **20** OK / 20 OK (1 skipped on 3.9: genspec needs 3.11) |
-| `acceptance/stage6/test_hs6.py` | 3.13, 3.9 | **151** OK on each at `e4d72a8`; **152** on 3.13 after the audit fixes (L2 test added) |
+| `acceptance/stage6/test_hs6.py` | 3.13, 3.9 | **151** OK on each at `e4d72a8`; **152** on each after the audit fixes (L2 test added) |
 | marking steps on real upstream files | bash and BSD awk | OK (section 3) |
 | `bash -n` | bash 3.2 | OK: `make-rpm-release.sh`, `build-own.sh`, `run-all.sh`, `hagistack` (none changed in this stage) |
 
@@ -333,11 +333,37 @@ final, and any later commit needs a new approval.
   - `test_genspec` 38;
   - `test_release_check` 22 (3.13), and 22 with 1 skipped (3.9);
   - `test_branding` 5 (both);
-  - `test_hs6` **152/152** on 3.13. The harness is unchanged since `aab4f48`.
-    The 3.9 run is below.
+  - `test_hs6` **152/152** on 3.13 and on 3.9. The harness is unchanged since
+    `aab4f48`.
   - 54 specs change, and only openstacksdk's release is raised.
 
-**Re-audit 2:** (below)
+**Re-audit 2** (same agent, of `d42f6ac`):
+- **R1 resolved. No blocking finding remains.**
+- **Its checks:**
+  - the spec comment format and its parsing agree, also when no `installed` is
+    given;
+  - the 15 named places exist exactly once in their source package's RPMs in the
+    old set;
+  - all 35 entries map to exactly one file, checked against all files of the
+    source package (stricter than `release_check.py`);
+  - M1 holds;
+  - no false pass or refusal was found;
+  - 54 specs change, 15 are identical, and only openstacksdk's release is
+    raised;
+  - the tests pass.
+- **LOW, not blocking:**
+  - a `.sample` entry in the prep stage without `installed` would still be
+    matched by file name. No such entry exists, and build-stage entries must name
+    their place.
+  - `ovn_agent.ini` and `sriov_agent.ini` are installed by two RPMs each. A mark
+    in either passes, and both come from the same marked file.
+- **Verdicts:**
+  - openstacksdk and os-ken notices: GO;
+  - nodocs: CONDITIONAL GO (a real nodocs install and file flags);
+  - §4(b) technical measures: GO (GNU awk not verified);
+  - spec generation, release checks, local tests, Git publication safety and the
+    GCE approval harness: GO;
+  - GCE readiness: **READY within this stage**.
 
 ## Owner steps after this stage
 
