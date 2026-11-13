@@ -60,7 +60,16 @@ Hagistack changed the files listed here from the upstream release they come from
 Each change is in the spec file of that package's source RPM (its `Patch` lines
 and its `%prep`, `%build` and `%install` sections). The changelog of the binary
 RPMs does not list these changes; it says only "Hagistack packaging of the
-upstream release".
+upstream release". The changed files themselves carry no notice of the change.
+
+The list has four kinds of change:
+- **upstream changes Hagistack backports** (the Neutron patches);
+- **Hagistack's own edits** (requirements, shebangs, Sphinx settings);
+- **changes made by the RPM build tools** (shebang rewriting);
+- **generated files.**
+
+Hagistack's own packaging files (units, sudoers, logrotate and the like) are not
+changes to upstream files; they are new files under the MIT License.
 
 - **Neutron 28.0.2** (`openstack-neutron`, `openstack-neutron-common`,
   `python3-neutron` and the other packages from the same source RPM):
@@ -150,12 +159,14 @@ Notes on the XStatic packages built here:
 
 ## Trademarks
 
-OpenStack, Rocky Linux and Font Awesome are trademarks of their owners. The
-names are used here only to say what the software is and what it runs on.
-Hagistack is not affiliated with, endorsed by or sponsored by the OpenStack
-project or the OpenInfra Foundation, the Rocky Enterprise Software Foundation
-or Fonticons, Inc. The licences listed above cover copyright; they grant no
-trademark rights.
+The OpenStack word mark and the OpenStack logos are trademarks of the OpenStack
+Foundation d/b/a Open Infrastructure Foundation ("OpenInfra"). Rocky Linux and
+Font Awesome are trademarks of their owners. The names are used here only to say
+what the software is and what it runs on. This release is not an OpenStack
+release, is not "OpenStack Powered" or "OpenStack Compatible", and is not
+affiliated with, endorsed by or sponsored by OpenInfra, the Rocky Enterprise
+Software Foundation or Fonticons, Inc. The licences listed above cover
+copyright; they grant no trademark rights.
 
 Some marks are in the packaged files exactly as upstream ships them:
 

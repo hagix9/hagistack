@@ -20,6 +20,7 @@
 #   rpm-release.lock.candidate             the lock to commit IF this is published
 #   gazpacho.manifest, build-env.lock, LICENSE, third-party/   provenance
 #   THIRD_PARTY_NOTICES.md                 which licence covers what
+#   RELEASE-README.md                      contents, supported systems, install, limits
 #
 # Runs on Rocky/EL (needs rpm, rpm2cpio, tar, sha256sum, python3, realpath) from
 # a full checkout; in a git work tree the files it ships must be committed.
@@ -40,7 +41,7 @@ while [ $# -gt 0 ]; do
         --tag)      TAG="${2:-}"; shift 2 ;;
         --out)      OUT="${2:-}"; shift 2 ;;
         --base-url) BASE_URL="${2:-}"; shift 2 ;;
-        -h|--help)  sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,29p' "$0"; exit 0 ;;
         *) die "unknown option $1" ;;
     esac
 done
@@ -59,7 +60,7 @@ case "$SET_DIR/" in "$OUT"/*) die "--set-dir must be outside --out" ;; esac
 # The MIT licence of Hagistack's own work and the notices must ship with every
 # candidate. LICENSE is the repository-root file, so run this from a full checkout.
 for f in "$HERE/../LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$HERE/gazpacho.manifest" \
-         "$HERE/release_check.py" "$HERE/hagistack"; do
+         "$HERE/RELEASE-README.md" "$HERE/release_check.py" "$HERE/hagistack"; do
     [ -f "$f" ] && [ ! -L "$f" ] || die "$f is missing: run from a full checkout (every candidate must carry it)"
 done
 [ -d "$HERE/third-party" ] && [ ! -L "$HERE/third-party" ] || die "$HERE/third-party is missing: run from a full checkout"
@@ -81,7 +82,7 @@ done < <(awk '$1=="LICENSE"||$1=="PATCH"' "$HERE/gazpacho.manifest")
 # In a git work tree, what is shipped (and the checks themselves) must be committed.
 if command -v git >/dev/null && git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     dirty="$(git -C "$HERE" status --porcelain --ignored -- ../LICENSE THIRD_PARTY_NOTICES.md \
-             gazpacho.manifest third-party make-rpm-release.sh release_check.py hagistack)"
+             gazpacho.manifest RELEASE-README.md third-party make-rpm-release.sh release_check.py hagistack)"
     [ -z "$dirty" ] || die "files this candidate ships or runs are not committed:
 $dirty"
     ok "shipped files committed at $(git -C "$HERE" rev-parse --short HEAD)"
@@ -200,6 +201,7 @@ cp -p "$HERE/../LICENSE" "$OUT/LICENSE"
 cp -p "$SET_DIR/build-env.lock" "$OUT/"
 cp -rp "$HERE/third-party" "$OUT/third-party"
 cp -p "$HERE/THIRD_PARTY_NOTICES.md" "$OUT/"
+cp -p "$HERE/RELEASE-README.md" "$OUT/"
 
 ASHA="$(sha256sum "$OUT/$ASSET" | cut -d' ' -f1)"
 ASIZE="$(stat -c %s "$OUT/$ASSET")"
@@ -221,6 +223,19 @@ MANIFEST_SHA256=$MSHA
 EOF
 ( cd "$OUT" && find . -type f ! -name SHA256SUMS -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum ) > "$OUT/SHA256SUMS"
 ok "rpm-release.lock.candidate and SHA256SUMS written"
+# The candidate is exactly the standard set of files, and SHA256SUMS covers each.
+want_out="$(printf '%s\n' "$ASSET" "hagistack-srpms-$TAG.tar" PACKAGE_MANIFEST.tsv SHA256SUMS \
+    rpm-release.lock.candidate LICENSE THIRD_PARTY_NOTICES.md RELEASE-README.md gazpacho.manifest \
+    build-env.lock third-party | LC_ALL=C sort)"
+have_out="$(cd "$OUT" && find . -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)"
+[ "$want_out" = "$have_out" ] || die "the candidate does not hold exactly the standard files:
+$(diff <(printf '%s\n' "$want_out") <(printf '%s\n' "$have_out") | grep '^[<>]' || true)"
+odd="$(cd "$OUT" && find . -mindepth 1 ! -type f ! -type d -printf '%P\n')"
+[ -z "$odd" ] || die "the candidate holds something that is not a plain file: $odd"
+[ "$(cd "$OUT" && find . -type f ! -name SHA256SUMS -printf '%P\n' | LC_ALL=C sort)" = "$(cut -d' ' -f3- "$OUT/SHA256SUMS")" ] \
+    || die "SHA256SUMS does not list exactly the candidate's files"
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS ) || die "SHA256SUMS does not verify"
+ok "the candidate holds exactly the standard files; SHA256SUMS lists and verifies each"
 echo
 echo "asset  : $ASSET ($ASIZE bytes)"
 echo "sha256 : $ASHA"
