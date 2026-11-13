@@ -8,7 +8,7 @@
 name = "openstack-neutron"
 project = "neutron"
 version = "28.0.2"
-release = "2"
+release = "3"
 epoch = 1
 tarball = "neutron-28.0.2.tar.gz"
 sha256 = "cdaf45a2100de5233e4c1cc7c01c9df2b634510a0f0436913f73f29d42d325ee"
@@ -22,6 +22,18 @@ that run on network nodes and the database and maintenance tools. This is the
 upstream OpenStack release, packaged by Hagistack.
 """
 check = "import"
+# Hagistack's changes to the upstream tree: written into %changelog and
+# HAGISTACK-CHANGES (installed in every binary package) by genspec.py.
+changelog_date = "Fri Nov 13 2026"
+changes = [
+  "Patch0001 backports upstream Neutron commit 83f1d8305651a0ab23629c88d70bfa237055158c (Ensure MaintenanceWorker lock set before connect, Related-Bug 2155155) to 28.0.2. It changes neutron/common/ovn/constants.py, neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py and neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py.",
+  "Patch0002 backports upstream Neutron commit 91abb5e720e1c515dbfbe9b2313fbdff92b2abbf (Only set the maintenance worker lock on the worker, Closes-Bug 2156979) to 28.0.2. It changes neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py and neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py.",
+  "Why: Neutron 28.0.2 lets the OVN maintenance worker lose its OVSDB lock; both fixes are upstream on master and not in stable/2026.1. The changed lines are upstream's; only unchanged context lines of impl_idl_ovn.py follow 28.0.2 (third-party/neutron/NOTICE.md).",
+  "requirements.txt: the version bound is dropped from psutil (Rocky Linux 10 ships psutil 5.9.8; upstream asks for 6.1.0 or later).",
+  "neutron/tests/fullstack/servers/metadata.py: the shebang #!/usr/bin/env python becomes #!/usr/bin/python3 (rpm refuses the ambiguous python shebang).",
+  "The configuration samples generated at build time get placeholders where the generator would write the build machine's addresses (my_ip, my_ipv6).",
+  "rpm's build policy (brp-mangle-shebangs) rewrites #!/usr/bin/env interpreter lines of executable files to absolute paths, for example in neutron/cmd/destroy_patch_ports.py.",
+]
 # Two upstream changes from master (not in stable/2026.1) that fix the OVN
 # maintenance worker losing its OVSDB lock; see third-party/neutron/NOTICE.md.
 patches = [

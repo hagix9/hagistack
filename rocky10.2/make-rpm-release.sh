@@ -65,6 +65,8 @@ for f in "$HERE/../LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$HERE/gazpacho.manif
     [ -f "$f" ] && [ ! -L "$f" ] || die "$f is missing: run from a full checkout (every candidate must carry it)"
 done
 [ -d "$HERE/third-party" ] && [ ! -L "$HERE/third-party" ] || die "$HERE/third-party is missing: run from a full checkout"
+BRAND_DIR="$HERE/packaging/files/python-django-horizon"
+[ -d "$BRAND_DIR" ] && [ ! -L "$BRAND_DIR" ] || die "$BRAND_DIR is missing: run from a full checkout"
 # third-party/ is shipped as it is: exactly the files the notices describe, the
 # pinned ones (LICENSE and PATCH rows of gazpacho.manifest) unaltered.
 odd="$(cd "$HERE" && find third-party -mindepth 1 ! -type f ! -type d -printf '%p\n')"
@@ -83,7 +85,8 @@ done < <(awk '$1=="LICENSE"||$1=="PATCH"' "$HERE/gazpacho.manifest")
 # In a git work tree, what is shipped (and the checks themselves) must be committed.
 if command -v git >/dev/null && git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     dirty="$(git -C "$HERE" status --porcelain --ignored -- ../LICENSE THIRD_PARTY_NOTICES.md \
-             gazpacho.manifest RELEASE-README.md third-party make-rpm-release.sh release_check.py hagistack)"
+             gazpacho.manifest RELEASE-README.md third-party make-rpm-release.sh release_check.py hagistack \
+             packaging/files/python-django-horizon)"
     [ -z "$dirty" ] || die "files this candidate ships or runs are not committed:
 $dirty"
     ok "shipped files committed at $(git -C "$HERE" rev-parse --short HEAD)"
@@ -175,6 +178,15 @@ for s in "$SET_DIR"/srpms/*.src.rpm; do
     msg="$(python3 -I "$HERE/release_check.py" licence "$s" "$HERE/../LICENSE")" || die "$msg"
 done
 ok "srpms/ holds exactly the set's source RPMs (header digests match), each with HAGISTACK-LICENSE = LICENSE"
+# Hagistack's changes to upstream sources are stated inside the RPMs: each binary
+# of a source RPM that declares changes installs HAGISTACK-CHANGES as its spec
+# writes it, and its changelog lists them.
+msg="$(python3 -I "$HERE/release_check.py" notices "$SET_DIR")" || die "$msg"
+ok "every binary of a source RPM with changes to upstream installs HAGISTACK-CHANGES"
+# The dashboard shows Hagistack's logo: no RPM carries Horizon's OpenStack-logo
+# images, and openstack-dashboard carries Hagistack's at each place.
+msg="$(python3 -I "$HERE/release_check.py" branding "$SET_DIR" "$BRAND_DIR")" || die "$msg"
+ok "no RPM carries Horizon's OpenStack-logo images; openstack-dashboard carries Hagistack's"
 
 # Deterministic tarballs: same set, same bytes, whatever the clock says.
 EPOCH="$(stat -c %Y "$SET_DIR/RPM-SHA256SUMS")"

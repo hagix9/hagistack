@@ -5,7 +5,7 @@ name = "python3-qrcode"
 origin = "pypi"
 project = "qrcode"
 version = "8.2"
-release = "1"
+release = "2"
 tarball = "qrcode-8.2.tar.gz"
 sha256 = "35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c"
 license = "BSD-3-Clause"
@@ -17,6 +17,12 @@ The upstream qrcode 8.2 release, packaged by Hagistack.
 """
 check = "import"
 
+# Hagistack's changes to the upstream tree: written into %changelog and
+# HAGISTACK-CHANGES (installed in every binary package) by genspec.py.
+changelog_date = "Fri Nov 13 2026"
+changes = [
+  "The #!/usr/bin/env python shebang line is removed from the Python modules that have one (they are never run directly, and rpm refuses the ambiguous python shebang).",
+]
 # rpm refuses the ambiguous "#!/usr/bin/env python" shebang qrcode ships in a module
 # that is never run directly; the line is removed rather than rewritten.
 prep_extra = ["find . -name '*.py' -exec sed -i '1{/^#![[:space:]]*\\/usr\\/bin\\/env[[:space:]]*python[[:space:]]*$/d}' {} +"]

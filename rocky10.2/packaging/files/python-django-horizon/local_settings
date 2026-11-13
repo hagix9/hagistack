@@ -48,6 +48,11 @@ COMPRESS_OFFLINE = True
 # LOGIN_REDIRECT_URL and STATIC_URL are derived from WEBROOT by settings.py.
 WEBROOT = '/dashboard/'
 
+# Hagistack: the name in the page title and the logo's alternative text, to go
+# with Hagistack's logo, which the package shows in place of upstream's
+# (HAGISTACK-CHANGES). Upstream's default is 'OpenStack Dashboard'.
+SITE_BRANDING = 'Hagistack Dashboard'
+
 # Hagistack: the policy files are installed in /etc/openstack-dashboard
 # (*_policy.yaml, nova_policy.d/, default_policies/) instead of
 # openstack_dashboard/conf/.

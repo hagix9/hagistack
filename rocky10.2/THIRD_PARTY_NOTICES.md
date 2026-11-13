@@ -57,10 +57,24 @@ differs from `LICENSE`.
 ## Changes made to the upstream sources
 
 Hagistack changed the files listed here from the upstream release they come from.
-Each change is in the spec file of that package's source RPM (its `Patch` lines
-and its `%prep`, `%build` and `%install` sections). The changelog of the binary
-RPMs does not list these changes; it says only "Hagistack packaging of the
-upstream release". The changed files themselves carry no notice of the change.
+The notice of these changes is carried in three places:
+
+- **The spec file of the source RPM.** Each change is there, in its `Patch`
+  lines and its `%prep`, `%build` and `%install` sections.
+- **Inside the binary RPMs.** The six source packages with Hagistack edits are
+  Neutron, Horizon, qrcode, barbicanclient, keystoneauth1 and
+  keystonemiddleware. Their definitions list the edits (`changes` in
+  `packaging/defs/`). From these lists:
+  - every binary package built from those six installs the list as
+    `/usr/share/doc/<package>/HAGISTACK-CHANGES`;
+  - the `%changelog` of those binary packages repeats it.
+  `make-rpm-release.sh` refuses a release in which one of them lacks the notice,
+  or carries a notice other than the one its spec writes.
+- **This file and `third-party/`.**
+
+The changed upstream files themselves carry no notice inside them; Hagistack does
+not edit upstream source text to add one. Whether the notices above meet §4(b) of
+the Apache License 2.0 is a legal judgement that this file does not make.
 
 The list has four kinds of change:
 - **upstream changes Hagistack backports** (the Neutron patches);
@@ -84,9 +98,18 @@ changes to upstream files; they are new files under the MIT License.
   - `requirements.txt`: the version is dropped from the `psutil` requirement.
   - `neutron/tests/fullstack/servers/metadata.py`: the shebang
     `#!/usr/bin/env python` becomes `#!/usr/bin/python3`.
-- **Horizon** (`python-django-horizon` source RPM): `requirements.txt`, the
-  `tzdata` requirement is removed; the installed `manage.py` gets the shebang
-  `#!/usr/bin/python3`.
+- **Horizon** (`python-django-horizon` source RPM):
+  - `requirements.txt`: the `tzdata` requirement is removed.
+  - The installed `manage.py` gets the shebang `#!/usr/bin/python3`.
+  - **The OpenStack logo is replaced with Hagistack's own images.** These are
+    `static/dashboard/img/logo.svg`, `logo-splash.svg`, `favicon.ico`,
+    `apple-touch-icon.png` and `safari-pinned-tab.svg`, and the material theme's
+    inline logo (`openstack-one-color.svg` and its unused `-alt` variant). Each
+    is replaced in the source tree before the static files are collected.
+  - `/etc/openstack-dashboard/local_settings` is upstream's
+    `local_settings.py.example` with Hagistack's changes, each marked with a
+    "Hagistack:" comment. Among them, the page title is set to
+    `SITE_BRANDING = 'Hagistack Dashboard'` (upstream: `OpenStack Dashboard`).
 - **qrcode** (`python3-qrcode`): the `#!/usr/bin/env python` shebang line is
   removed from the Python modules that have one.
 - **python-barbicanclient, python-keystoneauth1, python-keystonemiddleware**:
@@ -168,15 +191,25 @@ affiliated with, endorsed by or sponsored by OpenInfra, the Rocky Enterprise
 Software Foundation or Fonticons, Inc. The licences listed above cover
 copyright; they grant no trademark rights.
 
-Some marks are in the packaged files exactly as upstream ships them:
+**The dashboard shows Hagistack's own logo**, not the OpenStack logo. Horizon's
+images that show the OpenStack logo are replaced (see "Changes made to the
+upstream sources"). `make-rpm-release.sh` refuses a release in which any RPM
+still carries one of them. The images are Hagistack's own work, generated from
+geometry by `packaging/branding/make-branding.py`, and are under the MIT
+License. That licence covers copyright; it is not a trademark licence for the
+Hagistack name or logo.
 
-- `openstack-dashboard` installs Horizon's default images, including the
-  OpenStack logo (`static/dashboard/img/logo.svg` and `logo-splash.svg`) and
-  the favicon.
-- `python3-XStatic-Font-Awesome` contains the Font Awesome brand icons
+Some marks are still in the packaged files exactly as upstream ships them:
+
+- **The documentation packages** (`*-doc`, and `python3-os-brick`, which
+  carries its HTML documentation) are built with OpenStack's documentation
+  theme, `openstackdocstheme`. Their `_static/images/` hold that theme's
+  OpenStack logos (`openstack-logo-full.svg` and similar), and their
+  `_static/favicon.ico` is the theme's favicon.
+- **`python3-XStatic-Font-Awesome`** contains the Font Awesome brand icons
   (`brands.*`, `fa-brands-400.*`), which show the logos of other companies.
 
-Hagistack does not change these files, and adds no logo or other mark of its own.
+Hagistack does not change these files.
 
 ## Code inside the Horizon source
 

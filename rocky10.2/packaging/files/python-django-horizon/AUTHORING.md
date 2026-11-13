@@ -273,3 +273,48 @@ owners agree except
   unowned) and six `openstack_dashboard/locale/<lang>` directory pairs (brx,
   kok, mai, mni, zh_Hans, zh_Hant) whose `.mo` files rc4 listed without their
   directories.
+
+## Hagistack's dashboard images (stage 6-5, 2026-11-13)
+
+Owner decision T2: the dashboard shows Hagistack's own logo instead of the
+OpenStack logo. The images were drawn for Hagistack and were not copied or
+traced from any existing logo.
+- **Generator.** The images come from `../../branding/make-branding.py`, which
+  draws them from rectangles, stroked paths and circles. It uses no font, no
+  bitmap and no external file, and `../../branding/test_branding.py` checks that
+  its output is the same every time.
+- **Mark.** Two pillars with three layers between them: an "H" built as a stack.
+  The colours are blue `#3E6FE0` and amber `#F0A830`. It avoids the OpenStack
+  logo's red rounded square, the OpenInfra marks and Rocky Linux's green.
+- **Wordmark.** "hagistack", in lowercase geometric strokes drawn in the
+  generator.
+- **Designs considered:**
+  - (A) the stacked "H" (chosen: it reads at 16 px and draws with rectangles
+    only);
+  - (B) chevrons in a hexagon (rejected: hexagons are common in other
+    projects' logos, and it does not read at 16 px);
+  - (C) a monogram in a rounded square (rejected: a rounded square is close to
+    the OpenStack logo's outline).
+- **Where they go.** Upstream images that show the OpenStack logo are replaced
+  in the source tree in `%prep` (definition `replace_files`). That covers the
+  theme lookup (`themable_asset` falls back to `dashboard/img`), the references
+  that bypass it (`404.html`, `500.html`, the material theme's splash) and the
+  material theme's inline header logo. A theme override alone would have left
+  those references showing upstream's images.
+  - The `dashboard/img` images: `logo.svg` and `logo-splash.svg` (from
+    `hagistack-logo.svg` and `hagistack-logo-splash.svg`), `favicon.ico`,
+    `apple-touch-icon.png`, and `safari-pinned-tab.svg` (a one-colour mask).
+  - The material theme's `templates/material/openstack-one-color.svg` and
+    `-alt.svg`, from `hagistack-material-brand.svg`. That file has no XML
+    declaration, because `_brand.html` includes it inline.
+- **Sizes**, from upstream's CSS:
+  - the header logo is shown 40 px high (`.navbar-brand img`);
+  - the splash logo at most 65 % of the login panel (material: 215 px wide);
+  - the favicon has entries of 16, 32 and 48 px, and the touch icon is 180 px
+    (`_stylesheets.html`).
+- **`local_settings`.** `SITE_BRANDING = 'Hagistack Dashboard'` makes the page
+  title and the logo's alternative text match the logo. Upstream's default is
+  `'OpenStack Dashboard'`.
+- **Not changed.** CSS class names (such as `openstack-logo`), package names and
+  the text that names the software (Horizon, OpenStack services) are functional
+  or descriptive, not branding.

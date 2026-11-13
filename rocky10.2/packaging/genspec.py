@@ -12,6 +12,10 @@ package shares:
     signature in prep (gpgverify, release key pinned in the manifest), or a PyPI
     sdist pinned by SHA-256 only (PyPI sdists are not signed);
   * upstream patches from third-party/, pinned by SHA-256;
+  * a notice of Hagistack's changes to the upstream sources (changes =
+    [...]): listed in %changelog and installed as HAGISTACK-CHANGES in every
+    binary package of the source package; upstream files replaced by
+    Hagistack's own (replace_files, e.g. the dashboard's logo);
   * a pyproject build (pyproject-rpm-macros): build and runtime requirements
     come from upstream metadata through the Python dependency generator;
   * an import check of the top-level modules, Sphinx HTML documentation,
@@ -41,12 +45,14 @@ SOURCE_KEYS = {'name', 'origin', 'project', 'version', 'release', 'epoch', 'tarb
                'sha256', 'signing_key', 'license', 'url', 'summary', 'description',
                'buildrequires', 'check', 'doc', 'doc_env', 'locale_domain', 'locale_path',
                'drop_after_install', 'patches', 'extra_licenses', 'prep_extra', 'build_extra',
-               'install_extra', 'license_metadata'}
+               'install_extra', 'license_metadata', 'changes', 'changelog_date', 'replace_files'}
 PACKAGE_KEYS = {'name', 'kind', 'summary', 'description', 'requires', 'recommends',
                 'provides', 'obsoletes', 'conflicts', 'modules', 'tests_path', 'bin',
                 'bin_symlinks', 'install', 'dirs', 'symlinks', 'systemd_units', 'sysusers',
                 'docs', 'licenses', 'doc_dir', 'extras', 'files', 'scriptlets'}
 INSTALL_KEYS = {'src', 'dest', 'mode', 'user', 'group', 'config'}
+REPLACE_KEYS = {'src', 'dest'}
+CHANGELOG_DATE_RE = r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-3][0-9] 20[0-9]{2}'
 DIR_KEYS = {'path', 'mode', 'user', 'group'}
 PINNED_KEYS = {'path', 'sha256'}
 SCRIPTLETS = ('pre', 'post', 'preun', 'postun', 'posttrans')
@@ -97,6 +103,25 @@ def load(path):
     need(src.get('check', 'none') in ('none', 'import'), f'{path}: check is "none" or "import"')
     _pinned(path, src, 'patches')
     _pinned(path, src, 'extra_licenses')
+    changes = src.get('changes', [])
+    need(isinstance(changes, list) and all(isinstance(c, str) and c.strip() and '\n' not in c
+                                           and c.isprintable() for c in changes),
+         f'{path}: changes must be a list of one-line strings')
+    need(not any('HAGISTACK_CHANGES_EOF' in c for c in changes), f'{path}: changes must not contain the notice terminator')
+    # Every edit of the upstream tree must be declared, so the notice is complete.
+    if src.get('patches') or src.get('prep_extra') or src.get('replace_files'):
+        need(changes, f'{path}: patches, prep_extra or replace_files change upstream files: list them in changes')
+    if 'changelog_date' in src:
+        need(isinstance(src['changelog_date'], str) and re.fullmatch(CHANGELOG_DATE_RE, src['changelog_date']),
+             f'{path}: changelog_date must look like "Fri Nov 13 2026"')
+    for it in src.get('replace_files', []):
+        need(isinstance(it, dict) and set(it) == REPLACE_KEYS, f'{path}: replace_files entries need exactly src and dest')
+        need(it['src'].startswith('file:'), f'{path}: replace_files src must be file:<name>')
+        f = os.path.join(FILES_DIR, src['name'], it['src'][5:])
+        need(os.path.isfile(f) and not os.path.islink(f), f'{path}: Hagistack file {it["src"][5:]} not found in files/{src["name"]}/')
+        d = it['dest']
+        need(isinstance(d, str) and re.fullmatch(r'[A-Za-z0-9_./-]+', d) and not d.startswith('/')
+             and '..' not in d.split('/'), f'{path}: replace_files dest must be a relative path in the source tree')
     names = set()
     for p in pkgs:
         unknown = set(p) - PACKAGE_KEYS
@@ -137,6 +162,9 @@ def hagistack_files(src, pkgs):
                 seen.append(it['src'][5:])
         if p.get('sysusers') and p['sysusers'] not in seen:
             seen.append(p['sysusers'])
+    for it in src.get('replace_files', []):
+        if it['src'][5:] not in seen:
+            seen.append(it['src'][5:])
     return seen
 
 
@@ -173,6 +201,52 @@ def has_hagistack_files(p):
     return bool(p.get('sysusers')) or any(it['src'].startswith('file:') for it in p.get('install', []))
 
 
+def carries_changes(src, p):
+    """The package installs HAGISTACK-CHANGES (every package with files, when the
+    source package declares changes to upstream)."""
+    return bool(src.get('changes')) and p['kind'] != 'extras'
+
+
+def ships_hagistack_text(src, p):
+    """The package installs something Hagistack wrote: its own files, or the
+    HAGISTACK-CHANGES notice. Such a package says MIT and carries the text."""
+    return has_hagistack_files(p) or carries_changes(src, p)
+
+
+def relative_docs(p):
+    """rpm copies relative %doc files into the package's doc directory itself;
+    when a package has any, HAGISTACK-CHANGES joins them the same way."""
+    return p['kind'] == 'sphinx-html' or bool(p.get('docs'))
+
+
+def rpm_text(s):
+    """A literal for the spec: % would start a macro."""
+    return s.replace('%', '%%')
+
+
+def changes_notice(src):
+    evr = (f'{int(src["epoch"])}:' if src.get('epoch') else '') + f'{src["version"]}-{src["release"]}'
+    lines = [
+        f'Changes Hagistack made to the upstream sources of {src["project"]} {src["version"]}',
+        '',
+        f'This package is built from the upstream release {src["tarball"]}, with the',
+        'changes listed below. They were made by Hagistack, not by the upstream',
+        'project. The upstream copyright and licence notices are kept unchanged.',
+        f'The spec file in the source RPM {src["name"]}-{evr} carries every change',
+        '(its Patch lines and its %prep, %build and %install sections); the release',
+        'documents them in THIRD_PARTY_NOTICES.md.',
+        '',
+        'Changes:',
+    ]
+    lines += [f'- {c}' for c in src['changes']]
+    if src.get('patches'):
+        lines += ['', 'Patches applied (from third-party/ of the Hagistack repository):']
+        lines += [f'- Patch{i + 1:04d}: {os.path.basename(it["path"])} (sha256 {it["sha256"]})'
+                  for i, it in enumerate(src['patches'])]
+    lines += ['', "This notice is Hagistack's own text, under the MIT License (HAGISTACK-LICENSE)."]
+    return lines
+
+
 def with_mit(expr):
     """expr AND MIT, unless MIT is already one of its licences (no 'MIT AND MIT')."""
     ids = set(re.findall(r'[A-Za-z0-9.+-]+', expr)) - {'AND', 'OR', 'WITH'}
@@ -180,14 +254,14 @@ def with_mit(expr):
 
 
 def pkg_license(src, p):
-    return with_mit(src['license']) if has_hagistack_files(p) else src['license']
+    return with_mit(src['license']) if ships_hagistack_text(src, p) else src['license']
 
 
 def srpm_license(src, pkgs):
     """The main package's tag is also the source package's: it names everything
     the SRPM carries, so MIT whenever the SRPM holds Hagistack files, even when
     the main package itself (a meta package, say) holds none."""
-    return with_mit(src['license']) if any(has_hagistack_files(p) for p in pkgs) else src['license']
+    return with_mit(src['license']) if any(ships_hagistack_text(src, p) for p in pkgs) else src['license']
 
 
 def pkg_header(src, p, main):
@@ -291,9 +365,17 @@ def generate(src, pkgs):
     w(f'%autosetup -n {topdir(src)} -p1')
     for line in src.get('prep_extra', []):
         w(line)
+    for it in src.get('replace_files', []):
+        # Upstream's file must be there: a moved file must not leave upstream's copy.
+        w(f"test -f '{it['dest']}' || exit 1")
+        w(f"cp -p '%{{SOURCE{srcidx[it['src'][5:]]}}}' '{it['dest']}'")
+    if src.get('changes'):
+        w("cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'")
+        s.extend(rpm_text(x) for x in changes_notice(src))
+        w('HAGISTACK_CHANGES_EOF')
     if src.get('extra_licenses'):
         w('cp -p ' + ' '.join(f'%{{SOURCE{900 + i}}}' for i in range(len(src['extra_licenses']))) + ' .')
-    if any(has_hagistack_files(p) for p in pkgs):
+    if any(ships_hagistack_text(src, p) for p in pkgs):
         w("cp -p '%{SOURCE99}' HAGISTACK-LICENSE")
     w('')
     w('%generate_buildrequires')
@@ -362,6 +444,9 @@ def generate(src, pkgs):
             w(f'install -p -D -m 0644 %{{SOURCE{srcidx[p["sysusers"]]}}} %{{buildroot}}%{{_sysusersdir}}/{p["name"]}.conf')
     for line in src.get('install_extra', []):
         w(line)
+    for p in pkgs:
+        if carries_changes(src, p) and not relative_docs(p):
+            w(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}%{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES')
     w('')
     if src.get('check') == 'import':
         w('%check')
@@ -413,10 +498,18 @@ def generate(src, pkgs):
             w(f'%doc {p.get("doc_dir", "html")}')
         for lic in p.get('licenses', []):
             w(f'%license {lic}')
-        if has_hagistack_files(p):
+        if ships_hagistack_text(src, p):
             w('%license HAGISTACK-LICENSE')
         for doc in p.get('docs', []):
             w(f'%doc {doc}')
+        if carries_changes(src, p):
+            if relative_docs(p):
+                w('%doc HAGISTACK-CHANGES')
+            else:
+                ddir = f'%{{_docdir}}/{p["name"]}'
+                if f'%dir {ddir}' not in p.get('files', []):
+                    w(f'%dir {ddir}')
+                w(f'%doc {ddir}/HAGISTACK-CHANGES')
         for b in p.get('bin', []):
             w(f'%{{_bindir}}/{b}')
         for link in p.get('bin_symlinks', {}):
@@ -438,8 +531,14 @@ def generate(src, pkgs):
         w('')
     w('%changelog')
     evr = (f'{int(src["epoch"])}:' if src.get('epoch') else '') + f'{src["version"]}-{src["release"]}'
-    w(f'* {CHANGELOG_DATE} Hagistack - {evr}')
+    w(f'* {src.get("changelog_date", CHANGELOG_DATE)} Hagistack - {evr}')
     w('- Hagistack packaging of the upstream release')
+    if src.get('changes'):
+        w('- Changes to the upstream sources, also in HAGISTACK-CHANGES:')
+        for c in src['changes']:
+            w(rpm_text(f'- {c}'))
+        for i, it in enumerate(src.get('patches', [])):
+            w(f'- Patch{i + 1:04d}: {os.path.basename(it["path"])}')
     return '\n'.join(s) + '\n'
 
 

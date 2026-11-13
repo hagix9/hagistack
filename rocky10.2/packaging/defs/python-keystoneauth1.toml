@@ -4,7 +4,7 @@
 name = "python-keystoneauth1"
 project = "keystoneauth"
 version = "5.13.1"
-release = "1"
+release = "2"
 tarball = "keystoneauth1-5.13.1.tar.gz"
 sha256 = "e011e47ac3f3c671ffae33505c095548650cc19dab7f6af3b2ea5bd18c98f0c9"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
@@ -19,6 +19,12 @@ doc = "doc/source"
 check = "import"
 buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "python3dist(sphinxcontrib-apidoc)"]
 
+# Hagistack's changes to the upstream tree: written into %changelog and
+# HAGISTACK-CHANGES (installed in every binary package) by genspec.py.
+changelog_date = "Fri Nov 13 2026"
+changes = [
+  "doc/source/conf.py: the documentation extension ext.list_plugins is removed from the extension list (it fails with the Sphinx on the builder). The HTML documentation in python-keystoneauth1-doc is built from the edited file and lacks the generated plugin list.",
+]
 # The doc extension ext.list_plugins fails with the Sphinx in the builder
 # repositories (report_load_failure() signature); the HTML build runs without it,
 # losing only the generated plugin list.

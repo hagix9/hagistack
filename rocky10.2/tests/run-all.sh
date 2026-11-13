@@ -6,6 +6,9 @@
 #   tests/test-build-rpms-staging.sh  sources re-staged before every rpmbuild
 #   tests/test-build-own.sh           own packaging: our names excluded from every other repository, retries, origin checks
 #   spec-adapt/test_adapt.py          spec adaptation rules and licensing
+#   tests/test_release_check.py       release generator's notice and logo checks (stub rpm)
+#   packaging/test_genspec.py         package definitions and spec generation
+#   packaging/branding/test_branding.py  dashboard images: reproducible, shapes only
 #
 #   bash rocky10.2/tests/run-all.sh
 #
@@ -21,6 +24,10 @@ for t in test-env-file.sh test-rpm-source.sh test-build-in-container.sh test-bui
 done
 echo "######## spec-adapt/test_adapt.py"
 ( cd "$HERE/../spec-adapt" && python3 -m unittest -v test_adapt ) || rc=1
+for t in tests/test_release_check.py packaging/test_genspec.py packaging/branding/test_branding.py; do
+    echo "######## $t"
+    python3 -B -I "$HERE/../$t" || rc=1
+done
 echo
 [ "$rc" -eq 0 ] && echo "ALL SUITES PASSED" || echo "AT LEAST ONE SUITE FAILED"
 exit "$rc"

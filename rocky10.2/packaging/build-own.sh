@@ -227,6 +227,9 @@ if [ "$#" -gt 0 ]; then WANT=("$@"); else
 fi
 python3 -I "$HERE/test_genspec.py" > "$LOGDIR/test_genspec.log" 2>&1 \
     || die "the definitions do not pass test_genspec.py (see $LOGDIR/test_genspec.log)"
+# The dashboard images must be exactly what make-branding.py draws, and shapes only.
+python3 -I "$HERE/branding/test_branding.py" > "$LOGDIR/test_branding.log" 2>&1 \
+    || die "the dashboard images do not pass test_branding.py (see $LOGDIR/test_branding.log)"
 
 say "staging ${#WANT[@]} definitions (fetch, verify, generate)"
 for n in "${WANT[@]}"; do stage "$n"; done

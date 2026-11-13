@@ -129,7 +129,8 @@ class Definitions(unittest.TestCase):
             with self.subTest(d=os.path.basename(d)):
                 self.assertEqual(used, present, 'every file in files/<name>/ is used, and only those')
                 for f in present:
-                    self.assertIn('Hagistack', open(os.path.join(fdir, f)).read(), f)
+                    with open(os.path.join(fdir, f), 'rb') as fh:
+                        self.assertIn(b'Hagistack', fh.read(), f)
 
 
 class HagistackLicence(unittest.TestCase):
@@ -148,7 +149,7 @@ class HagistackLicence(unittest.TestCase):
             ids = lambda e: set(re.findall(r'[A-Za-z0-9.+-]+', e)) - {'AND', 'OR', 'WITH'}
             srpm_tag = re.search(r'^License:\s+(.+)$', spec, re.M).group(1)
             for p in pkgs:
-                if genspec.has_hagistack_files(p):
+                if genspec.ships_hagistack_text(src, p):
                     with self.subTest(pkg=p['name']):
                         self.assertIn('MIT', ids(genspec.pkg_license(src, p)))
                         # the source package's tag covers what the SRPM carries
@@ -165,6 +166,71 @@ class HagistackLicence(unittest.TestCase):
         self.assertEqual(genspec.with_mit('MIT'), 'MIT')
         self.assertEqual(genspec.with_mit('MIT-0'), 'MIT-0 AND MIT')
         self.assertEqual(genspec.with_mit('CC-BY-4.0 AND OFL-1.1 AND MIT'), 'CC-BY-4.0 AND OFL-1.1 AND MIT')
+
+
+class ChangesNotice(unittest.TestCase):
+    """B2: every edit of an upstream tree is declared, listed in %changelog and
+    installed as HAGISTACK-CHANGES in every binary package with files."""
+
+    EDITED = {'openstack-neutron', 'python-django-horizon', 'python3-qrcode', 'python-barbicanclient',
+              'python-keystoneauth1', 'python-keystonemiddleware'}
+
+    def test_exactly_the_six_edited_sources_declare_changes(self):
+        declared = {genspec.load(d)[0]['name'] for d in DEFS if genspec.load(d)[0].get('changes')}
+        self.assertEqual(declared, self.EDITED)
+
+    def test_every_package_installs_the_notice_and_the_changelog_lists_each_change(self):
+        for d in DEFS:
+            src, pkgs = genspec.load(d)
+            if not src.get('changes'):
+                continue
+            spec = genspec.generate(src, pkgs)
+            with self.subTest(d=os.path.basename(d)):
+                self.assertIn("cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'", spec)
+                body = spec.split("HAGISTACK_CHANGES_EOF'\n", 1)[1].split('\nHAGISTACK_CHANGES_EOF\n', 1)[0]
+                log = spec.split('%changelog\n', 1)[1]
+                for c in src['changes']:
+                    self.assertIn(genspec.rpm_text('- ' + c), body)
+                    self.assertIn(genspec.rpm_text('- ' + c), log)
+                for i, it in enumerate(src.get('patches', [])):
+                    self.assertIn(f'Patch{i + 1:04d}: {os.path.basename(it["path"])}', body)
+                    self.assertIn(f'Patch{i + 1:04d}: {os.path.basename(it["path"])}', log)
+                self.assertIn(f'{src["release"]}\n', log.splitlines()[0] + '\n')
+                files = spec.split('\n%files', )[1:]
+                for p in pkgs:
+                    if p['kind'] == 'extras':
+                        continue
+                    sect = next(f for f in files if f.split('\n', 1)[0].split(' -f ')[0].strip() in
+                                ('' if p['name'] == src['name'] else f'-n {p["name"]}',))
+                    with self.subTest(pkg=p['name']):
+                        self.assertIn('%license HAGISTACK-LICENSE', sect)
+                        if genspec.relative_docs(p):
+                            self.assertIn('\n%doc HAGISTACK-CHANGES', sect)
+                        else:
+                            self.assertIn(f'%doc %{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', sect)
+                            self.assertIn(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}%{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', spec)
+                            self.assertEqual(sect.count(f'%dir %{{_docdir}}/{p["name"]}\n'), 1)
+                        self.assertIn('MIT', genspec.pkg_license(src, p))
+
+    def test_percent_is_escaped(self):
+        self.assertEqual(genspec.rpm_text('100% and %prep'), '100%% and %%prep')
+
+    def test_the_dashboard_replaces_every_upstream_logo_image(self):
+        # Every image of Horizon 25.7.3 that shows the OpenStack logo.
+        src, pkgs = genspec.load(os.path.join(HERE, 'defs', 'python-django-horizon.toml'))
+        dests = {it['dest'] for it in src['replace_files']}
+        self.assertEqual(dests, {f'openstack_dashboard/static/dashboard/img/{n}' for n in
+                                 ('logo.svg', 'logo-splash.svg', 'favicon.ico', 'apple-touch-icon.png',
+                                  'safari-pinned-tab.svg')} |
+                         {f'openstack_dashboard/themes/material/templates/material/{n}' for n in
+                          ('openstack-one-color.svg', 'openstack-one-color-alt.svg')})
+        spec = genspec.generate(src, pkgs)
+        prep = spec.split('%prep\n', 1)[1].split('%generate_buildrequires', 1)[0]
+        for it in src['replace_files']:
+            self.assertIn(f"test -f '{it['dest']}' || exit 1", prep)
+            self.assertRegex(prep, r"cp -p '%\{SOURCE1\d\d\}' '" + re.escape(it['dest']) + "'")
+        # replaced before anything is built or collected
+        self.assertLess(spec.index("cp -p '%{SOURCE105}'"), spec.index('%pyproject_wheel'))
 
 
 class Refusals(unittest.TestCase):
@@ -220,6 +286,26 @@ description = "d"
 
     def test_tests_package_needs_python_package(self):
         self.refused(self.BASE + '[[package]]\nname = "a"\nkind = "python-tests"\ntests_path = "x/tests"\n')
+
+    def test_edits_without_changes_are_refused(self):
+        pkg = '[[package]]\nname = "a"\nkind = "files"\n'
+        self.refused(self.BASE + 'prep_extra = ["sed -i s/a/b/ x"]\n' + pkg)
+
+    def test_bad_changes_and_replace_files_are_refused(self):
+        pkg = '[[package]]\nname = "a"\nkind = "files"\n'
+        self.refused(self.BASE + 'changes = ["two\\nlines"]\n' + pkg)
+        self.refused(self.BASE + 'changes = ["x HAGISTACK_CHANGES_EOF"]\n' + pkg)
+        self.refused(self.BASE + 'changes = ["c"]\nchangelog_date = "2026-11-13"\n' + pkg)
+        self.refused(self.BASE + 'changes = ["c"]\nreplace_files = [{ src = "file:nope.svg", dest = "a/b.svg" }]\n' + pkg)
+        self.refused(self.BASE + 'changes = ["c"]\nreplace_files = [{ src = "upstream:x", dest = "a/b.svg" }]\n' + pkg)
+
+    def test_replace_dest_must_stay_in_the_tree(self):
+        pkg = '[[package]]\nname = "a"\nkind = "files"\n'
+        hz = self.BASE.replace('name = "python-x"', 'name = "python-django-horizon"')
+        for dest in ('/etc/passwd', '../x', 'a/../../x', "a'b"):
+            with self.subTest(dest=dest):
+                self.refused(hz + 'changes = ["c"]\nreplace_files = [{ src = "file:hagistack-logo.svg", dest = "%s" }]\n' % dest + pkg)
+        self.load(hz + 'changes = ["c"]\nreplace_files = [{ src = "file:hagistack-logo.svg", dest = "a/b.svg" }]\n' + pkg)
 
     def test_bad_mode(self):
         self.refused(self.BASE + '[[package]]\nname = "a"\nkind = "files"\n'
