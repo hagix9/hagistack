@@ -21,9 +21,11 @@
 #   gazpacho.manifest, build-env.lock, LICENSE, third-party/   provenance
 #   THIRD_PARTY_NOTICES.md                 which licence covers what
 #
-# Runs on Rocky/EL (needs rpm, tar, sha256sum, python3). Exits non-zero on any
-# failed check. A failed check stops before the assets and the lock are written;
-# --out may then hold partial files (PACKAGE_MANIFEST.tsv): discard it.
+# Runs on Rocky/EL (needs rpm, rpm2cpio, tar, sha256sum, python3, realpath) from
+# a full checkout; in a git work tree the files it ships must be committed.
+# Exits non-zero on any failed check. A failed check before the assets stops
+# before they and the lock are written; one after them stops before the lock.
+# Either way --out may hold partial files: discard it.
 set -euo pipefail
 
 die(){ printf 'STOP: %s\n' "$*" >&2; exit 1; }
@@ -45,15 +47,47 @@ done
 [ -n "$SET_DIR" ] && [ -n "$TAG" ] && [ -n "$OUT" ] || die "--set-dir, --tag and --out are required"
 [[ "$TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--tag has characters a release tag cannot have"
 [[ "$BASE_URL" =~ ^https?://[A-Za-z0-9._~:/@+=-]+$ ]] || die "--base-url is not a plain http(s) URL"
-for t in rpm tar sha256sum python3; do command -v "$t" >/dev/null || die "$t is required"; done
+for t in rpm rpm2cpio tar sha256sum python3 realpath; do command -v "$t" >/dev/null || die "$t is required"; done
 [ -f "$SET_DIR/RPM-SHA256SUMS" ] && [ -d "$SET_DIR/repo/repodata" ] || die "$SET_DIR is not a verified set directory"
+[ -f "$SET_DIR/build-env.lock" ] || die "$SET_DIR/build-env.lock is missing (every candidate carries it)"
+SET_DIR="$(realpath -e -- "$SET_DIR")" || die "cannot resolve --set-dir"
+OUT="$(realpath -m -- "$OUT")" || die "cannot resolve --out"
+# The assets are made from SET_DIR: --out inside it would end up in them.
+case "$OUT/" in "$SET_DIR"/*) die "--out must be outside --set-dir" ;; esac
+case "$SET_DIR/" in "$OUT"/*) die "--set-dir must be outside --out" ;; esac
 [ ! -e "$OUT" ] || [ -z "$(ls -A "$OUT")" ] || die "$OUT exists and is not empty"
 # The MIT licence of Hagistack's own work and the notices must ship with every
 # candidate. LICENSE is the repository-root file, so run this from a full checkout.
-for f in "$HERE/../LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$HERE/gazpacho.manifest"; do
-    [ -f "$f" ] || die "$f is missing: run from a full checkout (every candidate must carry it)"
+for f in "$HERE/../LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$HERE/gazpacho.manifest" \
+         "$HERE/release_check.py" "$HERE/hagistack"; do
+    [ -f "$f" ] && [ ! -L "$f" ] || die "$f is missing: run from a full checkout (every candidate must carry it)"
 done
-[ -d "$HERE/third-party" ] || die "$HERE/third-party is missing: run from a full checkout"
+[ -d "$HERE/third-party" ] && [ ! -L "$HERE/third-party" ] || die "$HERE/third-party is missing: run from a full checkout"
+# third-party/ is shipped as it is: exactly the files the notices describe, the
+# pinned ones (LICENSE and PATCH rows of gazpacho.manifest) unaltered.
+odd="$(cd "$HERE" && find third-party -mindepth 1 ! -type f ! -type d -printf '%p\n')"
+[ -z "$odd" ] || die "third-party/ holds something that is not a plain file: $odd"
+want_tp="$( { awk '$1=="LICENSE"||$1=="PATCH"{print $3}' "$HERE/gazpacho.manifest"
+              printf '%s\n' third-party/licenses/NOTICE.md third-party/neutron/LICENSE third-party/neutron/NOTICE.md; } | LC_ALL=C sort)"
+have_tp="$(cd "$HERE" && find third-party -type f -printf '%p\n' | LC_ALL=C sort)"
+[ "$want_tp" = "$have_tp" ] || die "third-party/ does not hold exactly the expected files:
+$(diff <(printf '%s\n' "$want_tp") <(printf '%s\n' "$have_tp") | grep '^[<>]' || true)"
+while read -r _ _ rel sha; do
+    [ "$(sha256sum "$HERE/$rel" | cut -d' ' -f1)" = "$sha" ] || die "$rel differs from its pin in gazpacho.manifest"
+done < <(awk '$1=="LICENSE"||$1=="PATCH"' "$HERE/gazpacho.manifest")
+# third-party/neutron/NOTICE.md names this text: the canonical Apache-2.0 file.
+[ "$(sha256sum "$HERE/third-party/neutron/LICENSE" | cut -d' ' -f1)" = cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 ] \
+    || die "third-party/neutron/LICENSE is not the canonical Apache-2.0 text"
+# In a git work tree, what is shipped (and the checks themselves) must be committed.
+if command -v git >/dev/null && git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    dirty="$(git -C "$HERE" status --porcelain --ignored -- ../LICENSE THIRD_PARTY_NOTICES.md \
+             gazpacho.manifest third-party make-rpm-release.sh release_check.py hagistack)"
+    [ -z "$dirty" ] || die "files this candidate ships or runs are not committed:
+$dirty"
+    ok "shipped files committed at $(git -C "$HERE" rev-parse --short HEAD)"
+else
+    echo "  note  not a git work tree: the shipped files are checked by their pins only"
+fi
 mkdir -p "$OUT"
 
 echo "== checking the set =="
@@ -62,6 +96,10 @@ echo "== checking the set =="
     | while IFS= read -r n; do printf '%s  %s\n' "$(sha256sum "$n" | cut -d' ' -f1)" "$n"; done ) > "$OUT/.sums"
 cmp -s "$OUT/.sums" "$SET_DIR/RPM-SHA256SUMS" || die "the RPMs do not match RPM-SHA256SUMS"
 rm -f "$OUT/.sums"
+# repo/ is published whole: it must hold nothing but those RPMs and repodata
+# that describes exactly them.
+msg="$(python3 -I "$HERE/release_check.py" repo "$SET_DIR")" || die "$msg"
+ok "repo/ holds only the listed RPMs; repodata lists exactly them, checksums match"
 SET_SHA="$(sha256sum "$SET_DIR/RPM-SHA256SUMS" | cut -d' ' -f1)"
 COUNT="$(wc -l < "$SET_DIR/RPM-SHA256SUMS" | tr -d ' ')"
 ok "$COUNT RPMs, set identity $SET_SHA"
@@ -115,13 +153,24 @@ odd="$(cd "$SET_DIR/srpms" && find . -mindepth 1 \( ! -type f -o -path './*/*' \
 extra="$(cd "$SET_DIR/srpms" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
          | comm -23 - <(awk -F'\t' 'NR>1{print $8}' "$OUT/PACKAGE_MANIFEST.tsv" | LC_ALL=C sort -u))"
 [ -z "$extra" ] || die "srpms/ holds files no binary RPM comes from (would be published): $extra"
-# Every source RPM carries Hagistack's own licence for the packaging it contains.
-# (the list is captured first: with pipefail, "rpm | grep -q" can fail on SIGPIPE)
-nolic="$(cd "$SET_DIR/srpms" && for s in ./*.src.rpm; do
-             l="$(rpm -qpl --nosignature "$s" 2>/dev/null || true)"
-             grep -qx 'HAGISTACK-LICENSE' <<<"$l" || echo "${s#./}"; done)"
-[ -z "$nolic" ] || die "source RPMs without HAGISTACK-LICENSE: $nolic"
-ok "srpms/ holds exactly the set's source RPMs, each with HAGISTACK-LICENSE"
+# Each binary was built from exactly that source RPM, not one with its name:
+# the binary's SOURCEPKGID is the source RPM's header digest (SIGMD5).
+declare -A SIGMD5=()
+for s in "$SET_DIR"/srpms/*.src.rpm; do
+    SIGMD5["${s##*/}"]="$(rpm -qp --nosignature --qf '%{SIGMD5}' "$s" 2>/dev/null)" || die "rpm cannot read ${s##*/}"
+done
+while read -r n; do
+    read -r srpm pkgid < <(rpm -qp --nosignature --qf '%{SOURCERPM} %{SOURCEPKGID}\n' "$SET_DIR/repo/$n" 2>/dev/null) \
+        || die "rpm cannot read $n"
+    [ -n "${SIGMD5[$srpm]:-}" ] && [ "$pkgid" = "${SIGMD5[$srpm]}" ] \
+        || die "$n was not built from the $srpm in srpms/ (SOURCEPKGID $pkgid)"
+done < <(cut -d' ' -f3- "$SET_DIR/RPM-SHA256SUMS")
+# Every source RPM carries Hagistack's own licence for the packaging it contains,
+# byte for byte the LICENSE shipped with the candidate.
+for s in "$SET_DIR"/srpms/*.src.rpm; do
+    msg="$(python3 -I "$HERE/release_check.py" licence "$s" "$HERE/../LICENSE")" || die "$msg"
+done
+ok "srpms/ holds exactly the set's source RPMs (header digests match), each with HAGISTACK-LICENSE = LICENSE"
 
 # Deterministic tarballs: same set, same bytes, whatever the clock says.
 EPOCH="$(stat -c %Y "$SET_DIR/RPM-SHA256SUMS")"
@@ -129,11 +178,24 @@ TFLAGS=(--sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" --form
 ASSET="hagistack-rpms-$TAG-el10-x86_64.tar"
 tar -cf "$OUT/$ASSET" "${TFLAGS[@]}" -C "$SET_DIR" RPM-SHA256SUMS repo
 tar -cf "$OUT/hagistack-srpms-$TAG.tar" "${TFLAGS[@]}" -C "$SET_DIR" srpms
-ok "assets written"
+# Check what was written, not only what was meant: exactly the expected members,
+# and the asset passes the very member check the installer applies before unpacking.
+{ echo RPM-SHA256SUMS; cut -d' ' -f3- "$SET_DIR/RPM-SHA256SUMS" | sed 's|^|repo/|'
+  ( cd "$SET_DIR/repo/repodata" && find . -maxdepth 1 -type f -printf 'repo/repodata/%f\n' ); } > "$OUT/.members"
+msg="$(python3 -I "$HERE/release_check.py" members "$OUT/$ASSET" "$OUT/.members")" || die "$msg"
+( cd "$SET_DIR/srpms" && find . -maxdepth 1 -type f -printf 'srpms/%f\n' ) > "$OUT/.members"
+msg="$(python3 -I "$HERE/release_check.py" members "$OUT/hagistack-srpms-$TAG.tar" "$OUT/.members")" || die "$msg"
+rm -f "$OUT/.members"
+TAR_CHECK_PY="$(env -i PATH="$PATH" HAGISTACK_LIB_ONLY=1 bash -c 'source "$1" >/dev/null 2>&1 && printf %s "$TAR_CHECK_PY"' _ "$HERE/hagistack")"
+[ -n "$TAR_CHECK_PY" ] || die "cannot read the installer's member check from $HERE/hagistack"
+msg="$(python3 -I -c "$TAR_CHECK_PY" "$OUT/$ASSET" 2>&1)" || die "the installer would refuse $ASSET: $msg"
+[ "$msg" = "$((COUNT + 1 + $(find "$SET_DIR/repo/repodata" -maxdepth 1 -type f | wc -l)))" ] \
+    || die "the installer's member check counted $msg members in $ASSET"
+ok "assets written; members exactly as expected; the installer's member check accepts $ASSET"
 
 cp -p "$HERE/gazpacho.manifest" "$OUT/"
 cp -p "$HERE/../LICENSE" "$OUT/LICENSE"
-[ -f "$SET_DIR/build-env.lock" ] && cp -p "$SET_DIR/build-env.lock" "$OUT/"
+cp -p "$SET_DIR/build-env.lock" "$OUT/"
 cp -rp "$HERE/third-party" "$OUT/third-party"
 cp -p "$HERE/THIRD_PARTY_NOTICES.md" "$OUT/"
 

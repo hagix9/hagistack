@@ -19,9 +19,12 @@ This file is copied into every release candidate by `make-rpm-release.sh`.
   the licence texts.
 - The RPMs are generated from Hagistack's own package definitions. They are
   **not** generated from RDO distgit packaging: no RDO spec file or other RDO
-  packaging file is used as an input. A comparison of the built packages with
-  RDO's packaging files found only two identical files: the two upstream Neutron
-  commits in `third-party/neutron/`, which RDO also carries. (Release candidates up to rc4 were built from RDO
+  packaging file is used as an input. A byte comparison of every file in the
+  264 packages (binary and source, 24,877 files) with RDO's packaging files found
+  two identical files: the two upstream Neutron commits in `third-party/neutron/`,
+  which RDO also carries. Hagistack's own unit, logrotate, sudoers and
+  configuration files share short lines with RDO's (keywords, commands and
+  paths); none is a copy. (Release candidates up to rc4 were built from RDO
   distgit by the older path, `build-rpms.sh`.) So that rc4 installations
   upgrade cleanly, the package names, installed paths, modes, owners and the
   configuration directory layout follow rc4's binary packages. They were taken
@@ -51,9 +54,10 @@ source RPM has no binary, or a source RPM lacks `HAGISTACK-LICENSE`.
 ## Changes made to the upstream sources
 
 Hagistack changed the files listed here from the upstream release they come from.
-Each change is in the spec file of that package's source RPM (`Patch` lines and
-`%prep`). The changelog of the binary RPMs does not list these changes; it says
-only "Hagistack packaging of the upstream release".
+Each change is in the spec file of that package's source RPM (its `Patch` lines
+and its `%prep`, `%build` and `%install` sections). The changelog of the binary
+RPMs does not list these changes; it says only "Hagistack packaging of the
+upstream release".
 
 - **Neutron 28.0.2** (`openstack-neutron`, `openstack-neutron-common`,
   `python3-neutron` and the other packages from the same source RPM):
@@ -69,7 +73,8 @@ only "Hagistack packaging of the upstream release".
   - `neutron/tests/fullstack/servers/metadata.py`: the shebang
     `#!/usr/bin/env python` becomes `#!/usr/bin/python3`.
 - **Horizon** (`python-django-horizon` source RPM): `requirements.txt`, the
-  `tzdata` requirement is removed.
+  `tzdata` requirement is removed; the installed `manage.py` gets the shebang
+  `#!/usr/bin/python3`.
 - **qrcode** (`python3-qrcode`): the `#!/usr/bin/env python` shebang line is
   removed from the Python modules that have one.
 - **python-barbicanclient, python-keystoneauth1, python-keystonemiddleware**:
@@ -78,6 +83,14 @@ only "Hagistack packaging of the upstream release".
 - **Configuration samples** that Keystone, Neutron and Placement generate at
   build time from their upstream sources: option values that would name the
   build machine are replaced with placeholders.
+- **Shebangs, every package.** rpm's build policy (`brp-mangle-shebangs`, part of
+  Rocky Linux's `redhat-rpm-config`) rewrites `#!/usr/bin/env python3` and similar
+  interpreter lines of executable files to `#!/usr/bin/python3`; in Neutron this
+  touches executable modules such as `neutron/cmd/destroy_patch_ports.py`.
+- **Generated files.** The builds compile translation catalogues (`.po` to `.mo`)
+  and generate files from the upstream sources (configuration samples, man pages,
+  Horizon's collected static files). These are new files made from upstream
+  files, not edits of them.
 
 ## Licence texts per package
 
