@@ -4,7 +4,19 @@
 name = "python-openstacksdk"
 project = "openstacksdk"
 version = "4.10.0"
-release = "1"
+release = "2"
+# Stage 6-5-R2: rebuilt with the change notice.
+changelog_date = "Fri Nov 13 2026"
+# Hagistack's changes to installed files (written into %changelog and
+# HAGISTACK-CHANGES by genspec.py).
+changes = [
+  "openstack/tests/ansible/hooks/post_test_hook.sh (in python3-openstacksdk-tests): rpm's build policy (brp-mangle-shebangs) rewrites its shebang #!/bin/sh to #!/usr/bin/sh.",
+]
+# Changed files that are installed and have # comments: genspec.py puts a
+# comment line into each (after a #! line), saying that it is changed.
+mark_files = [
+  { path = "openstack/tests/ansible/hooks/post_test_hook.sh" },
+]
 tarball = "openstacksdk-4.10.0.tar.gz"
 sha256 = "5dde9ae3f1e2411a87ff57b2d78da53fac8eae9e5bac8e5870927cb62ddfc033"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

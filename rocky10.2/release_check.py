@@ -21,8 +21,12 @@
         (from DOCS_DIR) at each of the theme's logo and favicon paths.
     release_check.py notices SET_DIR
         every binary RPM built from a source RPM whose spec writes
-        HAGISTACK-CHANGES installs that notice, with exactly the text the spec
-        writes, and its changelog lists the changes.
+        HAGISTACK-CHANGES installs that notice once, as a plain file (not
+        documentation, so an install with nodocs keeps it) at
+        /usr/share/hagistack/changes/<package>/, with exactly the text the
+        spec writes; it carries HAGISTACK-LICENSE and an MIT tag; its newest
+        changelog entry is for its own version and release and lists the
+        changes; every file the spec marks carries the mark in the RPMs.
 
 Prints nothing and exits 0 when the check passes; otherwise prints one line
 saying what is wrong and exits 1. Runs with python3 -I and the standard library.
@@ -290,12 +294,38 @@ def check_branding(set_dir, images_dir, docs_dir):
         raise Bad('no HTML documentation tree in the set: expected the documentation packages')
 
 
-def spec_notice(srpm):
-    """The HAGISTACK-CHANGES text a source RPM's spec writes, or None."""
+CHANGES_DIR = '/usr/share/hagistack/changes/'
+# genspec.py MARK, and the shell line genspec writes for each marked file.
+MARK = (b"# Hagistack: this file is changed from the upstream release; the changes are "
+        b"listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.")
+MARKED_RE = re.compile(r"^test -f '([^']+)' \|\| \{ echo '[^']+: the file to mark is missing'", re.M)
+
+
+def spec_text(srpm):
     specs = [data for name, data in payload(srpm) if name.endswith('.spec') and '/' not in name]
     if len(specs) != 1:
         raise Bad('%s holds %d spec files, not 1' % (os.path.basename(srpm), len(specs)))
-    text = specs[0].decode('utf-8')
+    return specs[0].decode('utf-8')
+
+
+def marked_paths(text):
+    """The source-tree paths the spec puts the mark into."""
+    return MARKED_RE.findall(text)
+
+
+def installed_as(rel, names):
+    """Installed paths that a marked source path became: the same relative path
+    (site-packages/…), or the same file name (a generated sample may lose
+    its .sample suffix when installed)."""
+    base = rel.rsplit('/', 1)[-1]
+    alts = {base, base[:-len('.sample')]} if base.endswith('.sample') else {base}
+    return [n for n in names if n.endswith('/' + rel) or n.rsplit('/', 1)[-1] in alts]
+
+
+def spec_notice(srpm, text=None):
+    """The HAGISTACK-CHANGES text a source RPM's spec writes, or None."""
+    if text is None:
+        text = spec_text(srpm)
     start = "cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'\n"
     if text.count(start) == 0:
         return None
@@ -308,15 +338,21 @@ def spec_notice(srpm):
 def check_notices(set_dir):
     srpms = os.path.join(set_dir, 'srpms')
     notices = {}
+    marks = {}
     for s in sorted(os.listdir(srpms)):
         if s.endswith('.src.rpm'):
-            n = spec_notice(os.path.join(srpms, s))
+            text = spec_text(os.path.join(srpms, s))
+            n = spec_notice(os.path.join(srpms, s), text)
             if n is not None:
                 notices[s] = n
+                marks[s] = marked_paths(text)
+            elif marked_paths(text):
+                raise Bad('%s marks files but writes no HAGISTACK-CHANGES' % s)
     if not notices:
         raise Bad('no source RPM declares changes to upstream (HAGISTACK-CHANGES): expected some')
     repo = os.path.join(set_dir, 'repo')
     covered = set()
+    marked_found = {s: set() for s in notices}
     for n in sorted(os.listdir(repo)):
         if not n.endswith('.rpm'):
             continue
@@ -325,23 +361,49 @@ def check_notices(set_dir):
         if src not in notices:
             continue
         covered.add(src)
-        got = [data for name, data in payload(path) if name.startswith('/usr/share/doc/')
-               and name.endswith('/HAGISTACK-CHANGES')]
-        if len(got) != 1:
-            raise Bad('%s (from %s) installs %d HAGISTACK-CHANGES files, not 1' % (n, src, len(got)))
-        if got[0] != notices[src]:
+        name = rpm_query(path, '%{NAME}')
+        content = list(payload(path))
+        got = [(f, data) for f, data in content if f.endswith('/HAGISTACK-CHANGES')]
+        want_path = CHANGES_DIR + name + '/HAGISTACK-CHANGES'
+        if [f for f, _ in got] != [want_path]:
+            raise Bad('%s (from %s) must install HAGISTACK-CHANGES exactly once, at %s; it installs %s'
+                      % (n, src, want_path, [f for f, _ in got] or 'none'))
+        if got[0][1] != notices[src]:
             raise Bad('%s: HAGISTACK-CHANGES differs from the text its spec writes' % n)
+        # nodocs keeps it only if it is not flagged as documentation
+        flags = {}
+        for line in rpm_query(path, '[%{FILENAMES}\t%{FILEFLAGS:fflags}\n]').splitlines():
+            f, _, fl = line.partition('\t')
+            flags[f] = fl
+        if want_path not in flags:
+            raise Bad('%s: rpm does not list %s' % (n, want_path))
+        if 'd' in flags[want_path]:
+            raise Bad('%s: %s is flagged as documentation (an install with nodocs would drop it)' % (n, want_path))
         log = rpm_query(path, '[%{CHANGELOGTEXT}\n]')
         if 'Changes to the upstream sources' not in log:
             raise Bad('%s: the changelog does not list the changes to upstream' % n)
+        # the newest changelog entry is this build's: "<packager> - [E:]V-R" (R without the dist tag)
+        evr = rpm_query(path, '%{EPOCHNUM}:%{VERSION}-%{RELEASE}')
+        epoch, _, vr = evr.partition(':')
+        version, _, release = vr.rpartition('-')
+        want_evr = ('%s:' % epoch if epoch not in ('', '0') else '') + version + '-' + release.split('.', 1)[0]
+        if not rpm_query(path, '%{CHANGELOGNAME}').endswith(' - ' + want_evr):
+            raise Bad('%s: the newest changelog entry is not for %s (release raised without an entry?)' % (n, want_evr))
+        for f, data in content:
+            if MARK in data.split(b'\n'):
+                marked_found[src].add(f)
         # The notice is Hagistack's text: the package says MIT and carries the licence.
-        files = [name for name, _ in payload(path)]
+        files = [f for f, _ in content]
         if not any(f.startswith('/usr/share/licenses/') and f.endswith('/HAGISTACK-LICENSE') for f in files):
             raise Bad('%s carries HAGISTACK-CHANGES but not HAGISTACK-LICENSE' % n)
         if 'MIT' not in re.findall(r'[A-Za-z0-9.+-]+', rpm_query(path, '%{LICENSE}')):
             raise Bad('%s carries HAGISTACK-CHANGES but its License tag does not name MIT' % n)
     if covered != set(notices):
         raise Bad('no binary RPM from %s' % ', '.join(sorted(set(notices) - covered)))
+    for s, rels in marks.items():
+        for rel in rels:
+            if not installed_as(rel, marked_found[s]):
+                raise Bad('%s marks %s, but no RPM built from it installs that file with the mark' % (s, rel))
 
 
 def check_licence(srpm, licence):

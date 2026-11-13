@@ -56,11 +56,15 @@ Execution needs **all** of the following:
    `FILE.sig`, the Owner's SSH signature of exactly that file (see "Approving a run").
    The signature must verify against a key pinned in `OWNER_SIGNING_KEYS` in
    `hs6.py`, in the namespace `hagistack-stage6-approval`. The file has:
-   - `format` 2 and a random `nonce`;
+   - `format` 3 and a random `nonce`;
    - the run id, project and zone;
    - the gcloud account;
    - the exact `owner_statement` the harness prints for the run;
    - the SHA-256 of this `hs6.py`. Any change to the harness needs a new approval.
+   - the full id of the **commit** to run. A non-cleanup operation runs only if the
+     checkout's HEAD is that commit and no tracked file is changed (untracked
+     files are allowed). `hs6_approve.py` writes the commit only for a checkout
+     with no change to a tracked file.
    - the approved `operations`, which must include `teardown`;
    - `budget_usd` of 8 or less, and `max_hours` of 6 or less;
    - `approved_at` and `expires_at`, at most 24 hours apart and covering now.
@@ -266,8 +270,10 @@ The Owner runs it in their own terminal. It:
   similar variables);
 - refuses if the pinned keys are not exactly the Owner's key, if the key is loaded
   in `ssh-agent`, if anything in `acceptance/stage6/` is uncommitted, untracked or
-  ignored by git (a planted `.pyc`, for example),
-  or if the run id was used before (except for a cleanup-only approval);
+  ignored by git (a planted `.pyc`, for example), if any tracked file in the
+  checkout is changed, if the key file is inside the repository (also refused by
+  `--setup`), or if the run id was used before (except for a cleanup-only
+  approval);
 - shows the run id, project, zone, account, operations, nodes, limits, validity
   and the harness's SHA-256 and commit;
 - asks the Owner to type the run id, then signs with `ssh-keygen -Y sign` (the
@@ -276,7 +282,7 @@ The Owner runs it in their own terminal. It:
   overwriting, and checks that `hs6.py` accepts the signature.
 
 **What the signature fixes.** The run id, project, zone, account, operations, budget,
-hours, validity, nonce and the harness's SHA-256 are all inside the signed bytes:
+hours, validity, nonce, the harness's SHA-256 and the commit are all inside the signed bytes:
 changing any byte breaks the signature. A signature cannot be moved to another file.
 An approval for one run id is refused for any other, and an approval that has started
 a run (`init`) is recorded in `~/.config/hagistack-stage6/used-approvals` and cannot

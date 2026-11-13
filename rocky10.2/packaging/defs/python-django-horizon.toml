@@ -46,6 +46,11 @@ changes = [
   "At build time the translation catalogues are compiled (.po to .mo) and the static files are collected; the generated files replace the .po sources.",
   "/etc/openstack-dashboard/local_settings is upstream's openstack_dashboard/local/local_settings.py.example with the changes the packaged layout and the installer need, each marked with a Hagistack: comment; among them the page title and logo text, SITE_BRANDING = Hagistack Dashboard (upstream: OpenStack Dashboard).",
 ]
+# Changed files that are installed and have # comments: genspec.py puts a
+# comment line into each (after a #! line), saying that it is changed.
+mark_files = [
+  { path = "manage.py" },
+]
 # The dashboard shows Hagistack's own logo, not the OpenStack logo: every image
 # of upstream's that shows it (the default theme's four images and the Safari
 # mask icon, and the material theme's inline logo and its unused variant) is

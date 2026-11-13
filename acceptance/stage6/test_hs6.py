@@ -21,6 +21,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 HS6 = os.path.join(HERE, "hs6.py")
 MOCK = os.path.join(HERE, "mock_gcloud.py")
+MOCK_GIT = os.path.join(HERE, "mock_git.py")
+COMMIT = "c" * 40
 sys.path.insert(0, HERE)
 import hs6  # noqa: E402
 
@@ -107,7 +109,7 @@ class Base(unittest.TestCase):
         self.env = {"PATH": bindir + os.pathsep + "/usr/bin:/bin", "HOME": self.tmp,
                     "HS6_OWNER_SIGNERS": SIGNERS,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
-                    "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10",
+                    "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10", "HS6_GIT": MOCK_GIT,
                     "HS6_REGISTRY": os.path.join(self.tmp, "registry")}
         # in-process calls (Protection tests) must not reach the real gcloud either
         self._saved_env = {k: os.environ.get(k) for k in ("HS6_GCLOUD", "PATH")}
@@ -125,10 +127,11 @@ class Base(unittest.TestCase):
 
     def write_approval(self, key=OWNER_KEY, **over):
         """An approval as the Owner would sign it (key=None: no signature)."""
-        a = {"format": 2, "run_id": RID, "project": hs6.PROJECT, "zone": hs6.ZONE, "account": ACCOUNT,
+        a = {"format": hs6.APPROVAL_FORMAT, "run_id": RID, "project": hs6.PROJECT, "zone": hs6.ZONE, "account": ACCOUNT,
              "owner_statement": hs6.owner_statement(RID), "harness_sha256": hs6.harness_sha256(),
              "operations": list(hs6.OPERATIONS), "budget_usd": 8, "max_hours": 6,
-             "approved_at": hs6.iso(T0 - 60), "expires_at": hs6.iso(T0 + 20 * 3600), "nonce": "ab" * 16}
+             "approved_at": hs6.iso(T0 - 60), "expires_at": hs6.iso(T0 + 20 * 3600), "nonce": "ab" * 16,
+             "commit": COMMIT}
         a.update(over)
         a = {k: v for k, v in a.items() if v is not None}
         with open(self.approval, "w") as f:
@@ -699,6 +702,61 @@ class Upload(Base):
         self.set_mock(lambda s: s.update(remote_sha={"/tmp/a.bin": want}))
         rc, out = self.hs("upload", "n1", f, "/tmp/a.bin")
         self.assertEqual(rc, 0, out)
+
+
+class CommitBinding(Base):
+    """An approval runs only the commit it names, on a checkout with no change to
+    a tracked file; cleanup still works on any checkout."""
+
+    def test_the_approved_commit_runs(self):
+        rc, out = self.hs("init")
+        self.assertEqual(rc, 0, out)
+
+    def test_another_head_is_refused(self):
+        rc, out = self.hs("init", env={"MOCK_GIT_HEAD": "d" * 40})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not the approved commit", out)
+        self.assertEqual(self.mutations(), [])
+
+    def test_changed_tracked_files_are_refused(self):
+        rc, out = self.hs("init", env={"MOCK_GIT_DIRTY": " M rocky10.2/hagistack"})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("tracked files are changed", out)
+
+    def test_an_approval_without_a_commit_or_of_format_2_is_refused(self):
+        self.write_approval(commit=None)
+        self.assertIn("commit must be the full id", self.hs("init")[1])
+        self.write_approval(format=2)
+        self.assertIn("approval format must be 3", self.hs("init")[1])
+
+    def test_an_unreadable_checkout_is_refused(self):
+        rc, out = self.hs("init", env={"MOCK_GIT_FAIL": "1"})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("cannot read the git checkout", out)
+
+    def test_cleanup_works_after_head_moved(self):
+        self.up("n1")
+        rc, out = self.hs("teardown", env={"MOCK_GIT_HEAD": "d" * 40, "MOCK_GIT_DIRTY": " M x"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("allowed for teardown only", out)
+        rc, out = self.hs("create-node", "n2", env={"MOCK_GIT_HEAD": "d" * 40})
+        self.assertNotEqual(rc, 0, out)
+
+    def test_the_git_hook_is_refused_with_a_real_account(self):
+        self.write_approval(account="owner@example.com")
+        rc, out = self.hs("init", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None,
+                                       "HS6_OWNER_SIGNERS": None})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("tests only", out)
+
+    def test_the_key_must_stay_outside_the_repository(self):
+        import hs6_approve
+        top = os.path.realpath(os.path.join(HERE, "..", ".."))
+        for inside in (os.path.join(top, "k"), os.path.join(top, "acceptance", "stage6", "k"), top):
+            with self.assertRaises(hs6_approve.Refused):
+                hs6_approve.key_outside(inside, top)
+        hs6_approve.key_outside(os.path.join(self.tmp, "k"), top)
+        hs6_approve.key_outside(top + "-other/k", top)
 
 
 class Download(Base):
@@ -1344,7 +1402,7 @@ class SignedApproval(Base):
         # the shape of the method-A records an AI agent wrote from a chat message
         self.write_approval(key=None, format=1, nonce=None, approval_basis="Owner said so in chat",
                             owner_message={"text": "承認します"}, written_by="AI agent")
-        self.refused("init", want="format must be 2")
+        self.refused("init", want="format must be 3")
         # even with a .sig the AI made with its own key
         self.write_approval(key=OTHER_KEY, approval_basis="Owner said so in chat", written_by="AI agent")
         self.refused("init", want="not a valid Owner signature")
@@ -1450,7 +1508,8 @@ class SignedApproval(Base):
         import hs6_approve
         doc = hs6_approve.build_approval(RID, ["init", "network", "n2", "ssh", "upload", "teardown", "residual"],
                                          8.0, 6.0, 12.0, ACCOUNT, hs6.harness_sha256(),
-                                         datetime.datetime.fromtimestamp(T0 - 60, datetime.timezone.utc), "cd" * 16)
+                                         datetime.datetime.fromtimestamp(T0 - 60, datetime.timezone.utc), "cd" * 16,
+                                         COMMIT)
         with open(self.approval, "wb") as f:
             f.write((json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode())
         os.chmod(self.approval, 0o600)
@@ -1536,11 +1595,12 @@ class ApproveTool(unittest.TestCase):
         import hs6_approve
         now = datetime.datetime(2026, 11, 20, tzinfo=datetime.timezone.utc)
         ok = dict(rid=RID, ops=["init", "teardown"], budget=8.0, max_hours=6.0, valid_hours=12.0, account=ACCOUNT,
-                  harness_sha="0" * 64, now=now, nonce="ab" * 16)
-        hs6_approve.build_approval(**ok)
+                  harness_sha="0" * 64, now=now, nonce="ab" * 16, commit=COMMIT)
+        self.assertEqual(hs6_approve.build_approval(**ok)["commit"], COMMIT)
         for bad in (dict(rid="X"), dict(ops=["init"]), dict(ops=["init", "rm", "teardown"]),
                     dict(ops=["init", "init", "teardown"]), dict(budget=9.0), dict(max_hours=7.0),
-                    dict(valid_hours=25.0), dict(account="")):
+                    dict(valid_hours=25.0), dict(account=""), dict(commit="c" * 12), dict(commit=None),
+                    dict(commit="C" * 40)):
             with self.assertRaises(hs6_approve.Refused):
                 hs6_approve.build_approval(**dict(ok, **bad))
 

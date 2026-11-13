@@ -132,7 +132,7 @@ class NotFound(Exception):
 # they make the harness refuse to run. Without an approval nothing is called.
 _TEST_MODE = {"on": False}
 TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WATCH_MAX_LOOPS",
-              "HS6_OWNER_SIGNERS")
+              "HS6_OWNER_SIGNERS", "HS6_GIT")
 
 # ------------------------------------------------------- Owner signing keys --
 # An approval is executed only if it carries the Owner's SSH signature
@@ -145,7 +145,11 @@ TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WA
 OWNER_SIGNING_KEYS = ()
 SIG_NAMESPACE = "hagistack-stage6-approval"
 SIGNER_ID = "hagistack-owner"
-APPROVAL_FORMAT = 2
+APPROVAL_FORMAT = 3
+# The approval names the commit to run (full id). The repository's HEAD must be
+# that commit, with no change to a tracked file (untracked files are allowed),
+# whenever a non-cleanup operation runs.
+GIT_BIN = "/usr/bin/git"
 SSH_KEYGEN_PATHS = ("/usr/bin/ssh-keygen",)
 
 
@@ -625,6 +629,26 @@ def repo_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 
+def repo_state():
+    """(HEAD commit id, porcelain status of tracked files) of this checkout. The
+    test hook HS6_GIT works only in test mode (an .invalid account)."""
+    hook = os.environ.get("HS6_GIT")
+    if hook and _TEST_MODE["on"]:
+        cmd = [sys.executable, "-I", hook] if hook.endswith(".py") else [hook]
+    else:
+        cmd = [GIT_BIN]
+    out = []
+    for args in (["rev-parse", "--verify", "HEAD"], ["status", "--porcelain", "--untracked-files=no"]):
+        try:
+            p = subprocess.run(cmd + ["-C", repo_root()] + args, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise Stop("cannot read the git checkout (%s): refused" % e)
+        if p.returncode != 0:
+            raise Stop("cannot read the git checkout (git %s: %s): refused" % (args[0], p.stderr.strip()))
+        out.append(p.stdout.strip())
+    return out[0], out[1]
+
+
 def check_approval_file(path, state_dir=None):
     """What the harness can check about who could have written the approval.
     It cannot tell the Owner from another process of the same OS user; that
@@ -783,6 +807,20 @@ def load_approval(path, rid, op):
                   file=sys.stderr)
         else:
             problems.append("harness_sha256 is not this harness (re-approve after any change)")
+    commit = a.get("commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        problems.append("commit must be the full id of the approved commit")
+    else:
+        head, dirty = repo_state()
+        why = []
+        if head != commit:
+            why.append("HEAD is %s, not the approved commit %s" % (head[:12], commit[:12]))
+        if dirty:
+            why.append("tracked files are changed:\n" + dirty)
+        if why and op in CLEANUP_OPS:
+            print("WARNING: %s; allowed for %s only" % ("; ".join(why), op), file=sys.stderr)
+        elif why:
+            problems.append("; ".join(why))
     ops = a.get("operations")
     if not isinstance(ops, list) or not ops or any(o not in OPERATIONS for o in ops):
         problems.append("operations must be a non-empty subset of %s" % (OPERATIONS,))

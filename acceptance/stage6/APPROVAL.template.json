@@ -1,11 +1,12 @@
 {
-  "format": 2,
+  "format": 3,
   "run_id": "<run id: a lowercase letter, then 3-7 lowercase letters or digits>",
   "project": "<GCP_PROJECT>",
   "zone": "asia-northeast1-a",
   "account": "<the gcloud account to use>",
   "owner_statement": "I, the Owner, approve the Stage 6-1 GCE operations listed here for run <run id> in <GCP_PROJECT>/asia-northeast1-a.",
   "harness_sha256": "<sha256 of acceptance/stage6/hs6.py at the approved commit>",
+  "commit": "<the full id of the commit to run; hs6_approve.py fills it in>",
   "operations": [
     "init",
     "network",

@@ -23,6 +23,11 @@ changelog_date = "Fri Nov 13 2026"
 changes = [
   "The #!/usr/bin/env python shebang line is removed from the Python modules that have one (they are never run directly, and rpm refuses the ambiguous python shebang).",
 ]
+# Changed files that are installed and have # comments: genspec.py puts a
+# comment line into each (after a #! line), saying that it is changed.
+mark_files = [
+  { path = "qrcode/console_scripts.py" },
+]
 # rpm refuses the ambiguous "#!/usr/bin/env python" shebang qrcode ships in a module
 # that is never run directly; the line is removed rather than rewritten.
 prep_extra = ["find . -name '*.py' -exec sed -i '1{/^#![[:space:]]*\\/usr\\/bin\\/env[[:space:]]*python[[:space:]]*$/d}' {} +"]

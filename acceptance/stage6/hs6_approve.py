@@ -67,7 +67,7 @@ def iso(t):
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def build_approval(rid, ops, budget, max_hours, valid_hours, account, harness_sha, now, nonce):
+def build_approval(rid, ops, budget, max_hours, valid_hours, account, harness_sha, now, nonce, commit):
     """The approval document. Pure: the tests call it to build what the Owner would sign."""
     if not hs6.RUN_ID_RE.fullmatch(rid or ""):
         raise Refused("run id must match %s" % hs6.RUN_ID_RE.pattern)
@@ -83,9 +83,12 @@ def build_approval(rid, ops, budget, max_hours, valid_hours, account, harness_sh
         raise Refused("validity must be more than 0 and at most %.0f hours" % hs6.MAX_APPROVAL_HOURS)
     if not isinstance(account, str) or "@" not in account:
         raise Refused("no gcloud account is configured")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise Refused("the commit to approve must be a full commit id")
     return {
         "format": hs6.APPROVAL_FORMAT, "run_id": rid, "project": hs6.PROJECT, "zone": hs6.ZONE,
         "account": account, "owner_statement": hs6.owner_statement(rid), "harness_sha256": harness_sha,
+        "commit": commit,
         "operations": list(ops), "budget_usd": budget, "max_hours": max_hours,
         "approved_at": iso(now), "expires_at": iso(now + datetime.timedelta(hours=valid_hours)),
         "nonce": nonce, "signed_with": "hs6_approve.py (ssh-keygen -Y sign, namespace %s)" % hs6.SIG_NAMESPACE,
@@ -140,7 +143,22 @@ def harness_state():
     if st.returncode != 0 or st.stdout.strip():
         raise Refused("%s has uncommitted or untracked changes: approve only committed code\n%s"
                       % (rel, st.stdout.strip()))
-    return run([GIT, "-C", top, "log", "-1", "--format=%h %s", "--", rel]).stdout.strip()
+    # The run is bound to one commit: the whole checkout must have no change to a
+    # tracked file (untracked files are allowed), so the commit is what runs.
+    tracked = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=no"])
+    if tracked.returncode != 0 or tracked.stdout.strip():
+        raise Refused("the checkout has changes to tracked files: commit or drop them first\n%s"
+                      % tracked.stdout.strip())
+    head = run([GIT, "-C", top, "rev-parse", "--verify", "HEAD"]).stdout.strip()
+    subject = run([GIT, "-C", top, "log", "-1", "--format=%s", head]).stdout.strip()
+    return head, subject, top
+
+
+def key_outside(key, top):
+    """The private key must never be inside the repository (it could be committed)."""
+    k = os.path.realpath(key)
+    if k == top or k.startswith(top.rstrip(os.sep) + os.sep):
+        raise Refused("the key %s is inside the repository %s: keep it outside (default %s)" % (key, top, DEFAULT_KEY))
 
 
 def pinned_ok(pub, pinned):
@@ -157,6 +175,9 @@ def pinned_ok(pub, pinned):
 def setup(args):
     need_terminal()
     key = os.path.expanduser(args.key)
+    top = run([GIT, "-C", HERE, "rev-parse", "--show-toplevel"])
+    if top.returncode == 0:
+        key_outside(key, os.path.realpath(top.stdout.strip()))
     if os.path.exists(key):
         raise Refused("%s already exists; it is kept. Use it, or choose another --key" % key)
     os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
@@ -186,7 +207,8 @@ def approve(args):
     if key_in_agent(pub):
         raise Refused("your approval key is loaded in ssh-agent, so it could sign without you. Remove it "
                       "(ssh-add -d %s.pub) and run this again" % key)
-    head = harness_state()
+    head, subject, top = harness_state()
+    key_outside(key, top)
     ops = [o.strip() for o in args.ops.split(",") if o.strip()]
     used = os.path.join(hs6.registry_dir(), "used-run-ids")
     if os.path.exists(used) and args.run_id in open(used).read().split() \
@@ -199,7 +221,7 @@ def approve(args):
     acct = run([gcloud, "config", "get-value", "account"]).stdout.strip()
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     doc = build_approval(args.run_id, ops, args.budget, args.max_hours, args.valid_hours, acct,
-                         hs6.harness_sha256(), now, secrets.token_hex(16))
+                         hs6.harness_sha256(), now, secrets.token_hex(16), head)
     nodes = [o for o in ops if o in hs6.NODES]
     print()
     print("You are approving these GCE operations / 次の GCE 操作を承認します")
@@ -210,7 +232,8 @@ def approve(args):
     print("  nodes       : %s" % (", ".join("%s (%s, %s GB)" % (n, hs6.NODES[n][0], hs6.NODES[n][2]) for n in nodes) or "none"))
     print("  limits      : US$%s, %s h from the first creation (then automatic teardown)" % (doc["budget_usd"], doc["max_hours"]))
     print("  valid       : %s to %s (UTC)" % (doc["approved_at"], doc["expires_at"]))
-    print("  harness     : hs6.py %s, last commit %s" % (doc["harness_sha256"][:16], head))
+    print("  commit      : %s (%s)" % (doc["commit"], subject))
+    print("  harness     : hs6.py %s" % doc["harness_sha256"][:16])
     print()
     typed = input("To approve, type the run id (anything else cancels) / 承認する場合は run ID を入力: ").strip()
     if typed != args.run_id:

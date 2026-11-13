@@ -179,7 +179,9 @@ class ChangesNotice(unittest.TestCase):
     EDITED = {'openstack-neutron', 'python-django-horizon', 'python3-qrcode', 'python-barbicanclient',
               'python-keystoneauth1', 'python-keystonemiddleware',
               # stage 6-5-R1: build-time changes to installed files
-              'openstack-keystone', 'openstack-placement', 'openstack-nova'}
+              'openstack-keystone', 'openstack-placement', 'openstack-nova',
+              # stage 6-5-R2: rpm's shebang rewriting of a shipped test script
+              'python-openstacksdk', 'python-os-ken'}
 
     def test_exactly_the_edited_sources_declare_changes(self):
         declared = {genspec.load(d)[0]['name'] for d in DEFS if genspec.load(d)[0].get('changes')}
@@ -254,15 +256,58 @@ class ChangesNotice(unittest.TestCase):
                                 ('' if p['name'] == src['name'] else f'-n {p["name"]}',))
                     with self.subTest(pkg=p['name']):
                         self.assertIn('%license HAGISTACK-LICENSE', sect)
-                        if genspec.relative_docs(p):
-                            self.assertIn('\n%doc HAGISTACK-CHANGES', sect)
-                        else:
-                            self.assertIn(f'%doc %{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', sect)
-                            self.assertIn(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}%{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', spec)
-                            ddir = f'%{{_docdir}}/{p["name"]}'
-                            owners = [ln for ln in sect.splitlines() if ln.startswith('%dir') and ln.endswith(' ' + ddir)]
-                            self.assertEqual(len(owners), 1, owners)
+                        # nodocs-safe: a plain file outside /usr/share/doc, listed once, never %doc
+                        path = f'%{{_datadir}}/hagistack/changes/{p["name"]}/HAGISTACK-CHANGES'
+                        lines = sect.split('\n%changelog', 1)[0].splitlines()
+                        self.assertEqual(lines.count(path), 1)
+                        self.assertEqual([ln for ln in lines if 'HAGISTACK-CHANGES' in ln], [path])
+                        for d in ('%{_datadir}/hagistack', '%{_datadir}/hagistack/changes',
+                                  f'%{{_datadir}}/hagistack/changes/{p["name"]}'):
+                            self.assertEqual(lines.count('%dir ' + d), 1, d)
+                        self.assertIn(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}{path}', spec)
                         self.assertIn('MIT', genspec.pkg_license(src, p))
+                self.assertNotIn('%doc HAGISTACK-CHANGES', spec)
+                self.assertNotIn('_docdir}/' + 'HAGISTACK', spec)
+
+    def test_no_spec_puts_the_notice_under_docdir(self):
+        for d in DEFS:
+            src, pkgs = genspec.load(d)
+            spec = genspec.generate(src, pkgs)
+            with self.subTest(d=os.path.basename(d)):
+                for ln in spec.splitlines():
+                    if 'HAGISTACK-CHANGES' in ln and not ln.startswith(('cat >', '- ', 'install -p -D -m 0644 HAGISTACK-CHANGES')):
+                        self.assertRegex(ln, r'^%\{_datadir\}/hagistack/changes/[A-Za-z0-9+._-]+/HAGISTACK-CHANGES$|'
+                                             r'^(This|The|Changes|listed in) |HAGISTACK-CHANGES under', ln)
+                self.assertNotIn('%{_docdir}/', ''.join(l for l in spec.splitlines(True) if 'HAGISTACK-CHANGES' in l))
+
+    def test_marked_files_get_the_comment_and_are_listed(self):
+        marked = {}
+        for d in DEFS:
+            src, pkgs = genspec.load(d)
+            if not src.get('mark_files'):
+                continue
+            marked[src['name']] = len(src['mark_files'])
+            spec = genspec.generate(src, pkgs)
+            prep = spec.split('%prep\n', 1)[1].split('%generate_buildrequires', 1)[0]
+            build = spec.split('%build\n', 1)[1].split('%install\n', 1)[0]
+            notice = spec.split("HAGISTACK_CHANGES_EOF'\n", 1)[1].split('\nHAGISTACK_CHANGES_EOF\n', 1)[0]
+            with self.subTest(d=os.path.basename(d)):
+                for it in src['mark_files']:
+                    where = build if it.get('stage') == 'build' else prep
+                    self.assertIn(f"test -f '{it['path']}' || {{", where)
+                    self.assertIn(f"grep -qxF '{genspec.MARK}' '{it['path']}' || exit 1", where)
+                    self.assertIn(f"- {it['path']}", notice)
+                if any(it.get('stage') == 'build' for it in src['mark_files']):
+                    # marked after the samples are generated and scrubbed
+                    self.assertGreater(build.index('grep -qxF'), build.index(src['build_extra'][-1][:40]))
+        self.assertEqual(marked, {'openstack-neutron': 27, 'python-django-horizon': 1, 'python3-qrcode': 1,
+                                  'openstack-keystone': 2, 'openstack-placement': 2, 'openstack-nova': 1,
+                                  'python-openstacksdk': 1, 'python-os-ken': 1})
+
+    def test_mark_text_is_safe_in_the_shell_and_awk(self):
+        self.assertNotIn("'", genspec.MARK)
+        self.assertNotIn('%', genspec.MARK)
+        self.assertTrue(genspec.MARK.startswith('# '))
 
     def test_percent_is_escaped(self):
         self.assertEqual(genspec.rpm_text('100% and %prep'), '100%% and %%prep')
@@ -359,6 +404,16 @@ description = "d"
                 self.refused(hz + 'changes = ["c"]\nreplace_files = [{ src = "file:hagistack-logo.svg", dest = "%s" }]\n' % dest + pkg)
         self.load(hz + 'changes = ["c"]\nchangelog_date = "Fri Nov 13 2026"\n'
                   'replace_files = [{ src = "file:hagistack-logo.svg", dest = "a/b.svg" }]\n' + pkg)
+
+    def test_bad_mark_files_are_refused(self):
+        base = self.BASE + 'changes = ["c"]\nchangelog_date = "Fri Nov 13 2026"\n'
+        pkg = '[[package]]\nname = "a"\nkind = "files"\n'
+        for entry in ('{ path = "/etc/x.conf" }', '{ path = "../x.py" }', '{ path = "a/logo.svg" }',
+                      '{ path = "x.py", stage = "install" }', '{ path = "x.py", other = 1 }', '{ stage = "prep" }'):
+            with self.subTest(entry=entry):
+                self.refused(base + 'mark_files = [%s]\n' % entry + pkg)
+        self.refused(self.BASE + 'mark_files = [{ path = "x.py" }]\n' + pkg)       # no changes
+        self.load(base + 'mark_files = [{ path = "x.py" }, { path = "etc/a.conf.sample", stage = "build" }]\n' + pkg)
 
     def test_changes_without_a_date_are_refused(self):
         pkg = '[[package]]\nname = "a"\nkind = "files"\n'

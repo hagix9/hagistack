@@ -33,7 +33,9 @@ import json, re, sys
 a = sys.argv[1:]
 fmt, path = a[a.index('--qf') + 1], a[-1]
 meta = json.load(open(path + '.json'))
-if fmt.startswith('['):
+if 'FILEFLAGS' in fmt:
+    sys.stdout.write(''.join(f + '\\t' + fl + '\\n' for f, fl in meta.get('FILEFLAGS', [])))
+elif fmt.startswith('['):
     sys.stdout.write(''.join(line + '\\n' for line in meta.get('CHANGELOGTEXT', [])))
 else:
     sys.stdout.write(re.sub(r'%\\{(\\w+)\\}', lambda m: meta[m.group(1)], fmt))
@@ -56,8 +58,10 @@ def cpio(files):
     return out
 
 
+MARK = rc.MARK.decode()
 NOTICE_SPEC = """Name: x
 %prep
+test -f 'x/marked.py' || { echo 'x/marked.py: the file to mark is missing' >&2; exit 1; }
 cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'
 Changes Hagistack made
 - 100%% done in %%prep
@@ -113,23 +117,42 @@ class Notices(Base):
         self.pkg('repo', 'y-1-1.noarch.rpm', {'./usr/lib/y.py': b''}, NAME='y', SOURCERPM='y-1-1.src.rpm')
 
     def good(self, name='x-1-1.noarch.rpm', notice=NOTICE_TEXT, log=('- Changes to the upstream sources, also in',),
-             licence_file=True, tag='Apache-2.0 AND MIT'):
-        files = {'./usr/lib/x.py': b'', f'./usr/share/doc/{name[:-15]}/HAGISTACK-CHANGES': notice}
+             licence_file=True, tag='Apache-2.0 AND MIT', where=None, doc_flag=False, logname='Hagistack - 1:2.0-3',
+             evr='1:2.0-3.el10', extra=None, marked=True):
+        pkg = name[:-15]
+        where = where or '/usr/share/hagistack/changes/%s/HAGISTACK-CHANGES' % pkg
+        files = {'./usr/lib/x.py': b''}
+        if where != 'none':
+            files['.' + where] = notice
+        if marked:
+            files['./usr/lib/python3.12/site-packages/x/marked.py'] = ('#!/usr/bin/python3\n%s\nx = 1\n' % MARK).encode()
         if licence_file:
-            files[f'./usr/share/licenses/{name[:-15]}/HAGISTACK-LICENSE'] = b'MIT'
-        self.pkg('repo', name, files, NAME=name[:-15], SOURCERPM='x-1-1.src.rpm', CHANGELOGTEXT=list(log),
-                 LICENSE=tag)
+            files['./usr/share/licenses/%s/HAGISTACK-LICENSE' % pkg] = b'MIT'
+        files.update(extra or {})
+        flags = [(f[1:], 'd' if (doc_flag and f.endswith('HAGISTACK-CHANGES')) else '') for f in files]
+        self.pkg('repo', name, files, NAME=pkg, SOURCERPM='x-1-1.src.rpm', CHANGELOGTEXT=list(log),
+                 LICENSE=tag, FILEFLAGS=flags, CHANGELOGNAME=logname, EPOCHNUM=evr.split(':')[0],
+                 VERSION=evr.split(':')[1].rsplit('-', 1)[0], RELEASE=evr.rsplit('-', 1)[1])
 
     def test_every_binary_of_a_changed_source_carries_the_notice(self):
         self.good()
-        self.good('x-sub-1-1.noarch.rpm')
+        self.good('x-sub-1-1.noarch.rpm', marked=False)
         rc.check_notices(self.set)
 
     def test_a_binary_without_the_notice_is_refused(self):
         self.good()
-        self.pkg('repo', 'x-sub-1-1.noarch.rpm', {'./usr/lib/s.py': b''}, NAME='x-sub', SOURCERPM='x-1-1.src.rpm',
-                 CHANGELOGTEXT=['- Changes to the upstream sources'])
-        self.refused(rc.check_notices, self.set, want='installs 0 HAGISTACK-CHANGES')
+        self.good('x-sub-1-1.noarch.rpm', where='none', marked=False)
+        self.refused(rc.check_notices, self.set, want='exactly once')
+
+    def test_the_notice_under_usr_share_doc_or_twice_is_refused(self):
+        self.good(where='/usr/share/doc/x/HAGISTACK-CHANGES')
+        self.refused(rc.check_notices, self.set, want='exactly once')
+        self.good(extra={'./usr/share/doc/x/HAGISTACK-CHANGES': NOTICE_TEXT})
+        self.refused(rc.check_notices, self.set, want='exactly once')
+
+    def test_a_notice_flagged_as_documentation_is_refused(self):
+        self.good(doc_flag=True)
+        self.refused(rc.check_notices, self.set, want='flagged as documentation')
 
     def test_a_notice_that_differs_from_the_spec_is_refused(self):
         self.good(notice=b'something else\n')
@@ -138,6 +161,16 @@ class Notices(Base):
     def test_a_changelog_without_the_changes_is_refused(self):
         self.good(log=('- Hagistack packaging of the upstream release',))
         self.refused(rc.check_notices, self.set, want='changelog')
+
+    def test_a_release_without_its_own_changelog_entry_is_refused(self):
+        self.good(logname='Hagistack - 1:2.0-2')
+        self.refused(rc.check_notices, self.set, want='newest changelog entry is not for 1:2.0-3')
+        self.good(logname='Hagistack - 2.0-3', evr='0:2.0-3.el10')
+        rc.check_notices(self.set)
+
+    def test_a_marked_file_without_the_mark_is_refused(self):
+        self.good(marked=False)
+        self.refused(rc.check_notices, self.set, want='marks x/marked.py')
 
     def test_the_notice_needs_the_mit_text_and_tag(self):
         self.good(licence_file=False)
@@ -153,6 +186,17 @@ class Notices(Base):
     def test_a_set_where_no_source_declares_changes_is_refused(self):
         os.remove(os.path.join(self.set, 'srpms', 'x-1-1.src.rpm'))
         self.refused(rc.check_notices, self.set, want='no source RPM declares changes')
+
+    def test_the_mark_is_the_one_genspec_writes(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('genspec', os.path.join(TOP, 'packaging', 'genspec.py'))
+        try:
+            gs = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gs)
+        except ModuleNotFoundError:          # genspec needs Python 3.11 (tomllib)
+            self.skipTest('genspec needs Python 3.11+')
+        self.assertEqual(rc.MARK.decode(), gs.MARK)
+        self.assertEqual(rc.CHANGES_DIR, '/usr/share/hagistack/changes/')
 
 
 class Branding(Base):

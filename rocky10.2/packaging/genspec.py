@@ -13,7 +13,9 @@ package shares:
     sdist pinned by SHA-256 only (PyPI sdists are not signed);
   * upstream patches from third-party/, pinned by SHA-256;
   * a notice of Hagistack's changes to the upstream sources (changes =
-    [...]): listed in %changelog and installed as HAGISTACK-CHANGES in every
+    [...]): listed in %changelog and installed as HAGISTACK-CHANGES (under
+    /usr/share/hagistack/changes/<package>/, a plain file, so that an install
+    with nodocs keeps it) in every
     binary package of the source package; upstream files replaced by
     Hagistack's own (replace_files, e.g. the dashboard's logo);
   * HTML documentation built with OpenStack's documentation theme gets
@@ -48,7 +50,8 @@ SOURCE_KEYS = {'name', 'origin', 'project', 'version', 'release', 'epoch', 'tarb
                'sha256', 'signing_key', 'license', 'url', 'summary', 'description',
                'buildrequires', 'check', 'doc', 'doc_env', 'locale_domain', 'locale_path',
                'drop_after_install', 'patches', 'extra_licenses', 'prep_extra', 'build_extra',
-               'install_extra', 'license_metadata', 'changes', 'changelog_date', 'replace_files'}
+               'install_extra', 'license_metadata', 'changes', 'changelog_date', 'replace_files',
+               'mark_files'}
 PACKAGE_KEYS = {'name', 'kind', 'summary', 'description', 'requires', 'recommends',
                 'provides', 'obsoletes', 'conflicts', 'modules', 'tests_path', 'bin',
                 'bin_symlinks', 'install', 'dirs', 'symlinks', 'systemd_units', 'sysusers',
@@ -87,6 +90,20 @@ DOC_CHANGE = ("HTML documentation: it is built with OpenStack's documentation th
               "the theme's OpenStack logo images (_static/images/logo-full, logo-vert, openstack-logo-full and "
               "openstack-logo-vert, .svg and .png) and its favicon (_static/favicon.ico) are replaced in the built "
               "HTML with Hagistack's own. The documentation text and the theme's other files are unchanged.")
+
+
+# Where every binary package of a source package with stated changes installs
+# HAGISTACK-CHANGES. Not under /usr/share/doc: rpm marks every file there as
+# documentation (%__docdir_path), and an install with nodocs drops it. The
+# directories are owned by every package that installs a notice.
+CHANGES_ROOT = '%{_datadir}/hagistack'
+CHANGES_DIR = CHANGES_ROOT + '/changes'
+# The comment put into a changed file (mark_files), where its format has '#'
+# comments: after a #! line and a Python coding line, so neither moves.
+MARK = ("# Hagistack: this file is changed from the upstream release; the changes are "
+        "listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.")
+MARK_EXTS = ('.py', '.sh', '.ini', '.conf', '.sample', '.yaml', '.cfg')
+MARK_STAGES = ('prep', 'build')
 
 
 class DefError(Exception):
@@ -143,6 +160,16 @@ def load(path):
     if 'changelog_date' in src:
         need(isinstance(src['changelog_date'], str) and re.fullmatch(CHANGELOG_DATE_RE, src['changelog_date']),
              f'{path}: changelog_date must look like "Fri Nov 13 2026"')
+    for it in src.get('mark_files', []):
+        need(isinstance(it, dict) and set(it) <= {'path', 'stage'} and 'path' in it,
+             f'{path}: mark_files entries are {{ path = "...", stage = "prep"|"build" }}')
+        need(it.get('stage', 'prep') in MARK_STAGES, f'{path}: mark_files stage must be prep or build')
+        mp = it['path']
+        need(isinstance(mp, str) and re.fullmatch(r'[A-Za-z0-9_./-]+', mp) and not mp.startswith('/')
+             and '..' not in mp.split('/'), f'{path}: mark_files path must be a relative path in the source tree')
+        need(mp.endswith(MARK_EXTS), f'{path}: mark_files: {mp} is not a file type with # comments {MARK_EXTS}')
+    if src.get('mark_files'):
+        need(src.get('changes'), f'{path}: mark_files marks changed files: list the changes in changes')
     for it in src.get('replace_files', []):
         need(isinstance(it, dict) and set(it) == REPLACE_KEYS, f'{path}: replace_files entries need exactly src and dest')
         need(it['src'].startswith('file:'), f'{path}: replace_files src must be file:<name>')
@@ -260,10 +287,20 @@ def ships_hagistack_text(src, p):
     return has_hagistack_files(p) or carries_changes(src, p)
 
 
-def relative_docs(p):
-    """rpm copies relative %doc files into the package's doc directory itself;
-    when a package has any, HAGISTACK-CHANGES joins them the same way."""
-    return p['kind'] == 'sphinx-html' or bool(p.get('docs'))
+def mark_lines(src, stage):
+    """Shell lines that put MARK into each file of mark_files for this stage."""
+    out = []
+    for it in src.get('mark_files', []):
+        if it.get('stage', 'prep') != stage:
+            continue
+        f = it['path']
+        out.append(f"test -f '{f}' || {{ echo '{f}: the file to mark is missing' >&2; exit 1; }}")
+        out.append(f"grep -qxF '{MARK}' '{f}' || {{ awk -v m='{MARK}' "
+                   "'!d && !(NR == 1 && /^#!/) && !(NR <= 2 && /^[ \\t\\f]*#.*coding[:=][ \\t]*[-_.a-zA-Z0-9]+/) "
+                   "{ print m; d = 1 } { print } END { if (!d) print m }' "
+                   f"'{f}' > '{f}.hagistack-mark' && cat '{f}.hagistack-mark' > '{f}' && rm -f '{f}.hagistack-mark'; }} || exit 1")
+        out.append(f"grep -qxF '{MARK}' '{f}' || exit 1")
+    return out
 
 
 def rpm_text(s):
@@ -286,6 +323,10 @@ def changes_notice(src):
         'Changes:',
     ]
     lines += [f'- {c}' for c in all_changes(src)]
+    if src.get('mark_files'):
+        lines += ['', 'These files carry a comment line saying that they are changed (the other',
+                  'changed files are binary, generated documentation or not installed):']
+        lines += [f'- {it["path"]}' for it in src['mark_files']]
     if src.get('patches'):
         lines += ['', 'Patches applied (from third-party/ of the Hagistack repository):']
         lines += [f'- Patch{i + 1:04d}: {os.path.basename(it["path"])} (sha256 {it["sha256"]})'
@@ -419,6 +460,7 @@ def generate(src, pkgs):
         # Upstream's file must be there: a moved file must not leave upstream's copy.
         w(f"test -f '{it['dest']}' || exit 1")
         w(f"cp -p '%{{SOURCE{srcidx[it['src'][5:]]}}}' '{it['dest']}'")
+    s.extend(mark_lines(src, 'prep'))
     if all_changes(src):
         w("cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'")
         s.extend(rpm_text(x) for x in changes_notice(src))
@@ -437,6 +479,7 @@ def generate(src, pkgs):
     w('%pyproject_wheel')
     for line in src.get('build_extra', []):
         w(line)
+    s.extend(mark_lines(src, 'build'))
     # Sphinx HTML: for a -doc package, or for a package that lists html in docs.
     for d in html_dirs(src, pkgs):
         env = f'{src["doc_env"]} ' if src.get('doc_env') else ''
@@ -499,8 +542,8 @@ def generate(src, pkgs):
     for line in src.get('install_extra', []):
         w(line)
     for p in pkgs:
-        if carries_changes(src, p) and not relative_docs(p):
-            w(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}%{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES')
+        if carries_changes(src, p):
+            w(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}{CHANGES_DIR}/{p["name"]}/HAGISTACK-CHANGES')
     w('')
     if src.get('check') == 'import':
         w('%check')
@@ -557,16 +600,11 @@ def generate(src, pkgs):
         for doc in p.get('docs', []):
             w(f'%doc {doc}')
         if carries_changes(src, p):
-            if relative_docs(p):
-                w('%doc HAGISTACK-CHANGES')
-            else:
-                ddir = f'%{{_docdir}}/{p["name"]}'
-                owned = any(dd['path'] == ddir for dd in p.get('dirs', [])) or any(
-                    re.fullmatch(r'%dir(\s+%attr\([^)]*\))?\s+' + re.escape(ddir), ln.strip())
-                    for ln in p.get('files', []))
-                if not owned:
-                    w(f'%dir {ddir}')
-                w(f'%doc {ddir}/HAGISTACK-CHANGES')
+            # a plain file (no %doc), so nodocs keeps it; one per package
+            w(f'%dir {CHANGES_ROOT}')
+            w(f'%dir {CHANGES_DIR}')
+            w(f'%dir {CHANGES_DIR}/{p["name"]}')
+            w(f'{CHANGES_DIR}/{p["name"]}/HAGISTACK-CHANGES')
         for b in p.get('bin', []):
             w(f'%{{_bindir}}/{b}')
         for link in p.get('bin_symlinks', {}):

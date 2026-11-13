@@ -16,6 +16,11 @@ changes = [
   "nova/tests/unit/ssl_cert/new_cert.sh (in python3-nova-tests): rpm's build policy (brp-mangle-shebangs) rewrites its shebang #!/usr/bin/env bash to #!/usr/bin/bash.",
   "The configuration and policy samples are generated at build time from upstream's generator configurations; they carry upstream's own placeholders and are checked, not edited.",
 ]
+# Changed files that are installed and have # comments: genspec.py puts a
+# comment line into each (after a #! line), saying that it is changed.
+mark_files = [
+  { path = "nova/tests/unit/ssl_cert/new_cert.sh" },
+]
 epoch = 1
 tarball = "nova-33.0.2.tar.gz"
 sha256 = "84ab864ced8867f2989f3ba65ead61a7e39891ee7ea693850331636ac9d360ea"

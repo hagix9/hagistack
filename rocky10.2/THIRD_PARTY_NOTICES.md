@@ -57,29 +57,47 @@ differs from `LICENSE`.
 ## Changes made to the upstream sources
 
 Hagistack changed the files listed here from the upstream release they come from.
-The notice of these changes is carried in three places:
+The notice of these changes is carried in four places:
 
 - **The spec file of the source RPM.** Each change is there, in its `Patch`
   lines and its `%prep`, `%build` and `%install` sections.
 - **Inside the binary RPMs.** Two groups of source packages carry a list of
   their changes.
-  - **Nine with changes declared in their definitions** (`changes` in
+  - **Eleven with changes declared in their definitions** (`changes` in
     `packaging/defs/`): Neutron, Horizon, qrcode, barbicanclient,
-    keystoneauth1, keystonemiddleware, Keystone, Placement and Nova.
+    keystoneauth1, keystonemiddleware, Keystone, Placement, Nova, openstacksdk
+    and os-ken.
   - **The 47 that build HTML documentation.** `genspec.py` adds one change to
     each of them: the documentation theme's logos are replaced (see below).
 
   From these lists:
   - every binary package built from them installs the list as
-    `/usr/share/doc/<package>/HAGISTACK-CHANGES`;
+    `/usr/share/hagistack/changes/<package>/HAGISTACK-CHANGES`;
   - the `%changelog` of those binary packages repeats it.
-  `make-rpm-release.sh` refuses a release in which one of them lacks the notice,
-  or carries a notice other than the one its spec writes.
+
+  The notice is a plain file, not documentation. rpm marks every file under
+  `/usr/share/doc` as documentation, and an install with
+  `--setopt=tsflags=nodocs` (or `rpm --excludedocs`) leaves such files out; the
+  notice is therefore not put there. `make-rpm-release.sh` refuses a release in
+  which a binary package lacks the notice, carries it twice, carries it flagged
+  as documentation, or carries a notice other than the one its spec writes.
+- **Inside the changed files**, where their format allows. Each changed file that
+  is installed and takes `#` comments (Python and shell sources, the generated
+  configuration samples) gets one comment line saying that it is changed and
+  pointing to `HAGISTACK-CHANGES`. The line goes after a `#!` line and a Python
+  coding line, so neither moves. The definitions list these files
+  (`mark_files`), and the release check refuses a set in which one of them lacks
+  the line. The other changed files carry no line inside them:
+  - Hagistack's images that replace upstream's, and the documentation theme's
+    replaced images, are image files. They are Hagistack's own files, and the
+    SVGs and PNGs say so in a comment or a text chunk.
+  - Built documentation is generated, and the edited `doc/source/conf.py` and
+    `requirements.txt` files are not installed.
+  - Horizon's removed leftover file is not shipped at all.
 - **This file and `third-party/`.**
 
-The changed upstream files themselves carry no notice inside them; Hagistack does
-not edit upstream source text to add one. Whether the notices above meet §4(b) of
-the Apache License 2.0 is a legal judgement that this file does not make.
+Whether the notices above meet §4(b) of the Apache License 2.0 is a legal
+judgement that this file does not make.
 
 The list has four kinds of change:
 - **upstream changes Hagistack backports** (the Neutron patches);
@@ -136,15 +154,11 @@ changes to upstream files; they are new files under the MIT License.
   and its favicon are replaced in the built HTML with Hagistack's own; see
   "Trademarks". The documentation text and the theme's other files are
   unchanged.
-- **Recorded only here.** rpm's shebang rewriting also touches one test helper
-  script each in two packages; whether their notices list it is an Owner
-  decision (stage 6-5-R1).
-  - **openstacksdk:** `openstack/tests/ansible/hooks/post_test_hook.sh`
-    (`#!/bin/sh` becomes `#!/usr/bin/sh`). openstacksdk builds no HTML
-    documentation, so its RPMs carry no `HAGISTACK-CHANGES`.
-  - **os-ken:** `os_ken/tests/mininet/run_mnet-test.sh`, the same rewriting.
-    os-ken's RPMs carry `HAGISTACK-CHANGES` for the documentation logos, and
-    that list does not include this line.
+- **openstacksdk:** `openstack/tests/ansible/hooks/post_test_hook.sh` (in
+  `python3-openstacksdk-tests`) gets its shebang rewritten by rpm (`#!/bin/sh`
+  becomes `#!/usr/bin/sh`).
+- **os-ken:** `os_ken/tests/mininet/run_mnet-test.sh` (in `python3-os-ken`), the
+  same rewriting.
 - **Shebangs, every package.** rpm's build policy (`brp-mangle-shebangs`, part of
   Rocky Linux's `redhat-rpm-config`) rewrites `#!/usr/bin/env python3` and similar
   interpreter lines of executable files to `#!/usr/bin/python3`; in Neutron this
