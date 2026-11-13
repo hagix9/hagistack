@@ -306,7 +306,11 @@ traced from any existing logo.
     `apple-touch-icon.png`, and `safari-pinned-tab.svg` (a one-colour mask).
   - The material theme's `templates/material/openstack-one-color.svg` and
     `-alt.svg`, from `hagistack-material-brand.svg`. That file has no XML
-    declaration, because `_brand.html` includes it inline.
+    declaration and no fixed width or height, because `_brand.html` includes it
+    inline and the theme's CSS sets only its height.
+  - `templates/material/openstack-one-color-alt.svg.old`, an unused leftover
+    holding the OpenStack wordmark, is removed in `%prep` (found by the
+    independent audit).
 - **Sizes**, from upstream's CSS:
   - the header logo is shown 40 px high (`.navbar-brand img`);
   - the splash logo at most 65 % of the login panel (material: 215 px wide);

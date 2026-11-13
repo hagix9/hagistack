@@ -42,7 +42,7 @@ changelog_date = "Fri Nov 13 2026"
 changes = [
   "requirements.txt: the tzdata requirement is removed; the system tzdata package is required instead.",
   "manage.py, installed as /usr/share/openstack-dashboard/manage.py: the shebang becomes #!/usr/bin/python3.",
-  "openstack_dashboard/static/dashboard/img/logo.svg, logo-splash.svg, favicon.ico, apple-touch-icon.png and safari-pinned-tab.svg, and the material theme's templates/material/openstack-one-color.svg and openstack-one-color-alt.svg (its inline header logo), are replaced with Hagistack's own images. Upstream's images, which show the OpenStack logo, are not shipped.",
+  "openstack_dashboard/static/dashboard/img/logo.svg, logo-splash.svg, favicon.ico, apple-touch-icon.png and safari-pinned-tab.svg, and the material theme's templates/material/openstack-one-color.svg and openstack-one-color-alt.svg (its inline header logo), are replaced with Hagistack's own images, and the unused upstream file openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old (the OpenStack wordmark) is removed. Upstream's images, which show the OpenStack logo, are not shipped.",
   "At build time the translation catalogues are compiled (.po to .mo) and the static files are collected; the generated files replace the .po sources.",
   "/etc/openstack-dashboard/local_settings is upstream's openstack_dashboard/local/local_settings.py.example with the changes the packaged layout and the installer need, each marked with a Hagistack: comment; among them the page title and logo text, SITE_BRANDING = Hagistack Dashboard (upstream: OpenStack Dashboard).",
 ]
@@ -110,7 +110,11 @@ install_extra = [
 # The PyPI tzdata package is a fallback for systems without a time zone database;
 # EL has one (the tzdata RPM), which zoneinfo uses. The requirement is dropped and
 # the system package required instead (python3-django-horizon requires tzdata).
-prep_extra = ["sed -i '/^tzdata[>=]/d' requirements.txt"]
+prep_extra = ["sed -i '/^tzdata[>=]/d' requirements.txt",
+  # An unused leftover in the upstream tree: the OpenStack wordmark (Adobe
+  # Illustrator export). It is not referenced by any template; it is removed.
+  "test -f 'openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old' || exit 1",
+  "rm -f 'openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old'"]
 [[package]]
 name = "openstack-dashboard"
 kind = "files"

@@ -27,6 +27,7 @@ saying what is wrong and exits 1. Runs with python3 -I and the standard library.
 import gzip
 import hashlib
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -45,6 +46,7 @@ UPSTREAM_LOGOS = {
     '584819e4da0c9a702dd7918dc64bcecf79fab1564730bcd7e0e9f14c08f58312': 'static/dashboard/img/safari-pinned-tab.svg',
     'fb45a0f208713d6a3cbdf70404b00f75e6c578b8ec22d7429eb69809f06c0960': 'material/openstack-one-color.svg',
     'ee70b89c41e40c9150d17fb7183d47a2c4eed088ff8d6d3a2f4f133d7c86c014': 'material/openstack-one-color-alt.svg',
+    'd48a29e4382947969fcce78bbd3b26aa94360adae0e1967ec97f6040a9755aa2': 'material/openstack-one-color-alt.svg.old',
 }
 # Where openstack-dashboard installs Hagistack's images (the static tree is
 # installed twice: the project's own copy and the collected one).
@@ -293,6 +295,12 @@ def check_notices(set_dir):
         log = rpm_query(path, '[%{CHANGELOGTEXT}\n]')
         if 'Changes to the upstream sources' not in log:
             raise Bad('%s: the changelog does not list the changes to upstream' % n)
+        # The notice is Hagistack's text: the package says MIT and carries the licence.
+        files = [name for name, _ in payload(path)]
+        if not any(f.startswith('/usr/share/licenses/') and f.endswith('/HAGISTACK-LICENSE') for f in files):
+            raise Bad('%s carries HAGISTACK-CHANGES but not HAGISTACK-LICENSE' % n)
+        if 'MIT' not in re.findall(r'[A-Za-z0-9.+-]+', rpm_query(path, '%{LICENSE}')):
+            raise Bad('%s carries HAGISTACK-CHANGES but its License tag does not name MIT' % n)
     if covered != set(notices):
         raise Bad('no binary RPM from %s' % ', '.join(sorted(set(notices) - covered)))
 

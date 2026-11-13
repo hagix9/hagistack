@@ -105,7 +105,9 @@ changes to upstream files; they are new files under the MIT License.
     `static/dashboard/img/logo.svg`, `logo-splash.svg`, `favicon.ico`,
     `apple-touch-icon.png` and `safari-pinned-tab.svg`, and the material theme's
     inline logo (`openstack-one-color.svg` and its unused `-alt` variant). Each
-    is replaced in the source tree before the static files are collected.
+    is replaced in the source tree before the static files are collected. An
+    unused leftover of upstream's, `openstack-one-color-alt.svg.old` (the
+    OpenStack wordmark), is removed.
   - `/etc/openstack-dashboard/local_settings` is upstream's
     `local_settings.py.example` with Hagistack's changes, each marked with a
     "Hagistack:" comment. Among them, the page title is set to

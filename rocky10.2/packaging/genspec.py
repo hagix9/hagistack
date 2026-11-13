@@ -232,7 +232,7 @@ def changes_notice(src):
         f'This package is built from the upstream release {src["tarball"]}, with the',
         'changes listed below. They were made by Hagistack, not by the upstream',
         'project. The upstream copyright and licence notices are kept unchanged.',
-        f'The spec file in the source RPM {src["name"]}-{evr} carries every change',
+        f'The spec file in the source RPM {src["name"]} (version {evr}) carries every change',
         '(its Patch lines and its %prep, %build and %install sections); the release',
         'documents them in THIRD_PARTY_NOTICES.md.',
         '',
@@ -507,7 +507,10 @@ def generate(src, pkgs):
                 w('%doc HAGISTACK-CHANGES')
             else:
                 ddir = f'%{{_docdir}}/{p["name"]}'
-                if f'%dir {ddir}' not in p.get('files', []):
+                owned = any(dd['path'] == ddir for dd in p.get('dirs', [])) or any(
+                    re.fullmatch(r'%dir(\s+%attr\([^)]*\))?\s+' + re.escape(ddir), ln.strip())
+                    for ln in p.get('files', []))
+                if not owned:
                     w(f'%dir {ddir}')
                 w(f'%doc {ddir}/HAGISTACK-CHANGES')
         for b in p.get('bin', []):

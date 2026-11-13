@@ -22,7 +22,8 @@ What was not done:
 | Commit | Change |
 |---|---|
 | `5b5aa51` | branding generator and images; `genspec.py` `replace_files` and `changes`; the six definitions; `release_check.py` notices/branding; `make-rpm-release.sh`; notices; authoring record; `build-own.sh` and `run-all.sh` run the new tests |
-| (next) | harness `download` operation (`hs6.py`, mock, tests, README); this record |
+| `03da6df` | harness `download` operation (`hs6.py`, mock, tests, README); this record (first version) |
+| (this update) | audit fixes H1–H3, M1, M2, L1, L3, L4, L6, L7 |
 
 ## 1. The Hagistack logo
 
@@ -114,7 +115,7 @@ A scan of every RPM of the old set found the OpenStack logo outside Horizon:
   full rebuild, 44 more specs change.
 - **D3. Stop shipping the HTML documentation packages.**
 
-`release_check.py branding` refuses only Horizon's seven images by content. If D2
+`release_check.py branding` refuses only Horizon's eight logo files (seven replaced, one removed) by content. If D2
 is chosen, the docs-theme logos are added to that check.
 
 ## 4. Change notices inside the RPMs (B2)
@@ -146,7 +147,7 @@ is chosen, the docs-theme logos are added to that check.
 | Source | Binaries | Changes declared |
 |---|---|---|
 | openstack-neutron 28.0.2-3 | 15 | the two backported upstream commits (ids, Launchpad bugs, files, why); `psutil` bound; the `metadata.py` shebang; placeholders in generated samples; rpm's shebang rewriting |
-| python-django-horizon 25.7.3-2 | 3 | `tzdata` requirement; the `manage.py` shebang; the seven images replaced; `local_settings` from upstream's example, with `SITE_BRANDING`; compiled catalogues and collected static files |
+| python-django-horizon 25.7.3-2 | 3 | `tzdata` requirement; the `manage.py` shebang; the seven images replaced and the `.svg.old` leftover removed; `local_settings` from upstream's example, with `SITE_BRANDING`; compiled catalogues and collected static files |
 | python3-qrcode 8.2-2 | 1 | `#!/usr/bin/env python` lines removed |
 | python-barbicanclient 7.3.0-2 | 2 | `doc/source/conf.py`, the PDF-only Sphinx extension removed |
 | python-keystoneauth1 5.13.1-2 | 2 | `doc/source/conf.py`, `ext.list_plugins` removed |
@@ -164,7 +165,7 @@ run by `make-rpm-release.sh`). For each source RPM whose spec writes
 - have a changelog that lists the changes.
 
 `release_check.py branding` refuses any RPM that installs a file with the bytes
-of one of Horizon's seven logo images. It also requires Hagistack's images at
+of one of Horizon's eight logo files. It also requires Hagistack's images at
 the 12 places in `openstack-dashboard` where they belong: both static trees,
 and the two material templates.
 
@@ -189,19 +190,21 @@ All of these were run in this stage:
 - `packaging/branding/test_branding.py`: **3** tests, OK. The images are the
   generator's exact output, the SVGs are shapes only, and the ICO/PNG
   structure, sizes and CRCs are correct.
-- `tests/test_release_check.py`: **11** tests, OK, with stub `rpm`/`rpm2cpio`.
+- `tests/test_release_check.py`: **12** tests, OK, with stub `rpm`/`rpm2cpio`
+  (12 after the audit fixes, which also check `HAGISTACK-LICENSE` and the MIT
+  tag).
   - notices passes;
   - refused: a missing notice, a different notice, the changelog, a source
     without binaries, no declared changes;
   - branding passes;
   - refused: an upstream logo anywhere, a missing or wrong image, no dashboard.
-- `acceptance/stage6/test_hs6.py`: **142** tests on Python 3.13, OK, including 4
-  new `download` tests:
+- `acceptance/stage6/test_hs6.py`: **142** tests on Python 3.13 and on 3.9, OK,
+  before the audit fixes; see "Independent audit" for the run after them. They
+  include 4 new `download` tests:
   - kept only when the checksum matches;
   - never overwrites;
   - refuses odd paths and names;
   - needs the operation in the approval.
-- Python 3.9: see "Independent audit" (added when it finished).
 
 **Not run here** (they need `rpm`, `rpmbuild` and an x86_64 builder):
 - `rpmspec` parsing;
@@ -229,7 +232,8 @@ example `h6b2t2`.
 | Project and zone | fixed in the harness (the stage 6 project, `asia-northeast1-a`) |
 | Resources | the run's own VPC, subnet, IAP and internal firewall rules, router and Cloud NAT, and node **n1** (n2-standard-8, pd-standard 100 GB, Rocky Linux 10.2 x86_64). Nothing else is created, and nothing else is touched. |
 | Operations | `init,network,n1,ssh,upload,download,teardown,residual` |
-| Limits | US$8 and 6 hours (the harness maximum). Estimate about US$3.5: n1 about 5 h at US$0.498/h, plus disk, NAT and about 0.5 GiB egress. The full build took 3 h 42 min in stage 5. |
+| Limits | US$8 and 6 hours, the harness maximum: the node has a 6 h maximum run duration and the guard tears down at 6 h. Estimate about US$3.5: n1 about 5 h at US$0.498/h, plus disk, NAT and about 0.5 GiB egress. |
+| Time | **Not well known.** The only reference: in stage 5, the build VM (e2-standard-8, pd-balanced) existed for 3 h 42 min, including everything around the build. n1 is n2-standard-8 with the slower pd-standard. The steps are ordered so that the candidate is downloaded as soon as it exists. If the limit is reached after that, only the acceptance is lost; it can be repeated in a second run that uploads the downloaded set (`--rpm-source bundle`) instead of rebuilding. |
 
 Steps on n1, all through `hs6.py ssh`/`upload`/`download`:
 
@@ -239,10 +243,11 @@ Steps on n1, all through `hs6.py ssh`/`upload`/`download`:
    unchanged definitions are rebuilt too: builds are not bit-reproducible, so
    the set must come from one build of the current definitions.
 3. Run `make-rpm-release.sh` on the new set, on Rocky Linux 10.2 x86_64, with
-   the release tag: the stage 6-4 checks plus `notices` and `branding`.
-   - A second run must be byte-identical.
-   - Deliberately broken copies must be refused.
-4. Run `all-in-one` with the new set (`--rpm-source build` reuses it), then
+   the release tag: the stage 6-4 checks plus `notices` and `branding`. A
+   second run must be byte-identical.
+4. **`download`** the candidate, and the set directory as one tar, verified by
+   SHA-256, straight away.
+5. Run `all-in-one` with the new set (`--rpm-source build` reuses it), then
    check:
    - Keystone, Nova, Neutron, Glance and Placement;
    - a guest ACTIVE, with SSH and metadata;
@@ -251,8 +256,8 @@ Steps on n1, all through `hs6.py ssh`/`upload`/`download`:
      to Hagistack's;
    - no request in the page to another host;
    - a re-run is clean.
-5. `download` the candidate as one tar (verified by SHA-256), then teardown and
-   residual.
+6. Deliberately broken copies of the set are refused by `make-rpm-release.sh`.
+7. Download the evidence, then teardown and residual.
 
 The set ID and SHA-256 values are recorded once the run has produced them. Old
 and new sets are told apart by set identity, release numbers, and directory
@@ -268,7 +273,72 @@ names.
 
 ## Independent audit
 
-(below)
+**Audit** (separate agent, of `5b5aa51`/`03da6df`). It regenerated the 69 specs
+(63 identical), ran the tests, and compared the old set's payloads, the Horizon
+source and the Neutron and qrcode sources. Verdict **CONDITIONAL GO**; removal
+of the OpenStack logo from Horizon was **NO-GO**.
+
+**HIGH:**
+- **H1.** `openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old`,
+  an unused leftover holding the OpenStack wordmark, is in the upstream tree and
+  in the old `openstack-dashboard`. Neither `replace_files` nor `UPSTREAM_LOGOS`
+  covered it, so the claim "all replaced" was wrong.
+- **H2.** `test_branding.py` compared the PNG/ICO bytes. EL10's zlib-ng may
+  deflate differently, which would stop `build-own.sh` at its start
+  (fail-closed). Not verified.
+- **H3.** The time basis of the GCE plan was weak, and the download came last,
+  so artifacts could be lost at the 6 h limit.
+
+**MEDIUM:**
+- **M1.** The material theme's inline SVG had a fixed width of 712 px, which would
+  break its navbar.
+- **M2.** `local_settings` is `%config(noreplace)` and the installer edits it, so
+  an upgrade would keep the old title.
+
+**LOW:**
+- **L1.** A duplicate `%dir` for `openstack-neutron-ml2`.
+- **L2.** `%doc` files are skipped with `nodocs`.
+- **L3.** `notices` did not check `HAGISTACK-LICENSE` or the MIT tag.
+- **L4.** The notice wrote the SRPM as `name-epoch:version`.
+- **L5.** Keystone, Placement and Nova make the same kinds of build-time changes
+  (sample placeholders, shebang rewriting) but are outside B2.
+- **L6.** In `download`: a race between check and `replace`, a linked or
+  wrong-mode `downloads/`, and the whole file read into memory.
+- **L7.** The evidence `spec-after` was stale.
+
+**Fixes** (this update):
+- **H1.**
+  - The leftover is removed in `%prep`, after a `test -f`, and declared in
+    `changes`.
+  - Its sha256 `d48a29e4…55aa2` is added to `UPSTREAM_LOGOS`.
+  - A content search of the whole Horizon tree found no other OpenStack-logo
+    file. The remaining SVGs are network-topology icons and UI widgets.
+- **H2.** The bitmaps are compared by their chunks with `IDAT` decoded. The
+  SVGs are still compared byte for byte.
+- **H3.**
+  - The plan downloads the candidate right after `make-rpm-release.sh`, before
+    the install.
+  - The time basis is stated as it is.
+  - A second run with `--rpm-source bundle` is the fallback.
+- **M1.** The inline SVG has no width or height, and a test enforces it.
+- **M2.** The installer's managed block also sets `SITE_BRANDING`.
+- **L1.** Directory ownership is recognised in `dirs` and in `%dir %attr(…)`
+  lines, and a test counts the owners.
+- **L3.** `notices` requires `HAGISTACK-LICENSE` and an MIT tag in each binary
+  that carries the notice; 2 new refusal tests.
+- **L4.** The notice says "source RPM <name> (version <evr>)".
+- **L6.**
+  - The download is kept with `os.link`, which never overwrites.
+  - `downloads/` must be a real directory of the user, mode 0700.
+  - The hash is streamed.
+  - A test covers a linked `downloads/`.
+- **L7.** `spec-after` is regenerated.
+- **Unchanged:**
+  - L2 is material for the §4(b) decision.
+  - L5 is outside the B2 scope, and is an Owner decision if the notices should
+    cover every source package.
+
+**Re-audit:** (below)
 
 ## Owner decisions
 
@@ -281,3 +351,5 @@ names.
    the logo should get its own licence or trademark terms.
 5. The incident with `rocky10.2/packaging/__pycache__/` (section 5): nothing to
    restore is known; the Owner may want to look at it.
+6. Whether the change notices should also cover the build-time changes of the
+   other source packages (Keystone, Placement, Nova; audit L5).

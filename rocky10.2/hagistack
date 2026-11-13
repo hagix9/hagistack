@@ -2905,6 +2905,9 @@ LOGIN_URL = WEBROOT + 'auth/login/'
 LOGOUT_URL = WEBROOT + 'auth/logout/'
 LOGIN_REDIRECT_URL = WEBROOT
 ALLOWED_HOSTS = ['*']
+# The packaged dashboard shows Hagistack's logo; the title matches it. Also set
+# here because an upgraded local_settings (config, noreplace) keeps its old text.
+SITE_BRANDING = 'Hagistack Dashboard'
 
 OPENSTACK_HOST = "${MGMT_IP}"
 OPENSTACK_KEYSTONE_URL = "http://${MGMT_IP}:${KEYSTONE_PORT}/v3"

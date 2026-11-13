@@ -732,6 +732,19 @@ class Download(Base):
         with open(os.path.join(self.sdir, "downloads", "out.tar")) as f:
             self.assertEqual(f.read(), "payload")
 
+    def test_download_refuses_a_linked_downloads_directory(self):
+        self.up("n1")
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, os.path.join(self.sdir, "downloads"))
+        want = hashlib.sha256(b"payload").hexdigest()
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "payload"},
+                                         remote_sha={"/root/out.tar": want}))
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not a directory of this user", out)
+        self.assertEqual(os.listdir(elsewhere), [])
+
     def test_download_refuses_odd_paths_and_names(self):
         self.up("n1")
         for remote, name in (("relative/x", "x"), ("/root/../etc/x", "x"), ("/root/x;rm", "x"),

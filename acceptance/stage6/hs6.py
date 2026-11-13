@@ -1507,7 +1507,12 @@ class Run:
         logdir = os.path.join(self.state_dir, "remote")
         os.makedirs(logdir, exist_ok=True)
         if op == "download":
-            os.makedirs(os.path.dirname(final_file), mode=0o700, exist_ok=True)
+            ddir = os.path.dirname(final_file)
+            os.makedirs(ddir, mode=0o700, exist_ok=True)
+            st = os.lstat(ddir)
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+                raise Stop("download: %s is not a directory of this user (a link?)" % ddir)
+            os.chmod(ddir, 0o700)
         stamp = "%s-%s-%s" % (iso(now()).replace(":", ""), part, op)
         rc, out, err = 0, "", ""
         status = EXIT_REMOTE
@@ -1543,14 +1548,21 @@ class Run:
             if op == "download":
                 verified = False
                 if rc == 0 and stopped is None and os.path.isfile(part_file) and not os.path.islink(part_file):
+                    h = hashlib.sha256()
                     with open(part_file, "rb") as f:
-                        got_local = hashlib.sha256(f.read()).hexdigest()
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            h.update(chunk)
+                    got_local = h.hexdigest()
                     rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
                                                 "--command=sha256sum " + shlex.quote(cmd_args[0])], name, timeout)
                     got = out2.split()
                     if rc2 == 0 and got and got[0] == got_local:
-                        os.replace(part_file, final_file)
-                        verified = True
+                        try:
+                            os.link(part_file, final_file)     # fails if NAME appeared meanwhile
+                        except FileExistsError:
+                            err += "\n%s appeared during the transfer: not overwritten" % final_file
+                        else:
+                            verified = True
                         out += "download verified: %s %s -> downloads/%s\n" % (got_local, cmd_args[0], cmd_args[1])
                     else:
                         err += "\nSHA-256 check failed after the transfer (%s): %s" % (rc2, err2.strip())

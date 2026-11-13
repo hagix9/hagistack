@@ -111,9 +111,13 @@ class Notices(Base):
         self.pkg('srpms', 'y-1-1.src.rpm', {'y.spec': b'Name: y\n'})
         self.pkg('repo', 'y-1-1.noarch.rpm', {'./usr/lib/y.py': b''}, NAME='y', SOURCERPM='y-1-1.src.rpm')
 
-    def good(self, name='x-1-1.noarch.rpm', notice=NOTICE_TEXT, log=('- Changes to the upstream sources, also in',)):
-        self.pkg('repo', name, {'./usr/lib/x.py': b'', f'./usr/share/doc/{name[:-15]}/HAGISTACK-CHANGES': notice},
-                 NAME=name[:-15], SOURCERPM='x-1-1.src.rpm', CHANGELOGTEXT=list(log))
+    def good(self, name='x-1-1.noarch.rpm', notice=NOTICE_TEXT, log=('- Changes to the upstream sources, also in',),
+             licence_file=True, tag='Apache-2.0 AND MIT'):
+        files = {'./usr/lib/x.py': b'', f'./usr/share/doc/{name[:-15]}/HAGISTACK-CHANGES': notice}
+        if licence_file:
+            files[f'./usr/share/licenses/{name[:-15]}/HAGISTACK-LICENSE'] = b'MIT'
+        self.pkg('repo', name, files, NAME=name[:-15], SOURCERPM='x-1-1.src.rpm', CHANGELOGTEXT=list(log),
+                 LICENSE=tag)
 
     def test_every_binary_of_a_changed_source_carries_the_notice(self):
         self.good()
@@ -133,6 +137,14 @@ class Notices(Base):
     def test_a_changelog_without_the_changes_is_refused(self):
         self.good(log=('- Hagistack packaging of the upstream release',))
         self.refused(rc.check_notices, self.set, want='changelog')
+
+    def test_the_notice_needs_the_mit_text_and_tag(self):
+        self.good(licence_file=False)
+        self.refused(rc.check_notices, self.set, want='not HAGISTACK-LICENSE')
+        self.good(tag='Apache-2.0')
+        self.refused(rc.check_notices, self.set, want='does not name MIT')
+        self.good(tag='Apache-2.0 AND MIT-0')
+        self.refused(rc.check_notices, self.set, want='does not name MIT')
 
     def test_a_changed_source_without_binaries_is_refused(self):
         self.refused(rc.check_notices, self.set, want='no binary RPM from x-1-1.src.rpm')

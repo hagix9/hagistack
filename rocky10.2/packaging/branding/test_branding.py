@@ -48,14 +48,39 @@ def png_chunks(data):
     return out
 
 
+def png_content(data):
+    """Every chunk with IDAT decoded: what the image is, whatever zlib wrote."""
+    out = []
+    for t, body in png_chunks(data):
+        out.append((t, zlib.decompress(body) if t == b'IDAT' else body))
+    return out
+
+
+def bitmap_content(data):
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return png_content(data)
+    count, = struct.unpack('<H', data[4:6])
+    out = []
+    for k in range(count):
+        w, h, c, r, planes, bpp, size, off = struct.unpack('<BBBBHHII', data[6 + 16 * k:22 + 16 * k])
+        out.append(((w, h, c, r, planes, bpp), png_content(data[off:off + size])))
+    return out
+
+
 class Branding(unittest.TestCase):
     def test_committed_images_are_the_generator_output(self):
+        # SVGs byte for byte. Bitmaps by content: the deflate stream may differ
+        # between zlib builds (EL10 uses zlib-ng), the decoded pixels may not.
         gen = load_generator()
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(gen.main(['make-branding.py', d]), 0)
             for n in NAMES:
                 with self.subTest(n=n), open(os.path.join(d, n), 'rb') as a, open(os.path.join(FILES, n), 'rb') as b:
-                    self.assertEqual(a.read(), b.read(), 'regenerate with make-branding.py')
+                    new, old = a.read(), b.read()
+                    if n.endswith('.svg'):
+                        self.assertEqual(new, old, 'regenerate with make-branding.py')
+                    else:
+                        self.assertEqual(bitmap_content(new), bitmap_content(old), 'regenerate with make-branding.py')
 
     def test_svgs_hold_only_shapes(self):
         for n in SVGS:
@@ -79,6 +104,8 @@ class Branding(unittest.TestCase):
         # included inline in HTML by the material theme: no XML declaration
         inline = open(os.path.join(FILES, 'hagistack-material-brand.svg')).read()
         self.assertTrue(inline.startswith('<svg '))
+        # and no fixed size: the theme's CSS sets the height (M1 of the audit)
+        self.assertNotRegex(inline.split('>', 1)[0], r'\s(width|height)=')
 
     def test_bitmaps_are_well_formed(self):
         ico = open(os.path.join(FILES, 'hagistack-favicon.ico'), 'rb').read()

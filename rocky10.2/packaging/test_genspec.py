@@ -209,7 +209,9 @@ class ChangesNotice(unittest.TestCase):
                         else:
                             self.assertIn(f'%doc %{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', sect)
                             self.assertIn(f'install -p -D -m 0644 HAGISTACK-CHANGES %{{buildroot}}%{{_docdir}}/{p["name"]}/HAGISTACK-CHANGES', spec)
-                            self.assertEqual(sect.count(f'%dir %{{_docdir}}/{p["name"]}\n'), 1)
+                            ddir = f'%{{_docdir}}/{p["name"]}'
+                            owners = [ln for ln in sect.splitlines() if ln.startswith('%dir') and ln.endswith(' ' + ddir)]
+                            self.assertEqual(len(owners), 1, owners)
                         self.assertIn('MIT', genspec.pkg_license(src, p))
 
     def test_percent_is_escaped(self):
