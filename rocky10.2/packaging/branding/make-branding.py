@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """make-branding.py — Hagistack's dashboard images, generated from geometry.
 
-    python3 -I make-branding.py OUTDIR
+    python3 -I make-branding.py OUTDIR [DOCSDIR]
 
 Writes the four images Horizon shows in place of upstream's (see
 ../defs/python-django-horizon.toml, replace_files):
@@ -14,6 +14,15 @@ Writes the four images Horizon shows in place of upstream's (see
     hagistack-material-brand.svg     header brand of the material theme, which
                                      includes the SVG inline in its HTML, so it
                                      has no XML declaration or comment
+
+and, with DOCSDIR, the images that replace OpenStack's documentation theme logos
+in the HTML documentation (genspec.py, DOC_BRANDING):
+
+    hagistack-doc-logo-full.svg   header logo (the theme shows it at 135 x 35)
+    hagistack-doc-logo-vert.svg   stacked logo (the theme's CSS uses it)
+    hagistack-doc-logo-full.png   135 x 35, the mark (the theme's PNG fallbacks)
+    hagistack-doc-logo-vert.png   59 x 54, the mark
+    hagistack-doc-favicon.ico     16, 32 and 48 px
 
 Everything is drawn from the shapes below: no font, no external file, no
 script, no embedded bitmap in the SVGs. The output is byte-for-byte the same on
@@ -167,12 +176,37 @@ def raster(size, inset, background=None, ss=4):
     return rows
 
 
-def png(rows, size):
+def raster_box(width, height, side, x0, y0, ss=4):
+    """RGBA rows of a width x height transparent canvas with the mark drawn in the
+    side x side square at (x0, y0)."""
+    scale = side / 100.0
+    rows = []
+    for j in range(height):
+        row = bytearray()
+        for i in range(width):
+            acc = [0.0, 0.0, 0.0, 0.0]
+            for sj in range(ss):
+                for si in range(ss):
+                    gx = ((i + (si + 0.5) / ss) - x0) / scale
+                    gy = ((j + (sj + 0.5) / ss) - y0) / scale
+                    for (x, y, w, h, r, c) in MARK:
+                        if _inside_rrect(gx, gy, x, y, w, h, r):
+                            col = BLUE_RGB if c == 'blue' else AMBER_RGB
+                            acc[0] += col[0]; acc[1] += col[1]; acc[2] += col[2]; acc[3] += 255
+                            break
+            a = acc[3] / (ss * ss)
+            rgb = [round(acc[k] / (acc[3] / 255)) for k in range(3)] if a else [0, 0, 0]
+            row += bytes(rgb + [round(a)])
+        rows.append(bytes(row))
+    return rows
+
+
+def png(rows, size, height=None):
     def chunk(t, data):
         return struct.pack('>I', len(data)) + t + data + struct.pack('>I', zlib.crc32(t + data) & 0xffffffff)
     raw = b''.join(b'\x00' + r for r in rows)
     return (b'\x89PNG\r\n\x1a\n'
-            + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0))
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size if height is None else height, 8, 6, 0, 0, 0))
             + chunk(b'tEXt', b'Software\x00Hagistack make-branding.py (MIT License)')
             + chunk(b'IDAT', zlib.compress(raw, 9))
             + chunk(b'IEND', b''))
@@ -189,11 +223,25 @@ def ico(sizes):
     return head + entries + b''.join(images)
 
 
+def doc_files():
+    return {
+        'hagistack-doc-logo-full.svg': logo_svg().encode(),
+        'hagistack-doc-logo-vert.svg': splash_svg().encode(),
+        'hagistack-doc-logo-full.png': png(raster_box(135, 35, 31, 2, 2), 135, 35),
+        'hagistack-doc-logo-vert.png': png(raster_box(59, 54, 50, 4.5, 2), 59, 54),
+        'hagistack-doc-favicon.ico': ico([16, 32, 48]),
+    }
+
+
 def main(argv):
-    if len(argv) != 2:
+    if len(argv) not in (2, 3):
         print(__doc__.splitlines()[2].strip())
         return 2
     out = argv[1]
+    if len(argv) == 3:
+        for name, data in doc_files().items():
+            with open(os.path.join(argv[2], name), 'wb') as f:
+                f.write(data)
     files = {
         'hagistack-logo.svg': logo_svg().encode(),
         'hagistack-logo-splash.svg': splash_svg().encode(),

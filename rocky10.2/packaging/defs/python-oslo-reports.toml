@@ -4,7 +4,9 @@
 name = "python-oslo-reports"
 project = "oslo.reports"
 version = "3.7.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_reports-3.7.0.tar.gz"
 sha256 = "30852972459594671686f232ad67e8fe63e2f2542e34e37a69731d542040e343"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

@@ -20,6 +20,9 @@ FILES = os.path.join(HERE, '..', 'files', 'python-django-horizon')
 SVGS = ('hagistack-logo.svg', 'hagistack-logo-splash.svg', 'hagistack-safari-pinned-tab.svg',
         'hagistack-material-brand.svg')
 NAMES = SVGS + ('hagistack-favicon.ico', 'hagistack-apple-touch-icon.png')
+DOCS = os.path.join(HERE, '..', 'files', '_docs-branding')
+DOC_NAMES = ('hagistack-doc-logo-full.svg', 'hagistack-doc-logo-vert.svg', 'hagistack-doc-logo-full.png',
+             'hagistack-doc-logo-vert.png', 'hagistack-doc-favicon.ico')
 SVG_NS = '{http://www.w3.org/2000/svg}'
 ALLOWED_TAGS = {'svg', 'title', 'g', 'rect', 'path', 'circle'}
 ALLOWED_ATTRS = {'xmlns', 'viewBox', 'width', 'height', 'role', 'aria-label', 'x', 'y', 'rx',
@@ -68,6 +71,35 @@ def bitmap_content(data):
 
 
 class Branding(unittest.TestCase):
+    def test_committed_doc_images_are_the_generator_output(self):
+        gen = load_generator()
+        with tempfile.TemporaryDirectory() as h, tempfile.TemporaryDirectory() as d:
+            self.assertEqual(gen.main(['make-branding.py', h, d]), 0)
+            self.assertEqual(sorted(os.listdir(d)), sorted(DOC_NAMES))
+            for n in DOC_NAMES:
+                with self.subTest(n=n), open(os.path.join(d, n), 'rb') as a, open(os.path.join(DOCS, n), 'rb') as b:
+                    new, old = a.read(), b.read()
+                    if n.endswith('.svg'):
+                        self.assertEqual(new, old, 'regenerate with make-branding.py')
+                    else:
+                        self.assertEqual(bitmap_content(new), bitmap_content(old), 'regenerate with make-branding.py')
+
+    def test_doc_svgs_hold_only_shapes_and_doc_pngs_have_the_theme_sizes(self):
+        for n in DOC_NAMES:
+            path = os.path.join(DOCS, n)
+            raw = open(path, 'rb').read()
+            with self.subTest(n=n):
+                if n.endswith('.svg'):
+                    text = raw.decode('utf-8')
+                    self.assertNotRegex(text.lower(), r'<script|javascript:|<image|<foreignobject|<use|<style|'
+                                        r'href|url\(|@import|<!entity|<!doctype|\bon[a-z]+\s*=')
+                    self.assertEqual(re.findall(r'https?://[^"\s]+', text), ['http://www.w3.org/2000/svg'])
+                    for el in ET.fromstring(raw).iter():
+                        self.assertIn(el.tag.replace(SVG_NS, ''), ALLOWED_TAGS)
+                elif n.endswith('.png'):
+                    want = (135, 35) if 'full' in n else (59, 54)
+                    self.assertEqual(struct.unpack('>II', png_chunks(raw)[0][1][:8]), want)
+
     def test_committed_images_are_the_generator_output(self):
         # SVGs byte for byte. Bitmaps by content: the deflate stream may differ
         # between zlib builds (EL10 uses zlib-ng), the decoded pixels may not.

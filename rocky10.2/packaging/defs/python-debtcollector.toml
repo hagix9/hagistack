@@ -4,7 +4,9 @@
 name = "python-debtcollector"
 project = "debtcollector"
 version = "3.0.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "debtcollector-3.0.0.tar.gz"
 sha256 = "2a8917d25b0e1f1d0d365d3c1c6ecfc7a522b1e9716e8a1a4a915126f7ccea6f"
 signing_key = "0x2ef3fe0ec2b075ab7458b5f8b702b20b13df2318"

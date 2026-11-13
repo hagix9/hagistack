@@ -4,7 +4,9 @@
 name = "python-microversion-parse"
 project = "microversion-parse"
 version = "2.1.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "microversion_parse-2.1.0.tar.gz"
 sha256 = "57367847ecc6a4328258c88d63681f3cc91b6021d3ec284a351fb78e87d057ea"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

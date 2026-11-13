@@ -4,7 +4,9 @@
 name = "python-cinderclient"
 project = "python-cinderclient"
 version = "9.9.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "python_cinderclient-9.9.0.tar.gz"
 sha256 = "697e4d12c249f39b41ecf4fa6fcb8c38cbf2d6b2d84d6f515ed567b82dcd0bd1"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

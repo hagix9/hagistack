@@ -4,7 +4,9 @@
 name = "python-oslo-privsep"
 project = "oslo.privsep"
 version = "3.10.1"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_privsep-3.10.1.tar.gz"
 sha256 = "7340b76130654d4602caefd0173622062a3a3bf436be8d3cd88281af16c19c80"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

@@ -4,7 +4,9 @@
 name = "python-glanceclient"
 project = "python-glanceclient"
 version = "4.11.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 epoch = 1
 tarball = "python_glanceclient-4.11.0.tar.gz"
 sha256 = "5ce2118bfe7462934805916617e537bc5b00fd4cab3fb7bb88a4f9253970562d"

@@ -9,7 +9,14 @@
 name = "openstack-placement"
 project = "placement"
 version = "15.0.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
+# Hagistack's changes to files built from the upstream tree (written into
+# %changelog and HAGISTACK-CHANGES by genspec.py).
+changes = [
+  "etc/placement/placement.conf.sample and etc/placement/policy.yaml.sample, installed in /etc/placement, are generated at build time from upstream's generator configurations; option values that would name the build machine are replaced with placeholders (<current_hostname>, <host_ipv4>).",
+]
 tarball = "openstack_placement-15.0.0.tar.gz"
 sha256 = "b4825e2a37eef18d92a96aef089438327bce5e4580716a8478f0c1864b188800"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

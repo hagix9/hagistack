@@ -4,7 +4,9 @@
 name = "python-oslo-cache"
 project = "oslo.cache"
 version = "4.1.1"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_cache-4.1.1.tar.gz"
 sha256 = "1c19a605fe3c7f7c7608843f28c6b529c782cc3597f867ead14749f439b4f939"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

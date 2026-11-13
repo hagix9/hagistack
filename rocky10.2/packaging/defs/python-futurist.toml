@@ -4,7 +4,9 @@
 name = "python-futurist"
 project = "futurist"
 version = "3.2.1"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "futurist-3.2.1.tar.gz"
 sha256 = "01dd4f30acdfbb2e2eb6091da565eded82d8cbaf6c48a36cc7f73c11cfa7fb3f"
 signing_key = "0xc71b007ef97887fd8fb6365ceb4fd6d618e62181"

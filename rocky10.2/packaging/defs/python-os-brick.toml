@@ -4,7 +4,9 @@
 name = "python-os-brick"
 project = "os-brick"
 version = "7.0.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "os_brick-7.0.0.tar.gz"
 sha256 = "3a28dc05c418f992e72538886136107c67b80051a5840144cd7f73d50b9ec05a"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

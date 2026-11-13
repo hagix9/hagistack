@@ -4,7 +4,9 @@
 name = "python-oslo-messaging"
 project = "oslo.messaging"
 version = "17.3.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_messaging-17.3.0.tar.gz"
 sha256 = "7381a08f31091f28b82cb93c0a04ed5bb2a4487dab1b873d1fe6ad6553948777"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

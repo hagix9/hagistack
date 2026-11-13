@@ -94,6 +94,8 @@ stage() {
     if [ -d "$HERE/files/$name" ]; then
         find "$HERE/files/$name" -maxdepth 1 -type f ! -name AUTHORING.md -exec cp -p {} "$SRCDIR/" \;
     fi
+    # Hagistack's logos for HTML documentation (genspec.py DOC_BRANDING), shared.
+    find "$HERE/files/_docs-branding" -maxdepth 1 -type f -name 'hagistack-doc-*' -exec cp -p {} "$SRCDIR/" \;
     python3 -I "$HERE/genspec.py" "$def" -o "$RPMTOP/SPECS/$name.spec" || die "$name: spec generation failed"
 }
 

@@ -61,11 +61,16 @@ The notice of these changes is carried in three places:
 
 - **The spec file of the source RPM.** Each change is there, in its `Patch`
   lines and its `%prep`, `%build` and `%install` sections.
-- **Inside the binary RPMs.** The six source packages with Hagistack edits are
-  Neutron, Horizon, qrcode, barbicanclient, keystoneauth1 and
-  keystonemiddleware. Their definitions list the edits (`changes` in
-  `packaging/defs/`). From these lists:
-  - every binary package built from those six installs the list as
+- **Inside the binary RPMs.** Two groups of source packages carry a list of
+  their changes.
+  - **Nine with changes declared in their definitions** (`changes` in
+    `packaging/defs/`): Neutron, Horizon, qrcode, barbicanclient,
+    keystoneauth1, keystonemiddleware, Keystone, Placement and Nova.
+  - **The 47 that build HTML documentation.** `genspec.py` adds one change to
+    each of them: the documentation theme's logos are replaced (see below).
+
+  From these lists:
+  - every binary package built from them installs the list as
     `/usr/share/doc/<package>/HAGISTACK-CHANGES`;
   - the `%changelog` of those binary packages repeats it.
   `make-rpm-release.sh` refuses a release in which one of them lacks the notice,
@@ -119,7 +124,25 @@ changes to upstream files; they are new files under the MIT License.
   extensions so that the documentation builds.
 - **Configuration samples** that Keystone, Neutron and Placement generate at
   build time from their upstream sources: option values that would name the
-  build machine are replaced with placeholders.
+  build machine are replaced with placeholders. Nova's generated samples carry
+  upstream's own placeholders and are only checked.
+- **Keystone:** `tools/sample_data.sh` (installed as
+  `/usr/share/keystone/sample_data.sh`) gets its shebang rewritten by rpm
+  (`#!/usr/bin/env bash` becomes `#!/usr/bin/bash`).
+- **Nova:** `nova/tests/unit/ssl_cert/new_cert.sh` (in `python3-nova-tests`) gets
+  the same rewriting.
+- **HTML documentation (47 source packages).** It is built with OpenStack's
+  documentation theme, `openstackdocstheme`. The theme's OpenStack logo images
+  and its favicon are replaced in the built HTML with Hagistack's own; see
+  "Trademarks". The documentation text and the theme's other files are
+  unchanged.
+- **Recorded only.** rpm's shebang rewriting also touches one test helper script
+  each in openstacksdk (`openstack/tests/ansible/hooks/post_test_hook.sh`,
+  `#!/bin/sh` becomes `#!/usr/bin/sh`) and os-ken
+  (`os_ken/tests/mininet/run_mnet-test.sh`, the same rewriting). It is recorded
+  here. Those two packages' binary RPMs carry no `HAGISTACK-CHANGES` for it,
+  because their HTML documentation notice does not cover it (an Owner decision,
+  stage 6-5-R1).
 - **Shebangs, every package.** rpm's build policy (`brp-mangle-shebangs`, part of
   Rocky Linux's `redhat-rpm-config`) rewrites `#!/usr/bin/env python3` and similar
   interpreter lines of executable files to `#!/usr/bin/python3`; in Neutron this
@@ -201,13 +224,24 @@ geometry by `packaging/branding/make-branding.py`, and are under the MIT
 License. That licence covers copyright; it is not a trademark licence for the
 Hagistack name or logo.
 
-Some marks are still in the packaged files exactly as upstream ships them:
+**The HTML documentation shows Hagistack's logo too.** The 46 `*-doc` packages
+and `python3-os-brick`, which carries its HTML documentation, are built with
+OpenStack's documentation theme, `openstackdocstheme`.
+- After the HTML is built, the theme's OpenStack logo images
+  (`_static/images/logo-full`, `logo-vert`, `openstack-logo-full` and
+  `openstack-logo-vert`, as `.svg` and `.png`) and its favicon
+  (`_static/favicon.ico`) are replaced with Hagistack's.
+- The build stops if any file in the HTML tree whose name says "logo", or any
+  `.ico`, is not one of Hagistack's.
+- `make-rpm-release.sh` refuses a release in which any RPM carries one of the
+  theme's logo images, or a documentation tree lacks Hagistack's.
 
-- **The documentation packages** (`*-doc`, and `python3-os-brick`, which
-  carries its HTML documentation) are built with OpenStack's documentation
-  theme, `openstackdocstheme`. Their `_static/images/` hold that theme's
-  OpenStack logos (`openstack-logo-full.svg` and similar), and their
-  `_static/favicon.ico` is the theme's favicon.
+The rest of the theme stays as upstream ships it:
+- **The page header still links to `https://www.openstack.org/`**, and the
+  header menus and the footer link to the sites and social-network accounts of
+  OpenStack and of the OpenInfra Foundation. The footer has the networks' icons
+  (Facebook, LinkedIn, Twitter, YouTube).
+  These are the upstream project's documentation pages and say what they are.
 - **`python3-XStatic-Font-Awesome`** contains the Font Awesome brand icons
   (`brands.*`, `fa-brands-400.*`), which show the logos of other companies.
 

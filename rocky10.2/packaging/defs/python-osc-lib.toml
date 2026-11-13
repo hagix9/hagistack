@@ -4,7 +4,9 @@
 name = "python-osc-lib"
 project = "osc-lib"
 version = "4.4.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "osc_lib-4.4.0.tar.gz"
 sha256 = "6a615d744f03fba513d92eb4760a9cd5baa96e3d8530611fe53b217062bf317e"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

@@ -4,7 +4,9 @@
 name = "python-oslo-concurrency"
 project = "oslo.concurrency"
 version = "7.4.1"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_concurrency-7.4.1.tar.gz"
 sha256 = "a8042e5797ac4c7fef9936461f7b43d0f99a23ff74a9cada9f1b30f81badfa1b"
 signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"

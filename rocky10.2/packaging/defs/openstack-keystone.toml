@@ -9,7 +9,15 @@
 name = "openstack-keystone"
 project = "keystone"
 version = "29.1.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
+# Hagistack's changes to files built from the upstream tree (written into
+# %changelog and HAGISTACK-CHANGES by genspec.py).
+changes = [
+  "etc/keystone.conf.sample, installed as /etc/keystone/keystone.conf, is generated at build time from upstream's generator configuration; option values that would name the build machine are replaced with placeholders (<current_hostname>, <host_ipv4>).",
+  "tools/sample_data.sh, installed as /usr/share/keystone/sample_data.sh: rpm's build policy (brp-mangle-shebangs) rewrites its shebang #!/usr/bin/env bash to #!/usr/bin/bash.",
+]
 epoch = 1
 tarball = "keystone-29.1.0.tar.gz"
 sha256 = "9090a34976c48b518dec21d73260d3af76029c05bd40bfe2cb097dfd7d343bc1"

@@ -4,7 +4,9 @@
 name = "python-oslo-rootwrap"
 project = "oslo.rootwrap"
 version = "7.9.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_rootwrap-7.9.0.tar.gz"
 sha256 = "6b8f65a144f82c4c9cf0a4dcd71bc786d76e50bf51e3c4cd78da68b475019df0"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

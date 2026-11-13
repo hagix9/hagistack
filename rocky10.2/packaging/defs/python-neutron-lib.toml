@@ -4,7 +4,9 @@
 name = "python-neutron-lib"
 project = "neutron-lib"
 version = "3.24.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "neutron_lib-3.24.0.tar.gz"
 sha256 = "96861925534f3c3a16b0e3de9e6fe3953f58b2b5f695386d8b71aa598bdc649b"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

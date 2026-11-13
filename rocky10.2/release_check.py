@@ -12,10 +12,13 @@
     release_check.py licence SRPM LICENSE
         the source RPM's payload holds HAGISTACK-LICENSE with exactly the bytes
         of LICENSE (read with rpm2cpio).
-    release_check.py branding SET_DIR IMAGES_DIR
-        no RPM of the set installs a file with the bytes of one of Horizon's
-        images that show the OpenStack logo, and openstack-dashboard installs
-        Hagistack's images (from IMAGES_DIR) at each place they replace.
+    release_check.py branding SET_DIR IMAGES_DIR DOCS_DIR
+        no RPM of the set installs a file with the bytes of one of the images
+        that show the OpenStack logo (Horizon's, and OpenStack's documentation
+        theme's); openstack-dashboard installs Hagistack's images (from
+        IMAGES_DIR) at each place they replace; every HTML documentation tree
+        (a directory .../html/_static) holds Hagistack's documentation images
+        (from DOCS_DIR) at each of the theme's logo and favicon paths.
     release_check.py notices SET_DIR
         every binary RPM built from a source RPM whose spec writes
         HAGISTACK-CHANGES installs that notice, with exactly the text the spec
@@ -47,6 +50,26 @@ UPSTREAM_LOGOS = {
     'fb45a0f208713d6a3cbdf70404b00f75e6c578b8ec22d7429eb69809f06c0960': 'material/openstack-one-color.svg',
     'ee70b89c41e40c9150d17fb7183d47a2c4eed088ff8d6d3a2f4f133d7c86c014': 'material/openstack-one-color-alt.svg',
     'd48a29e4382947969fcce78bbd3b26aa94360adae0e1967ec97f6040a9755aa2': 'material/openstack-one-color-alt.svg.old',
+    # OpenStack's documentation theme (openstackdocstheme), as the old set's 47
+    # HTML documentation trees carry it: _static/images/ and _static/favicon.ico.
+    '0e0c0499d1cd2ce6072269597ae1a20eeda47e8228de91539897b034d72ee443': 'docs theme images/(openstack-)logo-full.svg',
+    'a2a82b9bb1aaeca1a66f4704fce9f6bcc1d7a4de4bf78660baa52500027ec2d6': 'docs theme images/(openstack-)logo-full.png',
+    'bfc2f9a31ccf70e4ec601d5370cf5a2b32a8bfb0209df4b74c649499db57dc9a': 'docs theme images/(openstack-)logo-vert.svg',
+    'ee2366515997f40e40774eb1fe74c3a8a4008697859b3449ee2eeb28f6fbd457': 'docs theme images/(openstack-)logo-vert.png',
+    'c3df2867edb17d990918ab4630dfc247a6b3a28a50d58d5ef7b2d9e2b712f21c': 'docs theme favicon.ico',
+}
+# The documentation theme's paths under html/_static/ and Hagistack's image for
+# each (the same table as genspec.py DOC_BRANDING).
+DOC_BRANDING = {
+    'images/logo-full.svg': 'hagistack-doc-logo-full.svg',
+    'images/logo-full.png': 'hagistack-doc-logo-full.png',
+    'images/logo-vert.svg': 'hagistack-doc-logo-vert.svg',
+    'images/logo-vert.png': 'hagistack-doc-logo-vert.png',
+    'images/openstack-logo-full.svg': 'hagistack-doc-logo-full.svg',
+    'images/openstack-logo-full.png': 'hagistack-doc-logo-full.png',
+    'images/openstack-logo-vert.svg': 'hagistack-doc-logo-vert.svg',
+    'images/openstack-logo-vert.png': 'hagistack-doc-logo-vert.png',
+    'favicon.ico': 'hagistack-doc-favicon.ico',
 }
 # Where openstack-dashboard installs Hagistack's images (the static tree is
 # installed twice: the project's own copy and the collected one).
@@ -219,7 +242,12 @@ def rpm_query(path, fmt):
     return p.stdout.decode('utf-8', 'replace')
 
 
-def check_branding(set_dir, images_dir):
+def check_branding(set_dir, images_dir, docs_dir):
+    doc_want = {}
+    for rel, img in DOC_BRANDING.items():
+        with open(os.path.join(docs_dir, img), 'rb') as f:
+            doc_want[rel] = f.read()
+    doc_trees = 0
     want = {}
     for img, places in BRANDING.items():
         with open(os.path.join(images_dir, img), 'rb') as f:
@@ -237,18 +265,29 @@ def check_branding(set_dir, images_dir):
                 raise Bad('two openstack-dashboard RPMs in the set')
             dash = n
         found = {}
+        trees = {}            # html/_static directory -> {relative path: bytes}
         for name, data in payload(os.path.join(repo, n)):
             h = hashlib.sha256(data).hexdigest()
             if h in UPSTREAM_LOGOS:
                 raise Bad('%s installs %s, which is upstream\'s %s (the OpenStack logo)' % (n, name, UPSTREAM_LOGOS[h]))
             if is_dash and name in want:
                 found[name] = data
+            m = re.match(r'(/usr/share/doc/.+/html/_static)/(.+)$', name)
+            if m:
+                trees.setdefault(m.group(1), {})[m.group(2)] = data
+        for tree, files in sorted(trees.items()):
+            doc_trees += 1
+            for rel, data in doc_want.items():
+                if files.get(rel) != data:
+                    raise Bad('%s: %s/%s is not Hagistack\'s documentation image' % (n, tree, rel))
         if is_dash:
             for path, data in want.items():
                 if found.get(path) != data:
                     raise Bad('%s does not install Hagistack\'s image at %s' % (n, path))
     if dash is None:
         raise Bad('openstack-dashboard is not in the set')
+    if doc_trees == 0:
+        raise Bad('no HTML documentation tree in the set: expected the documentation packages')
 
 
 def spec_notice(srpm):
@@ -342,13 +381,13 @@ def main(argv):
             check_members(argv[2], argv[3])
         elif len(argv) == 4 and argv[1] == 'licence':
             check_licence(argv[2], argv[3])
-        elif len(argv) == 4 and argv[1] == 'branding':
-            check_branding(argv[2], argv[3])
+        elif len(argv) == 5 and argv[1] == 'branding':
+            check_branding(argv[2], argv[3], argv[4])
         elif len(argv) == 3 and argv[1] == 'notices':
             check_notices(argv[2])
         else:
             print('usage: release_check.py repo SET_DIR | members TAR LIST | licence SRPM LICENSE | '
-                  'branding SET_DIR IMAGES_DIR | notices SET_DIR')
+                  'branding SET_DIR IMAGES_DIR DOCS_DIR | notices SET_DIR')
             return 2
     except (Bad, OSError, ET.ParseError, tarfile.TarError, ValueError, AttributeError, UnicodeDecodeError) as e:
         print(str(e) if isinstance(e, Bad) else '%s: %s' % (type(e).__name__, e))

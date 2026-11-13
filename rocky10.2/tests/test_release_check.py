@@ -166,38 +166,87 @@ class Branding(Base):
                 f.write(data)
             for pl in rc.BRANDING[img]:
                 self.files['.' + rc.DASH + pl] = data
+        self.docs = os.path.join(self.d, 'docs')
+        os.makedirs(self.docs)
+        self.doc_files = {}
+        for rel, img in rc.DOC_BRANDING.items():
+            data = ('Hagistack doc image ' + img).encode()
+            with open(os.path.join(self.docs, img), 'wb') as f:
+                f.write(data)
+            self.doc_files['./usr/share/doc/python-x-doc/html/_static/' + rel] = data
         self.logo = b'upstream logo bytes'
         rc.UPSTREAM_LOGOS[hashlib.sha256(self.logo).hexdigest()] = 'static/dashboard/img/logo.svg'
 
     def dash(self, files):
         self.pkg('repo', 'openstack-dashboard-1-2.noarch.rpm', files, NAME='openstack-dashboard')
 
+    def doc(self, files, name='python-x-doc'):
+        files = dict(files)
+        files['./usr/share/doc/%s/html/index.html' % name] = b'<html>OpenStack docs</html>'
+        self.pkg('repo', name + '-1-2.noarch.rpm', files, NAME=name)
+
+    def check(self):
+        rc.check_branding(self.set, self.images, self.docs)
+
     def test_hagistack_images_in_every_place_pass(self):
         self.dash(self.files)
-        self.pkg('repo', 'other-1-1.noarch.rpm', {'./usr/share/x.svg': b'x'}, NAME='other')
-        rc.check_branding(self.set, self.images)
+        self.doc(self.doc_files)
+        self.pkg('repo', 'other-1-1.noarch.rpm', {'./usr/share/x.svg': b'x', './usr/share/doc/o/README': b'OpenStack'},
+                 NAME='other')
+        self.check()
 
     def test_an_upstream_logo_anywhere_is_refused(self):
         self.dash(self.files)
+        self.doc(self.doc_files)
         self.pkg('repo', 'other-1-1.noarch.rpm', {'./usr/share/doc/x/logo.svg': self.logo}, NAME='other')
-        self.refused(rc.check_branding, self.set, self.images, want='the OpenStack logo')
+        self.refused(self.check, want='the OpenStack logo')
 
-    def test_a_missing_or_wrong_image_is_refused(self):
+    def test_the_real_docs_theme_logo_hashes_are_refused(self):
+        # the five hashes of the documentation theme are in the table
+        self.assertEqual(sum('docs theme' in v for v in rc.UPSTREAM_LOGOS.values()), 5)
+        self.dash(self.files)
+        files = dict(self.doc_files)
+        h = hashlib.sha256(b'theme logo').hexdigest()
+        rc.UPSTREAM_LOGOS[h] = 'docs theme images/logo-full.svg'
+        files['./usr/share/doc/python-x-doc/html/_static/images/logo-full.svg'] = b'theme logo'
+        self.doc(files)
+        self.refused(self.check, want='docs theme images/logo-full.svg')
+
+    def test_a_missing_or_wrong_dashboard_image_is_refused(self):
+        self.doc(self.doc_files)
         files = dict(self.files)
         files.pop('.' + rc.DASH + 'static/dashboard/img/favicon.ico')
         self.dash(files)
-        self.refused(rc.check_branding, self.set, self.images, want='static/dashboard/img/favicon.ico')
+        self.refused(self.check, want='static/dashboard/img/favicon.ico')
         files['.' + rc.DASH + 'static/dashboard/img/favicon.ico'] = b'other'
         self.dash(files)
-        self.refused(rc.check_branding, self.set, self.images, want='static/dashboard/img/favicon.ico')
+        self.refused(self.check, want='static/dashboard/img/favicon.ico')
+
+    def test_a_doc_tree_missing_or_with_a_wrong_image_is_refused(self):
+        self.dash(self.files)
+        for rel in ('favicon.ico', 'images/openstack-logo-vert.png'):
+            with self.subTest(rel=rel):
+                files = dict(self.doc_files)
+                files.pop('./usr/share/doc/python-x-doc/html/_static/' + rel)
+                self.doc(files)
+                self.refused(self.check, want=rel)
+                files['./usr/share/doc/python-x-doc/html/_static/' + rel] = b'not ours'
+                self.doc(files)
+                self.refused(self.check, want=rel)
+
+    def test_no_doc_tree_is_refused(self):
+        self.dash(self.files)
+        self.refused(self.check, want='no HTML documentation tree')
 
     def test_no_dashboard_is_refused(self):
+        self.doc(self.doc_files)
         self.pkg('repo', 'other-1-1.noarch.rpm', {'./usr/share/x': b'x'}, NAME='other')
-        self.refused(rc.check_branding, self.set, self.images, want='openstack-dashboard is not in the set')
+        self.refused(self.check, want='openstack-dashboard is not in the set')
 
     def test_main_reports_one_line_and_exit_1(self):
         self.dash({})
-        self.assertEqual(rc.main(['release_check.py', 'branding', self.set, self.images]), 1)
+        self.assertEqual(rc.main(['release_check.py', 'branding', self.set, self.images, self.docs]), 1)
+        self.assertEqual(rc.main(['release_check.py', 'branding', self.set, self.images]), 2)
 
 
 if __name__ == '__main__':

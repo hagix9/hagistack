@@ -4,7 +4,9 @@
 name = "python-oslo-middleware"
 project = "oslo.middleware"
 version = "8.0.0"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "oslo_middleware-8.0.0.tar.gz"
 sha256 = "38ca82fcb39736c75e69abcacec5ea9577be9731d73fefb9ea337ca2143b8e7d"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

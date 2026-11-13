@@ -113,6 +113,8 @@ class Definitions(unittest.TestCase):
                         self.assertRegex(v, r'^https://(tarballs\.openstack\.org|releases\.openstack\.org|files\.pythonhosted\.org)/')
                     elif v in pinned or v == 'HAGISTACK-LICENSE':
                         pass
+                    elif v in genspec.DOC_SOURCES:
+                        self.assertTrue(os.path.isfile(os.path.join(genspec.DOC_BRANDING_DIR, v)), v)
                     else:
                         self.assertEqual(m.group(1), 'Source')
                         self.assertTrue(os.path.isfile(os.path.join(HERE, 'files', src['name'], v)), v)
@@ -173,23 +175,62 @@ class ChangesNotice(unittest.TestCase):
     installed as HAGISTACK-CHANGES in every binary package with files."""
 
     EDITED = {'openstack-neutron', 'python-django-horizon', 'python3-qrcode', 'python-barbicanclient',
-              'python-keystoneauth1', 'python-keystonemiddleware'}
+              'python-keystoneauth1', 'python-keystonemiddleware',
+              # stage 6-5-R1: build-time changes to installed files
+              'openstack-keystone', 'openstack-placement', 'openstack-nova'}
 
-    def test_exactly_the_six_edited_sources_declare_changes(self):
+    def test_exactly_the_edited_sources_declare_changes(self):
         declared = {genspec.load(d)[0]['name'] for d in DEFS if genspec.load(d)[0].get('changes')}
         self.assertEqual(declared, self.EDITED)
+
+    def test_every_html_documentation_build_replaces_the_theme_logos(self):
+        built = 0
+        for d in DEFS:
+            src, pkgs = genspec.load(d)
+            dirs = genspec.html_dirs(src, pkgs)
+            spec = genspec.generate(src, pkgs)
+            with self.subTest(d=os.path.basename(d)):
+                if not dirs:
+                    self.assertNotIn(genspec.DOC_CHANGE, spec)
+                    self.assertNotIn('hagistack-doc-', spec)
+                    continue
+                built += 1
+                self.assertIn(genspec.DOC_CHANGE, genspec.all_changes(src))
+                for i, f in enumerate(genspec.DOC_SOURCES):
+                    self.assertIn(f'Source{80 + i}:       {f}', spec)
+                build = spec.split('%build\n', 1)[1].split('%install\n', 1)[0]
+                for h in dirs:
+                    after = build.split(f'rm -rf {h}/.buildinfo\n', 1)[1]
+                    for rel, f in genspec.DOC_BRANDING:
+                        self.assertIn(f"test ! -e '{h}/_static/{rel}' || cp -p '%{{SOURCE{80 + genspec.DOC_SOURCES.index(f)}}}' "
+                                      f"'{h}/_static/{rel}'", after)
+                    # the guard: any logo-named file or icon left that is not Hagistack's stops the build
+                    self.assertRegex(after, r"find '%s' -type f .*-iname '\*logo\*' -o -iname '\*\.ico'.* \|\| exit 1" % h)
+        self.assertEqual(built, 47)
+
+    def test_doc_branding_files_exist_and_say_hagistack(self):
+        for f in genspec.DOC_SOURCES:
+            with open(os.path.join(genspec.DOC_BRANDING_DIR, f), 'rb') as fh:
+                self.assertIn(b'Hagistack', fh.read(), f)
+        self.assertEqual(sorted(os.listdir(genspec.DOC_BRANDING_DIR)), genspec.DOC_SOURCES)
+
+    def test_stated_changes_need_a_dated_entry(self):
+        for d in DEFS:
+            src, _ = genspec.load(d)
+            if genspec.all_changes(src):
+                self.assertIn('changelog_date', src, d)
 
     def test_every_package_installs_the_notice_and_the_changelog_lists_each_change(self):
         for d in DEFS:
             src, pkgs = genspec.load(d)
-            if not src.get('changes'):
+            if not genspec.all_changes(src):
                 continue
             spec = genspec.generate(src, pkgs)
             with self.subTest(d=os.path.basename(d)):
                 self.assertIn("cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'", spec)
                 body = spec.split("HAGISTACK_CHANGES_EOF'\n", 1)[1].split('\nHAGISTACK_CHANGES_EOF\n', 1)[0]
                 log = spec.split('%changelog\n', 1)[1]
-                for c in src['changes']:
+                for c in genspec.all_changes(src):
                     self.assertIn(genspec.rpm_text('- ' + c), body)
                     self.assertIn(genspec.rpm_text('- ' + c), log)
                 for i, it in enumerate(src.get('patches', [])):
@@ -307,7 +348,13 @@ description = "d"
         for dest in ('/etc/passwd', '../x', 'a/../../x', "a'b"):
             with self.subTest(dest=dest):
                 self.refused(hz + 'changes = ["c"]\nreplace_files = [{ src = "file:hagistack-logo.svg", dest = "%s" }]\n' % dest + pkg)
-        self.load(hz + 'changes = ["c"]\nreplace_files = [{ src = "file:hagistack-logo.svg", dest = "a/b.svg" }]\n' + pkg)
+        self.load(hz + 'changes = ["c"]\nchangelog_date = "Fri Nov 13 2026"\n'
+                  'replace_files = [{ src = "file:hagistack-logo.svg", dest = "a/b.svg" }]\n' + pkg)
+
+    def test_changes_without_a_date_are_refused(self):
+        pkg = '[[package]]\nname = "a"\nkind = "files"\n'
+        self.refused(self.BASE + 'changes = ["c"]\n' + pkg)
+        self.load(self.BASE + 'changes = ["c"]\nchangelog_date = "Fri Nov 13 2026"\n' + pkg)
 
     def test_bad_mode(self):
         self.refused(self.BASE + '[[package]]\nname = "a"\nkind = "files"\n'

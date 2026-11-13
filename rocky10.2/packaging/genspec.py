@@ -16,6 +16,9 @@ package shares:
     [...]): listed in %changelog and installed as HAGISTACK-CHANGES in every
     binary package of the source package; upstream files replaced by
     Hagistack's own (replace_files, e.g. the dashboard's logo);
+  * HTML documentation built with OpenStack's documentation theme gets
+    Hagistack's logo and favicon in place of the theme's OpenStack ones
+    (DOC_BRANDING), stated as a change like the ones above;
   * a pyproject build (pyproject-rpm-macros): build and runtime requirements
     come from upstream metadata through the Python dependency generator;
   * an import check of the top-level modules, Sphinx HTML documentation,
@@ -58,6 +61,30 @@ PINNED_KEYS = {'path', 'sha256'}
 SCRIPTLETS = ('pre', 'post', 'preun', 'postun', 'posttrans')
 # A fixed date keeps the generated spec, and so the SRPM, reproducible.
 CHANGELOG_DATE = 'Wed Nov 11 2026'
+
+
+# OpenStack's documentation theme (openstackdocstheme) copies these files into
+# the built HTML's _static/; they show the OpenStack logo. After sphinx-build each
+# one that is there is replaced by Hagistack's (files/_docs-branding/, generated
+# by branding/make-branding.py), and the build stops if any file in the HTML tree
+# whose name says logo, or any .ico, is not one of Hagistack's.
+DOC_BRANDING_DIR = os.path.join(FILES_DIR, '_docs-branding')
+DOC_BRANDING = (
+    ('images/logo-full.svg', 'hagistack-doc-logo-full.svg'),
+    ('images/logo-full.png', 'hagistack-doc-logo-full.png'),
+    ('images/logo-vert.svg', 'hagistack-doc-logo-vert.svg'),
+    ('images/logo-vert.png', 'hagistack-doc-logo-vert.png'),
+    ('images/openstack-logo-full.svg', 'hagistack-doc-logo-full.svg'),
+    ('images/openstack-logo-full.png', 'hagistack-doc-logo-full.png'),
+    ('images/openstack-logo-vert.svg', 'hagistack-doc-logo-vert.svg'),
+    ('images/openstack-logo-vert.png', 'hagistack-doc-logo-vert.png'),
+    ('favicon.ico', 'hagistack-doc-favicon.ico'),
+)
+DOC_SOURCES = sorted({f for _, f in DOC_BRANDING})       # Source80 ...
+DOC_CHANGE = ("HTML documentation: it is built with OpenStack's documentation theme (openstackdocstheme); "
+              "the theme's OpenStack logo images (_static/images/logo-full, logo-vert, openstack-logo-full and "
+              "openstack-logo-vert, .svg and .png) and its favicon (_static/favicon.ico) are replaced in the built "
+              "HTML with Hagistack's own. The documentation text and the theme's other files are unchanged.")
 
 
 class DefError(Exception):
@@ -150,7 +177,25 @@ def load(path):
             need(p.get('extras') and isinstance(p['extras'], list), f'{path}: {p["name"]}: extras = ["..."] required')
         for k in p.get('scriptlets', {}):
             need(k in SCRIPTLETS, f'{path}: {p["name"]}: scriptlet {k} not one of {SCRIPTLETS}')
+    # Changes genspec itself makes (the documentation theme's logos), stated
+    # with the definition's own; a source package with any needs a dated entry.
+    src['_auto_changes'] = [DOC_CHANGE] if html_dirs(src, pkgs) else []
+    if all_changes(src):
+        need('changelog_date' in src,
+             f'{path}: this source package states changes; give changelog_date (and raise release)')
     return src, pkgs
+
+
+def html_dirs(src, pkgs):
+    """The Sphinx HTML output directories the spec builds."""
+    dirs = [p.get('doc_dir', 'html') for p in pkgs if p['kind'] == 'sphinx-html']
+    if src.get('doc') and not dirs and any('html' in p.get('docs', []) for p in pkgs):
+        dirs = ['html']
+    return list(dict.fromkeys(dirs))
+
+
+def all_changes(src):
+    return list(src.get('changes', [])) + list(src.get('_auto_changes', []))
 
 
 def hagistack_files(src, pkgs):
@@ -204,7 +249,7 @@ def has_hagistack_files(p):
 def carries_changes(src, p):
     """The package installs HAGISTACK-CHANGES (every package with files, when the
     source package declares changes to upstream)."""
-    return bool(src.get('changes')) and p['kind'] != 'extras'
+    return bool(all_changes(src)) and p['kind'] != 'extras'
 
 
 def ships_hagistack_text(src, p):
@@ -238,7 +283,7 @@ def changes_notice(src):
         '',
         'Changes:',
     ]
-    lines += [f'- {c}' for c in src['changes']]
+    lines += [f'- {c}' for c in all_changes(src)]
     if src.get('patches'):
         lines += ['', 'Patches applied (from third-party/ of the Hagistack repository):']
         lines += [f'- Patch{i + 1:04d}: {os.path.basename(it["path"])} (sha256 {it["sha256"]})'
@@ -318,6 +363,9 @@ def generate(src, pkgs):
     w('Source99:       HAGISTACK-LICENSE')
     for i, f in enumerate(hfiles):
         w(f'Source{100 + i}:      {f}')
+    if html_dirs(src, pkgs):
+        for i, f in enumerate(DOC_SOURCES):
+            w(f'Source{80 + i}:       {f}')
     for i, it in enumerate(src.get('extra_licenses', [])):
         w(f'Source{900 + i}:      {os.path.basename(it["path"])}')
     for i, it in enumerate(src.get('patches', [])):
@@ -369,7 +417,7 @@ def generate(src, pkgs):
         # Upstream's file must be there: a moved file must not leave upstream's copy.
         w(f"test -f '{it['dest']}' || exit 1")
         w(f"cp -p '%{{SOURCE{srcidx[it['src'][5:]]}}}' '{it['dest']}'")
-    if src.get('changes'):
+    if all_changes(src):
         w("cat > HAGISTACK-CHANGES <<'HAGISTACK_CHANGES_EOF'")
         s.extend(rpm_text(x) for x in changes_notice(src))
         w('HAGISTACK_CHANGES_EOF')
@@ -388,13 +436,15 @@ def generate(src, pkgs):
     for line in src.get('build_extra', []):
         w(line)
     # Sphinx HTML: for a -doc package, or for a package that lists html in docs.
-    html_dirs = [p.get('doc_dir', 'html') for p in doc_pkgs]
-    if src.get('doc') and not html_dirs and any('html' in p.get('docs', []) for p in pkgs):
-        html_dirs = ['html']
-    for d in dict.fromkeys(html_dirs):
+    for d in html_dirs(src, pkgs):
         env = f'{src["doc_env"]} ' if src.get('doc_env') else ''
         w(f'{env}PYTHONPATH="$PWD" sphinx-build -b html -d doc-trees {src["doc"]} {d}')
         w(f'rm -rf {d}/.buildinfo')
+        for rel, f in DOC_BRANDING:
+            w(f"test ! -e '{d}/_static/{rel}' || cp -p '%{{SOURCE{80 + DOC_SOURCES.index(f)}}}' '{d}/_static/{rel}'")
+        alts = ' || '.join(f"cmp -s \"$f\" '%{{SOURCE{80 + i}}}'" for i in range(len(DOC_SOURCES)))
+        w(f"find '{d}' -type f \\( -iname '*logo*' -o -iname '*.ico' \\) -print | while IFS= read -r f; do "
+          f"{alts} || {{ echo \"$f: a logo or icon that is not Hagistack's\" >&2; exit 1; }}; done || exit 1")
     w('')
     w('%install')
     w('%pyproject_install')
@@ -536,9 +586,9 @@ def generate(src, pkgs):
     evr = (f'{int(src["epoch"])}:' if src.get('epoch') else '') + f'{src["version"]}-{src["release"]}'
     w(f'* {src.get("changelog_date", CHANGELOG_DATE)} Hagistack - {evr}')
     w('- Hagistack packaging of the upstream release')
-    if src.get('changes'):
+    if all_changes(src):
         w('- Changes to the upstream sources, also in HAGISTACK-CHANGES:')
-        for c in src['changes']:
+        for c in all_changes(src):
             w(rpm_text(f'- {c}'))
         for i, it in enumerate(src.get('patches', [])):
             w(f'- Patch{i + 1:04d}: {os.path.basename(it["path"])}')

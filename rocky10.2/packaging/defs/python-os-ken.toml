@@ -4,7 +4,9 @@
 name = "python-os-ken"
 project = "os-ken"
 version = "4.1.2"
-release = "1"
+release = "2"
+# Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
+changelog_date = "Fri Nov 13 2026"
 tarball = "os_ken-4.1.2.tar.gz"
 sha256 = "0a335e02ea3de4842026dafde752b1dd4d99568f957b1f97c2c1d31f8e9d911f"
 signing_key = "0x30566c450e41d7c91e442dfb231f942f608ddeff"
