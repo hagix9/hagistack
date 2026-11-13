@@ -27,6 +27,15 @@ sys.path.insert(0, HERE)
 import hs6  # noqa: E402
 
 RID = "t6abc"
+# the run plan the tests' mock git shows for the approved commit
+TEST_PLAN = {
+    "format": 1,
+    "nodes": ["n1", "n2", "n3", "n4", "u1"],
+    "tree": {"paths": ["LICENSE", "rocky10.2"], "remote": "/tmp/tree.tar"},
+    "ssh": {"true": {"command": "true"}, "false": {"command": "false"}, "long-step": {"command": "long-step"}},
+    "download": {"out.tar": "/root/out.tar"},
+}
+TREE_BYTES = ("mock tree %s LICENSE rocky10.2\n" % COMMIT).encode()
 ACCOUNT = "tester@example.invalid"
 T0 = calendar.timegm((2026, 11, 20, 1, 0, 0))
 SINTER_INSTANCE = "sinter-v180-gate-o6s1a"
@@ -106,11 +115,13 @@ class Base(unittest.TestCase):
         self.t = T0
         self.approval = os.path.join(self.tmp, "approval.json")
         self.write_approval()
+        self.plan = os.path.join(self.tmp, "run-plan.json")
+        self.write_plan(TEST_PLAN)
         self.env = {"PATH": bindir + os.pathsep + "/usr/bin:/bin", "HOME": self.tmp,
                     "HS6_OWNER_SIGNERS": SIGNERS,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
                     "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10", "HS6_GIT": MOCK_GIT,
-                    "HS6_REGISTRY": os.path.join(self.tmp, "registry")}
+                    "HS6_REGISTRY": os.path.join(self.tmp, "registry"), "MOCK_GIT_PLAN": self.plan}
         # in-process calls (Protection tests) must not reach the real gcloud either
         self._saved_env = {k: os.environ.get(k) for k in ("HS6_GCLOUD", "PATH")}
         os.environ["HS6_GCLOUD"] = os.path.join(bindir, "gcloud")
@@ -141,6 +152,10 @@ class Base(unittest.TestCase):
             os.unlink(self.approval + ".sig")
         if key:
             sign(self.approval, key)
+
+    def write_plan(self, plan):
+        with open(self.plan, "w") as f:
+            json.dump(plan, f)
 
     def hs(self, *args, approval=True, env=None, rid=RID):
         e = dict(self.env, HS6_NOW=str(self.t))
@@ -692,16 +707,182 @@ class Protection(Base):
 class Upload(Base):
     def test_upload_checksum(self):
         self.up("n1")
-        f = os.path.join(self.tmp, "a.bin")
-        with open(f, "wb") as fh:
-            fh.write(b"x" * 100)
-        rc, out = self.hs("upload", "n1", f, "/tmp/a.bin")
+        rc, out = self.hs("upload", "n1", "@tree", "/tmp/tree.tar")
         self.assertEqual(rc, hs6.EXIT_REMOTE, out)
         self.assertIn("SHA-256 check failed", out)
-        want = hashlib.sha256(b"x" * 100).hexdigest()
-        self.set_mock(lambda s: s.update(remote_sha={"/tmp/a.bin": want}))
-        rc, out = self.hs("upload", "n1", f, "/tmp/a.bin")
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "tree-upload.json")))
+        want = hashlib.sha256(TREE_BYTES).hexdigest()
+        self.set_mock(lambda s: s.update(remote_sha={"/tmp/tree.tar": want}))
+        rc, out = self.hs("upload", "n1", "@tree", "/tmp/tree.tar")
         self.assertEqual(rc, 0, out)
+        with open(os.path.join(self.sdir, "tree-upload.json")) as f:
+            rec = json.load(f)
+        self.assertEqual((rec["commit"], rec["sha256"], rec["remote"]), (COMMIT, want, "/tmp/tree.tar"))
+
+
+class RunPlan(Base):
+    """In execute mode a node gets only what the plan at the approved commit names."""
+
+    def calls(self, word):
+        return [c for c in self.mock().get("calls", []) if word in c]
+
+    def test_a_command_outside_the_plan_is_refused_before_any_ssh(self):
+        self.up("n1")
+        rc, out = self.hs("ssh", "n1", "--", "rm", "-rf", "/")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not a step of the approved run plan", out)
+        self.assertEqual(self.calls("ssh"), [])
+
+    def test_a_step_runs_the_plan_command_not_its_name(self):
+        plan = dict(TEST_PLAN, ssh={"hello": {"command": "echo planned; uname -a"}})
+        self.write_plan(plan)
+        self.up("n1")
+        rc, out = self.hs("ssh", "n1", "--", "hello")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ran: echo planned; uname -a", out)
+
+    def test_the_tree_sha_is_filled_in_only_after_a_verified_upload(self):
+        plan = dict(TEST_PLAN, ssh={"extract": {"command": "check {tree_sha256}"}})
+        self.write_plan(plan)
+        self.up("n1")
+        rc, out = self.hs("ssh", "n1", "--", "extract")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("needs the verified tree upload first", out)
+        want = hashlib.sha256(TREE_BYTES).hexdigest()
+        self.set_mock(lambda s: s.update(remote_sha={"/tmp/tree.tar": want}))
+        self.assertEqual(self.hs("upload", "n1", "@tree", "/tmp/tree.tar")[0], 0)
+        rc, out = self.hs("ssh", "n1", "--", "extract")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ran: check " + want, out)
+
+    def test_a_tree_record_of_another_commit_is_refused(self):
+        plan = dict(TEST_PLAN, ssh={"extract": {"command": "check {tree_sha256}"}})
+        self.write_plan(plan)
+        self.up("n1")
+        with open(os.path.join(self.sdir, "tree-upload.json"), "w") as f:
+            json.dump({"commit": "d" * 40, "sha256": "e" * 64, "remote": "/tmp/tree.tar"}, f)
+        rc, out = self.hs("ssh", "n1", "--", "extract")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not of the approved commit", out)
+
+    def test_a_step_waits_for_its_downloads(self):
+        plan = dict(TEST_PLAN, ssh={"install": {"command": "install", "requires_downloads": ["out.tar"]}})
+        self.write_plan(plan)
+        self.up("n1")
+        rc, out = self.hs("ssh", "n1", "--", "install")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("downloads/out.tar must be kept first", out)
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "payload"},
+                                         remote_sha={"/root/out.tar": hashlib.sha256(b"payload").hexdigest()}))
+        self.assertEqual(self.hs("download", "n1", "/root/out.tar", "out.tar")[0], 0)
+        rc, out = self.hs("ssh", "n1", "--", "install")
+        self.assertEqual(rc, 0, out)
+
+    def test_only_the_tree_archive_is_uploaded(self):
+        self.up("n1")
+        f = os.path.join(self.tmp, "a.bin")
+        with open(f, "wb") as fh:
+            fh.write(b"x")
+        for local, remote in ((f, "/tmp/tree.tar"), ("@tree", "/tmp/other.tar")):
+            with self.subTest(local=local, remote=remote):
+                rc, out = self.hs("upload", "n1", local, remote)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("allows only '@tree /tmp/tree.tar'", out)
+        self.assertEqual(self.calls("scp"), [])
+
+    def test_the_tree_is_git_archive_of_the_approved_commit(self):
+        log = os.path.join(self.tmp, "git.log")
+        self.up("n1")
+        self.hs("upload", "n1", "@tree", "/tmp/tree.tar", env={"MOCK_GIT_LOG": log})
+        with open(log) as f:
+            self.assertEqual(f.read(), "archive %s LICENSE rocky10.2\n" % COMMIT)
+        with open(os.path.join(self.sdir, "tree-%s.tar" % COMMIT), "rb") as f:
+            self.assertEqual(f.read(), TREE_BYTES)
+
+    def test_a_download_outside_the_plan_is_refused(self):
+        self.up("n1")
+        for remote, name in (("/root/out.tar", "other.tar"), ("/etc/shadow", "out.tar")):
+            with self.subTest(remote=remote, name=name):
+                rc, out = self.hs("download", "n1", remote, name)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("not in the approved run plan", out)
+        self.assertEqual(self.calls("scp"), [])
+
+    def test_a_node_outside_the_plan_is_refused(self):
+        self.write_plan(dict(TEST_PLAN, nodes=["n1"]))
+        self.up("n1", "n2")
+        rc, out = self.hs("ssh", "n2", "--", "true")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not a node of the approved run plan", out)
+
+    def test_no_plan_in_the_commit_refuses_remote_work_but_not_cleanup(self):
+        self.up("n1")
+        os.remove(self.plan)
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("git show failed", out)
+        rc, out = self.hs("teardown")
+        self.assertEqual(rc, 0, out)
+
+    def test_malformed_plans_are_refused(self):
+        bad = [
+            dict(TEST_PLAN, format=2),
+            dict(TEST_PLAN, nodes=["n9"]),
+            dict(TEST_PLAN, ssh={"x": {"command": "a\nb"}}),
+            dict(TEST_PLAN, ssh={"x": {"command": ""}}),
+            dict(TEST_PLAN, ssh={"x": {"command": "a", "env": "X=1"}}),
+            dict(TEST_PLAN, ssh={"X Y": {"command": "a"}}),
+            dict(TEST_PLAN, ssh={"x": {"command": "a", "requires_downloads": ["nope.tar"]}}),
+            dict(TEST_PLAN, tree={"paths": ["../etc"], "remote": "/tmp/t"}),
+            dict(TEST_PLAN, tree={"paths": ["/etc"], "remote": "/tmp/t"}),
+            dict(TEST_PLAN, download={"out.tar": "/root/../etc/shadow"}),
+            dict(TEST_PLAN, download={"../x": "/root/x"}),
+        ]
+        self.up("n1")
+        for plan in bad:
+            with self.subTest(plan=plan):
+                self.write_plan(plan)
+                rc, out = self.hs("ssh", "n1", "--", "true")
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("run plan", out)
+        self.assertEqual(self.calls("ssh"), [])
+
+
+class CommittedRunPlan(unittest.TestCase):
+    """The plan committed for stage 6-6 is valid and names only what exists."""
+
+    def setUp(self):
+        with open(os.path.join(HERE, "run-plan.json"), "rb") as f:
+            self.plan = hs6.parse_plan(f.read())
+
+    def test_it_parses_and_targets_n1_only(self):
+        self.assertEqual(self.plan["nodes"], ["n1"])
+
+    def test_tree_paths_exist_and_carry_the_node_files(self):
+        top = os.path.dirname(os.path.dirname(HERE))
+        for p in self.plan["tree"]["paths"]:
+            self.assertTrue(os.path.exists(os.path.join(top, p)), p)
+        self.assertIn("acceptance/stage6/s66-node.sh", self.plan["tree"]["paths"])
+        self.assertIn("acceptance/stage6/s66_web.py", self.plan["tree"]["paths"])
+
+    def test_steps_are_the_node_script_steps_in_order(self):
+        with open(os.path.join(HERE, "s66-node.sh")) as f:
+            src = f.read()
+        steps = src.split('STEPS="', 1)[1].split('"', 1)[0].split()
+        self.assertEqual(list(self.plan["ssh"]), ["extract"] + steps)
+        for name in steps:
+            self.assertEqual(self.plan["ssh"][name]["command"],
+                             "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh " + name)
+            self.assertIn("\ns_%s() {" % name, src)
+        self.assertIn("{tree_sha256}", self.plan["ssh"]["extract"]["command"])
+        self.assertEqual(self.plan["ssh"]["install"]["requires_downloads"], ["candidate.tar", "evidence-build.tar"])
+
+    def test_downloads_are_what_the_node_script_writes(self):
+        with open(os.path.join(HERE, "s66-node.sh")) as f:
+            src = f.read()
+        for name, remote in self.plan["download"].items():
+            self.assertEqual(remote, "/var/tmp/hs6-dl/" + name)
+            self.assertIn('"$DL/%s"' % name, src)
 
 
 class CommitBinding(Base):
@@ -976,7 +1157,8 @@ class GateHardening(Base):
     def test_dry_run_of_remote_and_residual(self):
         f = os.path.join(self.tmp, "x")
         open(f, "w").close()
-        for args in (("ssh", "n1", "--", "true"), ("upload", "n1", f, "/tmp/x"), ("residual",)):
+        for args in (("ssh", "n1", "--", "true"), ("upload", "n1", f, "/tmp/x"), ("upload", "n1", "@tree", "/tmp/tree.tar"),
+                     ("residual",)):
             rc, out = self.hs(*args, approval=False)
             self.assertEqual(rc, 0, out)
             self.assertIn("DRY-RUN", out)
@@ -1611,6 +1793,36 @@ class ApproveTool(unittest.TestCase):
                     dict(commit="C" * 40)):
             with self.assertRaises(hs6_approve.Refused):
                 hs6_approve.build_approval(**dict(ok, **bad))
+
+
+    def test_the_owner_sees_the_run_plan_of_the_commit(self):
+        import hs6_approve
+        repo = tempfile.mkdtemp(prefix="hs6plan-", dir=os.environ.get("TMPDIR"))
+        try:
+            g = ["/usr/bin/git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run(g[:3] + ["init", "-q"], check=True)
+            os.makedirs(os.path.join(repo, "acceptance", "stage6"))
+            with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
+                json.dump(TEST_PLAN, f)
+            subprocess.run(g + ["add", hs6.PLAN_PATH], check=True)
+            subprocess.run(g + ["commit", "-q", "-m", "plan"], check=True)
+            head = subprocess.run(g[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            self.assertEqual(hs6_approve.run_plan_lines(repo, head, ["init", "teardown"]), [])
+            lines = "\n".join(hs6_approve.run_plan_lines(repo, head, ["init", "ssh", "teardown"]))
+            self.assertIn("ssh steps : true, false, long-step", lines)
+            self.assertIn("downloads : out.tar", lines)
+            # the working file is not what is shown: only the commit's
+            with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
+                f.write("{}")
+            self.assertIn("ssh steps : true", "\n".join(hs6_approve.run_plan_lines(repo, head, ["ssh"])))
+            with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
+                json.dump(dict(TEST_PLAN, format=9), f)
+            subprocess.run(g + ["commit", "-q", "-am", "bad"], check=True)
+            head2 = subprocess.run(g[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            with self.assertRaises(hs6_approve.Refused):
+                hs6_approve.run_plan_lines(repo, head2, ["upload"])
+        finally:
+            shutil.rmtree(repo)
 
 
 if __name__ == "__main__":

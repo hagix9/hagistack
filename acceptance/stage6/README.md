@@ -27,6 +27,11 @@ gcloud.
 | `test_hs6.py` | local tests: `python3 test_hs6.py` (put `TMPDIR` on the external SSD) |
 | `hs6_approve.py` | the Owner's tool: shows the conditions and signs one run's approval |
 | `APPROVAL.template.json` | the shape of an Owner approval; not valid as it is (it has no signature) |
+| `mock_git.py` | a git stand-in for the tests (`HS6_GIT`, test mode only) |
+| `run-plan.json` | the run plan: what an approved run may send to, run on and fetch from its nodes |
+| `s66-node.sh` | stage 6-6 steps on n1 (build, release checks, nodocs, install, acceptance, evidence) |
+| `s66_web.py` | stage 6-6 page checks on n1: Horizon sign-in, logos, every image; one documentation page |
+| `test_s66_node.py`, `test_s66_web.py` | local tests of the two node files (control flow, page checks) |
 
 ## Fixed in the code, not on the command line
 
@@ -64,11 +69,8 @@ Execution needs **all** of the following:
    - the full id of the **commit** to run. A non-cleanup operation runs only if the
      checkout's HEAD is that commit and no tracked file is changed (untracked
      files are allowed). `hs6_approve.py` writes the commit only for a checkout
-     with no change to a tracked file. **Limit:** this binds the harness and the
-     checkout it runs from. It does not bind what `upload` sends or what `ssh`
-     runs on a node. Each upload's SHA-256 is checked against the node and kept
-     in `remote/*.log`, and the run's procedure uploads `git archive` of the
-     approved commit, but the harness does not prove that.
+     with no change to a tracked file. What a node gets is fixed by the **run
+     plan** of that commit (next section).
    - the approved `operations`, which must include `teardown`;
    - `budget_usd` of 8 or less, and `max_hours` of 6 or less;
    - `approved_at` and `expires_at`, at most 24 hours apart and covering now.
@@ -85,6 +87,44 @@ The approval can lower the cost and time limits, never raise them. `teardown` an
 `residual` still work after it has expired, so a run can always be cleaned up.
 
 There is no `--execute` flag.
+
+## The run plan (what a node gets)
+
+`acceptance/stage6/run-plan.json` lists everything an approved run may do on its
+nodes. The harness reads it from the approved commit's object (`git show
+COMMIT:acceptance/stage6/run-plan.json`), never from the working file, and
+`hs6_approve.py` shows its SHA-256, nodes, steps and downloads before the Owner
+signs. With an approval, and only then:
+
+- `ssh NODE -- STEP` runs only the plan's command for STEP. The command line is
+  the step's name, never a command. `{tree_sha256}` in a command becomes the
+  SHA-256 of the tree upload the node verified for this commit. A step may name
+  `requires_downloads`: it runs only once those files are kept in `downloads/`.
+- `upload NODE @tree REMOTE` sends only `git archive --format=tar` of the
+  approved commit, limited to the plan's paths, to the plan's remote path. The
+  harness makes the archive itself, checks its SHA-256 on the node, and records
+  it in `tree-upload.json`. No other local file can be uploaded.
+- `download NODE REMOTE NAME` fetches only a `NAME -> REMOTE` pair of the plan.
+- A node not in the plan's `nodes` gets nothing. A missing or malformed plan
+  refuses every ssh/upload/download (cleanup is not affected).
+
+The stage 6-6 plan uploads `LICENSE`, `rocky10.2/` and the two node files
+`s66-node.sh` and `s66_web.py`, and runs `s66-node.sh` step by step (extract,
+preflight, build, release, nodocs, pack, install, accept, evidence). The node
+script refuses to start a step twice, and to start a step before the previous
+one passed. The plan makes `install` wait until the candidate and the build
+evidence are downloaded.
+
+**What the plan does not fix.**
+- What the node fetches itself is pinned elsewhere, not by the plan:
+  - upstream tarballs and patches by SHA-256 in the definitions;
+  - the build container by digest;
+  - the guest image by SHA-256 in the installer.
+
+  Rocky's own packages come from its mirrors, and `build-env.lock` records them.
+- The harness runs as the implementer's OS user. A same-user process can call
+  `gcloud compute ssh` directly and bypass the harness (see "What it does not
+  protect against").
 
 ## What protects other resources
 

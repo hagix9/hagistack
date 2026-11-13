@@ -145,7 +145,7 @@ def harness_state():
                       % (rel, st.stdout.strip()))
     # The approval names one commit: the whole checkout must have no change to a
     # tracked file (untracked files are allowed), so the harness that runs is that
-    # commit's. What is uploaded or run on a node is not bound by this (README).
+    # commit's. What a node gets is fixed by the run plan in that commit (README).
     tracked = run([GIT, "-C", top, "status", "--porcelain", "--untracked-files=no"])
     if tracked.returncode != 0 or tracked.stdout.strip():
         raise Refused("the checkout has changes to tracked files: commit or drop them first\n%s"
@@ -153,6 +153,29 @@ def harness_state():
     head = run([GIT, "-C", top, "rev-parse", "--verify", "HEAD"]).stdout.strip()
     subject = run([GIT, "-C", top, "log", "-1", "--format=%s", head]).stdout.strip()
     return head, subject, top
+
+
+def run_plan_lines(top, head, ops):
+    """What the nodes will get, from the run plan in the commit being approved.
+    Needed when ssh, upload or download is approved: hs6.py refuses those
+    without a valid plan in the approved commit."""
+    if not set(ops) & {"ssh", "upload", "download"}:
+        return []
+    p = subprocess.run([GIT, "-C", top, "show", "%s:%s" % (head, hs6.PLAN_PATH)], capture_output=True)
+    if p.returncode != 0:
+        raise Refused("ssh/upload/download need %s in the commit: %s"
+                      % (hs6.PLAN_PATH, p.stderr.decode("utf-8", "replace").strip()))
+    try:
+        plan = hs6.parse_plan(p.stdout)
+    except hs6.Stop as e:
+        raise Refused(str(e))
+    out = ["  run plan    : %s %s (in the commit above)" % (hs6.PLAN_PATH, hashlib.sha256(p.stdout).hexdigest()[:16]),
+           "    nodes     : %s" % ", ".join(plan["nodes"]),
+           "    upload    : git archive of the commit (%s) -> %s"
+           % (" ".join(plan["tree"]["paths"]), plan["tree"]["remote"]),
+           "    ssh steps : %s" % ", ".join(plan["ssh"]),
+           "    downloads : %s" % ", ".join(plan["download"])]
+    return out
 
 
 def key_outside(key, top):
@@ -224,6 +247,7 @@ def approve(args):
     doc = build_approval(args.run_id, ops, args.budget, args.max_hours, args.valid_hours, acct,
                          hs6.harness_sha256(), now, secrets.token_hex(16), head)
     nodes = [o for o in ops if o in hs6.NODES]
+    plan_lines = run_plan_lines(top, head, ops)
     print()
     print("You are approving these GCE operations / 次の GCE 操作を承認します")
     print("  run id      : %s" % doc["run_id"])
@@ -235,6 +259,8 @@ def approve(args):
     print("  valid       : %s to %s (UTC)" % (doc["approved_at"], doc["expires_at"]))
     print("  commit      : %s (%s)" % (doc["commit"], subject))
     print("  harness     : hs6.py %s" % doc["harness_sha256"][:16])
+    for line in plan_lines:
+        print(line)
     print()
     typed = input("To approve, type the run id (anything else cancels) / 承認する場合は run ID を入力: ").strip()
     if typed != args.run_id:

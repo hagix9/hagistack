@@ -629,14 +629,18 @@ def repo_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 
+def git_cmd():
+    """git, or the test hook HS6_GIT (test mode only: an .invalid account)."""
+    hook = os.environ.get("HS6_GIT")
+    if hook and _TEST_MODE["on"]:
+        return [sys.executable, "-I", hook] if hook.endswith(".py") else [hook]
+    return [GIT_BIN]
+
+
 def repo_state():
     """(HEAD commit id, porcelain status of tracked files) of this checkout. The
     test hook HS6_GIT works only in test mode (an .invalid account)."""
-    hook = os.environ.get("HS6_GIT")
-    if hook and _TEST_MODE["on"]:
-        cmd = [sys.executable, "-I", hook] if hook.endswith(".py") else [hook]
-    else:
-        cmd = [GIT_BIN]
+    cmd = git_cmd()
     out = []
     for args in (["rev-parse", "--verify", "HEAD"], ["status", "--porcelain", "--untracked-files=no"]):
         try:
@@ -647,6 +651,90 @@ def repo_state():
             raise Stop("cannot read the git checkout (git %s: %s): refused" % (args[0], p.stderr.strip()))
         out.append(p.stdout.strip())
     return out[0], out[1]
+
+
+# ---------------------------------------------------------------- run plan --
+# What an approved run may do on its nodes, fixed by the approved commit: the
+# plan is read from that commit's object (git show COMMIT:PATH), never from the
+# working file. In execute mode:
+#   ssh NODE -- STEP        runs only the plan's command for STEP ({tree_sha256}
+#                           becomes the SHA-256 of the verified tree upload);
+#   upload NODE @tree REMOTE  sends only `git archive` of the approved commit
+#                           (the plan's paths) to the plan's remote path;
+#   download NODE REMOTE NAME  fetches only a NAME -> REMOTE pair of the plan.
+# Anything else is refused. A step may require downloads to be kept first.
+PLAN_PATH = "acceptance/stage6/run-plan.json"
+TREE_LOCAL = "@tree"
+PLAN_STEP_RE = r"[a-z][a-z0-9-]{0,31}"
+PLAN_TREE_PATH_RE = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}"
+
+
+def git_out(args, timeout=600):
+    try:
+        p = subprocess.run(git_cmd() + ["-C", repo_root()] + args, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise Stop("git %s could not run (%s): refused" % (args[0], e))
+    if p.returncode != 0:
+        raise Stop("git %s failed (%s): refused" % (args[0], p.stderr.decode("utf-8", "replace").strip()))
+    return p.stdout
+
+
+def parse_plan(data):
+    """The run plan from its bytes; raises Stop when anything is off."""
+    try:
+        plan = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise Stop("the run plan is not JSON: %s" % e)
+    bad = []
+    if not isinstance(plan, dict) or plan.get("format") != 1:
+        raise Stop("the run plan must be a JSON object of format 1")
+    nodes = plan.get("nodes")
+    if not isinstance(nodes, list) or not nodes or any(n not in NODES for n in nodes):
+        bad.append("nodes must be a non-empty list of %s" % ", ".join(NODES))
+    tree = plan.get("tree")
+    if not isinstance(tree, dict) or not isinstance(tree.get("paths"), list) or not tree["paths"]:
+        bad.append("tree.paths must be a non-empty list")
+    else:
+        for t in tree["paths"]:
+            if not isinstance(t, str) or not re.fullmatch(PLAN_TREE_PATH_RE, t) or ".." in t.split("/"):
+                bad.append("tree path %r is not a plain relative path" % (t,))
+        r = tree.get("remote")
+        if not isinstance(r, str) or not re.fullmatch(DOWNLOAD_REMOTE_RE, r) or ".." in r.split("/"):
+            bad.append("tree.remote must be a plain absolute path")
+    dl = plan.get("download")
+    if not isinstance(dl, dict):
+        bad.append("download must be an object NAME -> remote path")
+        dl = {}
+    for n, r in dl.items():
+        if not re.fullmatch(DOWNLOAD_NAME_RE, n) or n.endswith(".part"):
+            bad.append("download name %r is not a plain file name" % n)
+        if not isinstance(r, str) or not re.fullmatch(DOWNLOAD_REMOTE_RE, r) or ".." in r.split("/"):
+            bad.append("download %s: the remote path must be plain and absolute" % n)
+    steps = plan.get("ssh")
+    if not isinstance(steps, dict) or not steps:
+        bad.append("ssh must be a non-empty object STEP -> {command}")
+        steps = {}
+    for n, st in steps.items():
+        if not re.fullmatch(PLAN_STEP_RE, n):
+            bad.append("step name %r is not plain" % n)
+        if not isinstance(st, dict) or set(st) - {"command", "requires_downloads"}:
+            bad.append("step %s must have only command and requires_downloads" % n)
+            continue
+        c = st.get("command")
+        if not isinstance(c, str) or not c.strip() or any(ch in c for ch in "\n\r\0"):
+            bad.append("step %s: command must be one non-empty line" % n)
+        req = st.get("requires_downloads", [])
+        if not isinstance(req, list) or any(x not in dl for x in req):
+            bad.append("step %s: requires_downloads must name downloads of the plan" % n)
+    if bad:
+        raise Stop("the run plan is refused: " + "; ".join(bad))
+    return plan
+
+
+def load_plan(commit):
+    """(plan, SHA-256 of its bytes) as committed in COMMIT."""
+    data = git_out(["show", "%s:%s" % (commit, PLAN_PATH)], timeout=60)
+    return parse_plan(data), hashlib.sha256(data).hexdigest()
 
 
 def check_approval_file(path, state_dir=None):
@@ -1506,22 +1594,82 @@ class Run:
             return e.code
         return 0
 
+    def tree_file(self):
+        return os.path.join(self.state_dir, "tree-%s.tar" % self.appr["commit"])
+
+    def make_tree(self, plan):
+        """git archive of the approved commit (the plan's paths), made afresh."""
+        f = self.tree_file()
+        part = f + ".part"
+        for x in (f, part):
+            if os.path.lexists(x):
+                os.remove(x)
+        git_out(["archive", "--format=tar", "-o", part, self.appr["commit"], "--"] + plan["tree"]["paths"])
+        os.rename(part, f)
+        with open(f, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        self.log("tree archive of %s (%s): sha256 %s" % (self.appr["commit"][:12], " ".join(plan["tree"]["paths"]), sha))
+        return f
+
+    def record_tree(self, sha, remote):
+        rec = {"commit": self.appr["commit"], "sha256": sha, "remote": remote, "at": iso(now())}
+        tmp = os.path.join(self.state_dir, "tree-upload.json.part")
+        with open(tmp, "w") as f:
+            json.dump(rec, f, sort_keys=True)
+        os.rename(tmp, os.path.join(self.state_dir, "tree-upload.json"))
+
+    def tree_sha256(self):
+        """The SHA-256 of the tree upload the node verified, for this approved commit."""
+        try:
+            with open(os.path.join(self.state_dir, "tree-upload.json")) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            raise Stop("this step needs the verified tree upload first (upload NODE %s REMOTE)" % TREE_LOCAL)
+        if not isinstance(rec, dict) or rec.get("commit") != self.appr["commit"] \
+                or not re.fullmatch(r"[0-9a-f]{64}", str(rec.get("sha256", ""))):
+            raise Stop("the recorded tree upload is not of the approved commit: upload %s again" % TREE_LOCAL)
+        return rec["sha256"]
+
     def remote(self, part, cmd_args, op):
         if part not in NODES:
             raise Stop("node must be one of %s" % ", ".join(NODES))
         g, _ = self.gcloud(op)
         name = name_of(self.rid, part)
         timeout = float(os.environ.get("HS6_REMOTE_TIMEOUT", "14400"))
-        part_file = final_file = None
+        part_file = final_file = upload_local = None
+        plan = None
+        if g.execute:
+            plan, plan_sha = load_plan(self.appr["commit"])
+            self.log("run plan %s at %s: sha256 %s" % (PLAN_PATH, self.appr["commit"][:12], plan_sha))
+            if part not in plan["nodes"]:
+                raise Stop("%s is not a node of the approved run plan (%s)" % (part, ", ".join(plan["nodes"])))
         if op == "ssh":
+            command = " ".join(cmd_args)
+            if plan is not None:
+                step = plan["ssh"].get(command)
+                if step is None:
+                    raise Stop("ssh: %r is not a step of the approved run plan (steps: %s)"
+                               % (command, ", ".join(plan["ssh"])))
+                for n in step.get("requires_downloads", []):
+                    f = os.path.join(self.state_dir, "downloads", n)
+                    if not os.path.isfile(f) or os.path.islink(f):
+                        raise Stop("ssh %s: downloads/%s must be kept first (the run plan requires it)"
+                                   % (command, n))
+                label, command = command, step["command"]
+                if "{tree_sha256}" in command:
+                    command = command.replace("{tree_sha256}", self.tree_sha256())
+                self.log("ssh step %s: %s" % (label, command))
             args = ["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
-                    "--command=" + " ".join(cmd_args)]
+                    "--command=" + command]
         elif op == "download":
             remote, fname = cmd_args
             if not re.fullmatch(DOWNLOAD_REMOTE_RE, remote) or ".." in remote.split("/"):
                 raise Stop("download: the remote path must be absolute and plain: %r" % remote)
             if not re.fullmatch(DOWNLOAD_NAME_RE, fname) or fname.endswith(".part"):
                 raise Stop("download: the local name must be a plain file name: %r" % fname)
+            if plan is not None and plan["download"].get(fname) != remote:
+                raise Stop("download: %s -> %s is not in the approved run plan (%s)"
+                           % (remote, fname, ", ".join("%s <- %s" % kv for kv in sorted(plan["download"].items()))))
             ddir = os.path.join(self.state_dir, "downloads")
             final_file = os.path.join(ddir, fname)
             part_file = final_file + ".part"
@@ -1531,9 +1679,19 @@ class Run:
             args = ["compute", "scp", name + ":" + remote, part_file, "--zone=" + ZONE, "--tunnel-through-iap", P()]
         else:
             local, remote = cmd_args
-            if not os.path.isfile(local):
+            if plan is not None:
+                if local != TREE_LOCAL or remote != plan["tree"]["remote"]:
+                    raise Stop("upload: the approved run plan allows only '%s %s' (git archive of the "
+                               "approved commit)" % (TREE_LOCAL, plan["tree"]["remote"]))
+                upload_local = self.make_tree(plan)
+            elif local == TREE_LOCAL:
+                upload_local = "<git archive of the approved commit>"
+            elif not os.path.isfile(local):
                 raise Stop("no such local file: %s" % local)
-            args = ["compute", "scp", local, name + ":" + remote, "--zone=" + ZONE, "--tunnel-through-iap", P()]
+            else:
+                upload_local = local
+            args = ["compute", "scp", upload_local, name + ":" + remote, "--zone=" + ZONE,
+                    "--tunnel-through-iap", P()]
         if not g.execute:
             g.remote(args, name, timeout)
             return 0
@@ -1579,7 +1737,7 @@ class Run:
                 if e.code == EXIT_GUARD and not e.teardown:
                     record_stop(self.state_dir, {"event": "monitor-failed", "reason": str(e), "by": op})
             if op == "upload" and rc == 0 and stopped is None:
-                with open(cmd_args[0], "rb") as f:
+                with open(upload_local, "rb") as f:
                     want = hashlib.sha256(f.read()).hexdigest()
                 rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
                                             "--command=sha256sum " + shlex.quote(cmd_args[1])], name, timeout)
@@ -1589,6 +1747,8 @@ class Run:
                     rc = rc or 1
                 else:
                     out += "upload verified: %s %s\n" % (want, cmd_args[1])
+                    if plan is not None:
+                        self.record_tree(want, cmd_args[1])
             if op == "download":
                 verified = False
                 if rc == 0 and stopped is None and os.path.isfile(part_file) and not os.path.islink(part_file):

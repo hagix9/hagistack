@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "name": "stage6-6: build, release checks, nodocs, all-in-one acceptance on n1",
+  "nodes": ["n1"],
+  "tree": {
+    "paths": ["LICENSE", "rocky10.2", "acceptance/stage6/s66-node.sh", "acceptance/stage6/s66_web.py"],
+    "remote": "/var/tmp/hs6-tree.tar"
+  },
+  "ssh": {
+    "extract": {
+      "command": "sudo install -d -m 0700 /var/tmp/hs6 && sudo mkdir -m 0700 /var/tmp/hs6/tree /var/tmp/hs6/out && sudo install -m 0600 /var/tmp/hs6-tree.tar /var/tmp/hs6/tree.tar && echo '{tree_sha256}  /var/tmp/hs6/tree.tar' | sudo sha256sum -c - && sudo tar -xf /var/tmp/hs6/tree.tar -C /var/tmp/hs6/tree --no-same-owner"
+    },
+    "preflight": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh preflight"},
+    "build": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh build"},
+    "release": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh release"},
+    "nodocs": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh nodocs"},
+    "pack": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh pack"},
+    "install": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh install",
+      "requires_downloads": ["candidate.tar", "evidence-build.tar"]
+    },
+    "accept": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh accept"},
+    "evidence": {"command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh evidence"}
+  },
+  "download": {
+    "candidate.tar": "/var/tmp/hs6-dl/candidate.tar",
+    "evidence-build.tar": "/var/tmp/hs6-dl/evidence-build.tar",
+    "evidence-final.tar": "/var/tmp/hs6-dl/evidence-final.tar"
+  }
+}
