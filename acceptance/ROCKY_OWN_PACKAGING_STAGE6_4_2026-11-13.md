@@ -17,7 +17,8 @@ What was not done:
 | `9daac74` | `RELEASE-README.md` ships with every candidate; `make-rpm-release.sh` refuses a candidate that is not exactly the standard files, or whose `SHA256SUMS` does not list and verify each; notices: owner of the OpenStack marks, not "OpenStack Powered/Compatible", upstream changes sorted by kind |
 | `bf7dd30` | stage 6-4 record (first version) |
 | `6b3c033` | one publication order in `RELEASE-README.md`, `rpm-release.lock` and the lock candidate (audit M1); README wording; script header |
-| (this update) | audit results, re-run, record corrections |
+| `f875d62` | audit results, re-run, record corrections |
+| (this update) | re-audit result, clean-up |
 
 ## 1. Apache-2.0 §4(b) (modified files must carry notices of the change)
 
@@ -270,7 +271,33 @@ The lock candidate carries the new order.
 - `tests/test-rpm-source.sh` was not run: it needs `rpmbuild`, which the VM
   lacks and which was not installed (no extra download).
 
-**Re-audit:** (below)
+**Re-audit** (same agent, `git diff bf7dd30..f875d62`, parts re-checked in the
+VM):
+- **M1 resolved.** One publication order everywhere: lock commit → push → tag →
+  release from the tag → upload.
+  - With that order, an install from the tag reads a published lock, and the
+    download URL matches GitHub's release URL.
+  - Before the upload, the download fails and hagistack stops (fail-closed).
+  - The regenerated candidate was accepted by the installer's own
+    `parse_kv_file`.
+- LOW 1–9 addressed. The one new LOW was this record's missing "Clean-up"
+  section, now added.
+- **BLOCKER/HIGH/MEDIUM 0.**
+- Verdicts: §4(b) documentation GO; trademark GO (the logo option is the
+  Owner's); clean-room GO (relying on the records is the Owner's); RPM/SRPM
+  publication readiness GO; Git GO; Release Candidate **READY** (regenerate it
+  with the real tag, as in Owner decision 4).
+
+## Clean-up
+
+- The Lima VM `s64` and the downloaded image were deleted after the re-audit.
+- What is kept: the test script, its logs, the Neutron inventory script and the
+  VM definition, under `<CODEX_TMP>/hagistack-s64/evidence/` (36 KB).
+- The auditors' temporary directories were removed.
+- Untouched:
+  - the 21 untracked files;
+  - the original RPM set (`hagistack-ownpkg-2026-11-11/run-final3`);
+  - the stage 6-1 evidence.
 
 ## Owner decisions
 
