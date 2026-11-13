@@ -1,7 +1,16 @@
 #!/bin/bash
 # s66-node.sh — the fixed steps of stage 6-6 on node n1 (Rocky Linux 10.2 x86_64).
 #
-#   sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh STEP
+#   sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh run STEP
+#   sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh status
+#
+# `run STEP` starts STEP as a transient system service (systemd-run, unit
+# hs6-STEP), waits for it and prints its log; the step passed when it left
+# out/STEP.passed. The service is not part of the ssh session, so a dropped
+# connection, a timeout on the harness side or a restart of systemd-logind does
+# not kill a step that runs for an hour. `status` waits until no hs6-* unit is
+# running (at most 3.5 h) and prints every step's state and result: the way back
+# after a dropped connection. Neither starts anything else.
 #
 # It is run only through `hs6.py ssh`, whose commands are fixed by
 # acceptance/stage6/run-plan.json at the approved commit. This file reaches
@@ -21,7 +30,8 @@
 #
 # Each step runs once: a second start of a step refuses (no retry without a new
 # approval). Each step needs the step before it to have passed, except evidence,
-# which needs install to have started. Output: /var/tmp/hs6/out/<step>.log and
+# which needs only preflight to have started, so the logs of an early failure
+# can be fetched too. Only one step runs at a time. Output: /var/tmp/hs6/out/<step>.log and
 # <step>.result (one PASS / FAIL / NOTE line per check). Exit 0 only when no
 # check failed.
 #
@@ -79,6 +89,7 @@ s_preflight() {
         echo "gawk: $(rpm -q gawk)"
         echo "awk: $(awk --version 2>&1 | head -1)"
         echo "python3: $(python3 -V 2>&1)"
+        echo "selinux: $(getenforce 2>/dev/null || echo unknown)"
         echo "%__docdir_path: $(rpm --eval '%{__docdir_path}')"
         echo "nproc: $(nproc)"
         echo "memory: $(free -g | awk '/^Mem:/{print $2" GiB"}')"
@@ -174,7 +185,10 @@ s_nodocs() {
     local root opt rc
     for root in "$r1" "$r2"; do
         opt=""; [ "$root" = "$r1" ] && opt="--excludedocs"
-        mkdir -p "$root"; rpm --root "$root" --initdb
+        mkdir -p "$root/etc"; rpm --root "$root" --initdb
+        # the packages' users and groups are created in the scratch root (sysusers):
+        # give it the host's account files, so that works as on a real system
+        cp -p /etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/login.defs "$root/etc/" 2>/dev/null
         ( cd "$repo" && echo "$pkgs" | xargs -r rpm --root "$root" -i --nodeps --noscripts --notriggers --noplugins $opt ) \
             > "$OUT/nodocs-install-$(basename "$root").out" 2>&1; rc=$?
         check "rpm -i ${opt:-(with docs)} into $(basename "$root") exit 0" [ "$rc" -eq 0 ]
@@ -241,6 +255,7 @@ s_pack() {
 }
 
 # ----------------------------------------------------------------- install --
+link_up(){ ip -o link show "$1" 2>/dev/null | grep '[<,]UP[,>]' >/dev/null; }
 installed_mismatch() {   # installed packages named in the set whose header is not the set's
     local f
     ( cd "$SET_DIR/repo" && for f in *.rpm; do rpm -qp --qf '%{NAME}\t%{SHA256HEADER}\n' "$f"; done ) 2>/dev/null \
@@ -253,7 +268,7 @@ installed_mismatch() {   # installed packages named in the set whose header is n
 s_install() {
     set_env
     ip link show hgext0 >/dev/null 2>&1 || { ip link add hgext0 type dummy && ip link set hgext0 up; }
-    check "dummy provider interface hgext0 is up (never attached to the outside)" ip link show hgext0
+    check "dummy provider interface hgext0 is up (never attached to the outside)" link_up hgext0
     local t0 rc
     t0=$(date +%s)
     ( cd "$R" && ./hagistack all-in-one --rpm-source build --ext-nic hgext0 \
@@ -298,13 +313,13 @@ agents_alive() {
 }
 api_checks() {   # api_checks <label>
     local l="$1"
-    check "$l: Keystone issues a token" token_ok
-    check "$l: Nova API answers (flavor m1.tiny)" flavor_ok
+    check "$l: Keystone issues a token" wait_until 120 token_ok
+    check "$l: Nova API answers (flavor m1.tiny)" wait_until 120 flavor_ok
     check "$l: Nova scheduler, conductor and compute up" wait_until 300 services_up
-    check "$l: Neutron API answers (hagistack-tenant)" network_ok
+    check "$l: Neutron API answers (hagistack-tenant)" wait_until 120 network_ok
     check "$l: Neutron agents alive" wait_until 300 agents_alive
-    check "$l: Placement lists a resource provider" placement_ok
-    check "$l: a hypervisor is up" hypervisor_ok
+    check "$l: Placement lists a resource provider" wait_until 120 placement_ok
+    check "$l: a hypervisor is up" wait_until 120 hypervisor_ok
 }
 placement_ok() {
     ( set -a; . "$OPENRC"; set +a
@@ -372,9 +387,12 @@ docs_check() {
     done
     check "a documentation RPM with an HTML tree is in the set (${f##*/})" [ -n "$f" ]
     [ -n "$f" ] || return 0
-    dnf -y --setopt=install_weak_deps=False install "$f" > "$OUT/doc-install.out" 2>&1; rc=$?
+    # tsflags cleared: an image whose dnf.conf says nodocs would leave the HTML out
+    dnf -y --setopt=install_weak_deps=False --setopt=tsflags= install "$f" > "$OUT/doc-install.out" 2>&1; rc=$?
     check "dnf installs ${f##*/} from the set (exit $rc)" [ "$rc" -eq 0 ]
     html="$(rpm -qlp "$f" | grep '/html/index.html$' | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)"
+    check "its index page is installed ($html)" [ -f "$html" ]
+    [ -f "$html" ] || return 0
     html="${html%/index.html}"
     python3 -I -m http.server --bind 127.0.0.1 --directory "$html" 8999 > "$OUT/doc-http.log" 2>&1 & pid=$!
     sleep 2
@@ -415,28 +433,103 @@ s_accept() {
 
 # ---------------------------------------------------------------- evidence --
 s_evidence() {
-    local ev="$BASE/evidence-final"
-    rm -rf "$ev"; mkdir -p "$ev"
+    local ev="$BASE/evidence-final" d f
+    rm -rf "$ev"; mkdir -p "$ev/build"
     cp -p "$OUT"/*.result "$OUT"/*.log "$OUT"/*.out "$OUT"/*.txt "$OUT"/*.tsv "$ev/" 2>/dev/null
     [ -f "$OUT/set.env" ] && cp -p "$OUT/set.env" "$ev/"
+    # the build's own logs, also after a failed build
+    for d in /var/lib/hagistack/rpm-build/*/; do
+        [ -d "$d" ] || continue
+        mkdir -p "$ev/build/$(basename "$d")"
+        [ -f "$d/container.log" ] && cp -p "$d/container.log" "$ev/build/$(basename "$d")/"
+        [ -d "$d/out/logs" ] && cp -rp "$d/out/logs" "$ev/build/$(basename "$d")/logs"
+        for f in RPM-SHA256SUMS build-env.lock; do [ -f "$d/out/$f" ] && cp -p "$d/out/$f" "$ev/build/$(basename "$d")/"; done
+    done
+    [ -d "$BASE/release" ] && ( cd "$BASE/release" && find . -type f -printf '%P\n' | sort | xargs -r sha256sum ) > "$ev/release-sha256.txt"
     ( cd "$R" && ./hagistack status ) > "$ev/hagistack-status.txt" 2>&1
     rpm -qa --qf '%{NEVRA}\t%{SHA256HEADER}\n' | sort > "$ev/rpm-qa.tsv"
     systemctl --failed --no-legend --plain > "$ev/failed-units.txt" 2>&1
     systemctl list-units --type=service --no-legend --plain > "$ev/units.txt" 2>&1
-    # the evidence must not carry the admin password, a token or the guest key
-    local pw=""
-    [ -r "$OPENRC" ] && pw="$(sed -n 's/^export OS_PASSWORD=//p' "$OPENRC")"
-    if [ -n "$pw" ] && grep -rqF -- "$pw" "$ev"; then
-        stop "the admin password appears in the evidence: nothing is packed"
+    # The evidence must carry no secret: every password, secret, token or key value
+    # in /etc/hagistack and Horizon's secret key are looked for (never printed),
+    # and so are private keys and Keystone tokens. A hit packs nothing.
+    if ! python3 -I -c "$SECRET_SCAN" "$ev" > "$OUT/evidence-secret-hits.txt"; then
+        stop "a secret appears in the evidence (files: $(tr '\n' ' ' < "$OUT/evidence-secret-hits.txt")): nothing is packed"
     fi
-    grep -rlE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|gAAAA[A-Za-z0-9_-]{60,}' "$ev" > "$OUT/evidence-secret-hits.txt" \
-        && stop "a private key or token pattern appears in the evidence: nothing is packed"
-    pass "the evidence holds no admin password, private key or token pattern"
+    pass "the evidence holds no password, secret, private key or token"
     install -d -m 0755 "$DL"
     tar -cf "$DL/evidence-final.tar" -C "$BASE" evidence-final
     chmod 0644 "$DL/evidence-final.tar"
     check "evidence-final.tar written" [ -s "$DL/evidence-final.tar" ]
     ( cd "$DL" && sha256sum evidence-final.tar ) | tee -a "$OUT/download-sha256.txt"
+}
+
+SECRET_SCAN='
+import os, re, sys
+ev = sys.argv[1]
+etc = sys.argv[2] if len(sys.argv) > 2 else "/etc/hagistack"
+vals = set()
+for d, _s, files in os.walk(etc):
+    for n in files:
+        try:
+            text = open(os.path.join(d, n), errors="replace").read()
+        except OSError:
+            continue
+        for m in re.finditer(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", text, re.M):
+            k, v = m.group(1), m.group(2).strip().strip("\x27\x22")
+            if re.search(r"PASS|SECRET|TOKEN|KEY", k) and not k.endswith("SHA256") and len(v) >= 8:
+                vals.add(v.encode())
+for f in ("/etc/openstack-dashboard/.secret_key_store", "/var/lib/openstack-dashboard/secret_key"):
+    try:
+        v = open(f, "rb").read().strip()
+    except OSError:
+        continue
+    if len(v) >= 8:
+        vals.add(v)
+pat = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|gAAAA[A-Za-z0-9_-]{60,}")
+hits = 0
+for d, _s, files in os.walk(ev):
+    for n in files:
+        p = os.path.join(d, n)
+        data = open(p, "rb").read()
+        if pat.search(data) or any(v in data for v in vals):
+            print(os.path.relpath(p, ev))
+            hits += 1
+sys.stderr.write("%d secret values looked for\n" % len(vals))
+sys.exit(1 if hits else 0)
+'
+
+# ------------------------------------------------------- run and status --
+running_units(){ systemctl list-units --all --no-legend --plain 'hs6-*' 2>/dev/null | awk '$3 == "active" || $4 == "running" {print $1}'; }
+
+run_step() {     # run_step STEP: one step as a transient service, then its log
+    local step="$1" self busy
+    case " $STEPS " in *" $step "*) ;; *) echo "usage: s66-node.sh run {${STEPS// /|}}"; return 2 ;; esac
+    busy="$(running_units)"
+    [ -z "$busy" ] || { echo "STOP: a stage 6-6 step is still running: $busy (use status)"; return 3; }
+    self="$(readlink -f "$0")"
+    systemd-run --unit="hs6-$step" --collect --wait --quiet --service-type=exec \
+        --setenv=HOME=/root --setenv=LANG=C.UTF-8 /bin/bash "$self" "$step"
+    echo "---- $step: unit finished; its log ----"
+    cat "$OUT/$step.log" 2>/dev/null
+    [ -e "$OUT/$step.passed" ] && { echo "---- $step: PASSED ----"; return 0; }
+    echo "---- $step: NOT PASSED ----"; return 1
+}
+
+show_status() {
+    local end=$(( $(date +%s) + 12600 )) s state
+    while [ -n "$(running_units)" ] && [ "$(date +%s)" -lt "$end" ]; do sleep 30; done
+    [ -z "$(running_units)" ] || echo "still running after 3.5 h: $(running_units)"
+    for s in $STEPS; do
+        state="not started"
+        [ -d "$OUT/$s.started" ] && state="started, not passed"
+        [ -e "$OUT/$s.passed" ] && state="passed"
+        printf '%-10s %s\n' "$s" "$state"
+    done
+    for s in $STEPS; do
+        [ -f "$OUT/$s.result" ] && { echo "---- $s.result ----"; cat "$OUT/$s.result"; }
+    done
+    return 0
 }
 
 # -------------------------------------------------------------------- main --
@@ -448,7 +541,8 @@ main() {
     local prev="" s
     for s in $STEPS; do [ "$s" = "$STEP" ] && break; prev="$s"; done
     if [ "$STEP" = evidence ]; then
-        [ -d "$OUT/install.started" ] || { echo "STOP: install has not started"; exit 3; }
+        [ -d "$OUT/preflight.started" ] || { echo "STOP: preflight has not started"; exit 3; }
+        [ -z "$(running_units | grep -vx 'hs6-evidence.service')" ] || { echo "STOP: another step is running"; exit 3; }
     elif [ -n "$prev" ] && [ ! -e "$OUT/$prev.passed" ]; then
         echo "STOP: step $prev has not passed"; exit 3
     fi
@@ -462,5 +556,13 @@ main() {
     [ "$FAILS" -eq 0 ]
 }
 
+case "$STEP" in
+    run|status)
+        [ "$(id -u)" -eq 0 ] || { echo "STOP: run as root"; exit 2; }
+        [ -d "$OUT" ] || { echo "STOP: $OUT is missing (run the extract step first)"; exit 2; }
+        if [ "$STEP" = run ]; then run_step "${2:-}"; else show_status; fi
+        exit $? ;;
+esac
+case " $STEPS " in *" $STEP "*) ;; *) echo "usage: s66-node.sh {run STEP|status}, STEP one of: $STEPS"; exit 2 ;; esac
 main "$@" 2>&1 | tee -a "$OUT/$STEP.log"
 exit "${PIPESTATUS[0]}"

@@ -156,25 +156,29 @@ def harness_state():
 
 
 def run_plan_lines(top, head, ops):
-    """What the nodes will get, from the run plan in the commit being approved.
+    """What the nodes will get, from the run plan in the commit being approved,
+    read the way hs6.py reads it (verified git objects, nothing local applied).
     Needed when ssh, upload or download is approved: hs6.py refuses those
     without a valid plan in the approved commit."""
     if not set(ops) & {"ssh", "upload", "download"}:
         return []
-    p = subprocess.run([GIT, "-C", top, "show", "%s:%s" % (head, hs6.PLAN_PATH)], capture_output=True)
-    if p.returncode != 0:
-        raise Refused("ssh/upload/download need %s in the commit: %s"
-                      % (hs6.PLAN_PATH, p.stderr.decode("utf-8", "replace").strip()))
     try:
-        plan = hs6.parse_plan(p.stdout)
+        plan, plan_sha = hs6.load_plan(head, repo=top)
+        tree = hs6.tree_archive(head, plan["tree"]["paths"], repo=top)
     except hs6.Stop as e:
-        raise Refused(str(e))
-    out = ["  run plan    : %s %s (in the commit above)" % (hs6.PLAN_PATH, hashlib.sha256(p.stdout).hexdigest()[:16]),
+        raise Refused("ssh/upload/download need a valid %s in the commit: %s" % (hs6.PLAN_PATH, e))
+    out = ["  run plan    : %s (in the commit above)" % hs6.PLAN_PATH,
+           "    sha256    : %s" % plan_sha,
            "    nodes     : %s" % ", ".join(plan["nodes"]),
-           "    upload    : git archive of the commit (%s) -> %s"
-           % (" ".join(plan["tree"]["paths"]), plan["tree"]["remote"]),
-           "    ssh steps : %s" % ", ".join(plan["ssh"]),
-           "    downloads : %s" % ", ".join(plan["download"])]
+           "    upload    : %s -> %s" % (" ".join(plan["tree"]["paths"]), plan["tree"]["remote"]),
+           "    tree      : sha256 %s (%d bytes; hs6.py sends exactly this)" % (hashlib.sha256(tree).hexdigest(), len(tree)),
+           "    ssh steps :"]
+    for name, st in plan["ssh"].items():
+        req = st.get("requires_downloads")
+        out.append("      %-10s %s%s" % (name, st["command"], ("   [after: %s]" % ", ".join(req)) if req else ""))
+    out.append("    downloads :")
+    for name, remote in plan["download"].items():
+        out.append("      %-20s <- %s" % (name, remote))
     return out
 
 

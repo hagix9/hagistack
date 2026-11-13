@@ -91,29 +91,60 @@ There is no `--execute` flag.
 ## The run plan (what a node gets)
 
 `acceptance/stage6/run-plan.json` lists everything an approved run may do on its
-nodes. The harness reads it from the approved commit's object (`git show
-COMMIT:acceptance/stage6/run-plan.json`), never from the working file, and
-`hs6_approve.py` shows its SHA-256, nodes, steps and downloads before the Owner
-signs. With an approval, and only then:
+nodes.
 
+**How the harness reads the commit.** It reads the plan, and the files it sends,
+from the approved commit itself:
+- with git's raw objects (`cat-file --batch`), with every object id recomputed
+  from its bytes, starting from the commit id;
+- with replace objects, system and global configuration, filters, attributes and
+  line-ending conversion all off.
+
+So a replace ref, a smudge filter, `core.autocrlf` or a changed working file
+cannot change what is read: they either have no effect, or the run stops.
+
+**What the Owner sees.** Before signing, `hs6_approve.py` shows, read the same
+way:
+- the plan's full SHA-256;
+- its nodes;
+- every step's full command, and the downloads each step needs first;
+- every download with its remote path;
+- the full SHA-256 of the tree that will be uploaded.
+
+**What an approval allows.** With an approval, and only then:
 - `ssh NODE -- STEP` runs only the plan's command for STEP. The command line is
   the step's name, never a command. `{tree_sha256}` in a command becomes the
   SHA-256 of the tree upload the node verified for this commit. A step may name
   `requires_downloads`: it runs only once those files are kept in `downloads/`.
-- `upload NODE @tree REMOTE` sends only `git archive --format=tar` of the
-  approved commit, limited to the plan's paths, to the plan's remote path. The
-  harness makes the archive itself, checks its SHA-256 on the node, and records
-  it in `tree-upload.json`. No other local file can be uploaded.
+  A dry-run shows the command the plan at HEAD gives the step.
+- `upload NODE @tree REMOTE` sends only the plan's paths of the approved
+  commit, to the plan's remote path. The harness builds the tar itself, from
+  the verified objects. It is the same bytes on every run (owner root, modes
+  0644/0755, the commit's time) and the same as the SHA-256 the Owner was
+  shown.
+  - The file is written read-only.
+  - The upload must hash to the value computed in memory, and the node's
+    `sha256sum` must agree.
+  - It is then recorded in `tree-upload.json`.
+  - No other local file can be uploaded.
 - `download NODE REMOTE NAME` fetches only a `NAME -> REMOTE` pair of the plan.
 - A node not in the plan's `nodes` gets nothing. A missing or malformed plan
   refuses every ssh/upload/download (cleanup is not affected).
 
-The stage 6-6 plan uploads `LICENSE`, `rocky10.2/` and the two node files
-`s66-node.sh` and `s66_web.py`, and runs `s66-node.sh` step by step (extract,
-preflight, build, release, nodocs, pack, install, accept, evidence). The node
-script refuses to start a step twice, and to start a step before the previous
-one passed. The plan makes `install` wait until the candidate and the build
-evidence are downloaded.
+**The stage 6-6 plan.** It uploads `LICENSE`, `rocky10.2/` and the two node
+files `s66-node.sh` and `s66_web.py`. Each step is
+`s66-node.sh run STEP` (preflight, build, release, nodocs, pack, install, accept,
+evidence), after an extract step that checks the tree's SHA-256 again.
+- **Steps run as transient system services.** `run` starts the step as a
+  service (`systemd-run`, unit `hs6-STEP`), waits for it and prints its log.
+  Because the service is not part of the ssh session, a dropped connection or a
+  restart of systemd-logind does not kill a long build.
+- **`status`** waits until no step runs and prints every step's state and
+  results. It is how to get back the result after a dropped connection.
+- **Order.** The node script refuses to start a step twice, or before the
+  previous one passed. `evidence` needs only that preflight started, so the logs
+  of an early failure can be fetched. The plan makes `install` wait until the
+  candidate and the build evidence are downloaded.
 
 **What the plan does not fix.**
 - What the node fetches itself is pinned elsewhere, not by the plan:

@@ -25,6 +25,7 @@ import argparse
 import datetime
 import stat
 import hashlib
+import io
 import json
 import os
 import re
@@ -33,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -655,11 +657,11 @@ def repo_state():
 
 # ---------------------------------------------------------------- run plan --
 # What an approved run may do on its nodes, fixed by the approved commit: the
-# plan is read from that commit's object (git show COMMIT:PATH), never from the
+# plan is read from that commit's verified objects (commit_file), never from the
 # working file. In execute mode:
 #   ssh NODE -- STEP        runs only the plan's command for STEP ({tree_sha256}
 #                           becomes the SHA-256 of the verified tree upload);
-#   upload NODE @tree REMOTE  sends only `git archive` of the approved commit
+#   upload NODE @tree REMOTE  sends only a tar of the approved commit
 #                           (the plan's paths) to the plan's remote path;
 #   download NODE REMOTE NAME  fetches only a NAME -> REMOTE pair of the plan.
 # Anything else is refused. A step may require downloads to be kept first.
@@ -669,14 +671,134 @@ PLAN_STEP_RE = r"[a-z][a-z0-9-]{0,31}"
 PLAN_TREE_PATH_RE = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}"
 
 
-def git_out(args, timeout=600):
+# Git is read without anything local that could change what a commit holds:
+# no replace objects, no system or global configuration, no filters, no
+# attributes. The commit, its trees and its blobs are read raw (cat-file
+# --batch) and each object's id is recomputed from its bytes, so what is read
+# is exactly the approved commit's content, or the run stops.
+GIT_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+GIT_FLAGS = ["--no-replace-objects", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "-c", "core.attributesFile=" + os.devnull]
+
+
+def git_env():
+    env = dict(GIT_ENV)
+    if _TEST_MODE["on"]:
+        env.update({k: v for k, v in os.environ.items() if k.startswith("MOCK_")})
+    return env
+
+
+class GitObjects:
+    """Raw objects of the repository at REPO, each checked against its id."""
+
+    def __init__(self, repo):
+        try:
+            self.p = subprocess.Popen(git_cmd() + ["-C", repo] + GIT_FLAGS + ["cat-file", "--batch"],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env=git_env())
+        except OSError as e:
+            raise Stop("git cat-file could not run (%s): refused" % e)
+
+    def get(self, oid, want_type):
+        if not re.fullmatch(r"[0-9a-f]{40}", oid):
+            raise Stop("git object id %r is not a SHA-1 id: refused" % oid)
+        self.p.stdin.write((oid + "\n").encode())
+        self.p.stdin.flush()
+        head = self.p.stdout.readline().decode("ascii", "replace").split()
+        if len(head) != 3 or head[0] != oid or not head[2].isdigit():
+            raise Stop("git object %s is missing or unreadable: refused" % oid[:12])
+        size = int(head[2])
+        data = self.p.stdout.read(size + 1)[:size]
+        if hashlib.sha1(b"%s %d\0" % (head[1].encode(), size) + data).hexdigest() != oid:
+            raise Stop("git object %s does not match its id: refused" % oid[:12])
+        if head[1] != want_type:
+            raise Stop("git object %s is a %s, not a %s: refused" % (oid[:12], head[1], want_type))
+        return data
+
+    def close(self):
+        try:
+            self.p.stdin.close()
+            self.p.wait(timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            self.p.kill()
+
+
+def _tree_entries(data):
+    i = 0
+    while i < len(data):
+        sp = data.index(b" ", i)
+        nul = data.index(b"\0", sp)
+        yield data[i:sp].decode(), data[sp + 1:nul].decode("utf-8", "surrogateescape"), data[nul + 1:nul + 21].hex()
+        i = nul + 21
+
+
+def commit_files(commit, paths, repo=None):
+    """(commit time, [(path, executable, bytes)]) of the files at or under PATHS
+    in COMMIT, sorted by path. Only regular files: a symbolic link or a
+    submodule there is refused, and so is a path that names nothing."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit or ""):
+        raise Stop("the commit must be a full SHA-1 id: refused")
+    g = GitObjects(repo or repo_root())
     try:
-        p = subprocess.run(git_cmd() + ["-C", repo_root()] + args, capture_output=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as e:
-        raise Stop("git %s could not run (%s): refused" % (args[0], e))
-    if p.returncode != 0:
-        raise Stop("git %s failed (%s): refused" % (args[0], p.stderr.decode("utf-8", "replace").strip()))
-    return p.stdout
+        cdata = g.get(commit, "commit")
+        heads = cdata.split(b"\n\n", 1)[0].decode("utf-8", "replace").split("\n")
+        tree = next((h.split()[1] for h in heads if h.startswith("tree ")), "")
+        ctime = next((int(h.split()[-2]) for h in heads if h.startswith("committer ")), 0)
+        out, found = [], set()
+
+        def wanted(path, is_dir):
+            for q in paths:
+                if path == q or path.startswith(q + "/") or (is_dir and q.startswith(path + "/")):
+                    return True
+            return False
+
+        def walk(oid, prefix):
+            for mode, name, sub in _tree_entries(g.get(oid, "tree")):
+                if name in ("", ".", "..") or any(c in name for c in "/\n\r\0"):
+                    raise Stop("the commit holds an entry named %r: refused" % name)
+                path = prefix + name
+                if mode == "40000":
+                    if wanted(path, True):
+                        walk(sub, path + "/")
+                    continue
+                if not wanted(path, False):
+                    continue
+                if mode not in ("100644", "100755"):
+                    raise Stop("%s in the commit is not a regular file (mode %s): refused" % (path, mode))
+                out.append((path, mode == "100755", g.get(sub, "blob")))
+                found.update(q for q in paths if path == q or path.startswith(q + "/"))
+        walk(tree, "")
+    finally:
+        g.close()
+    missing = [q for q in paths if q not in found]
+    if missing:
+        raise Stop("not in the commit: %s: refused" % ", ".join(missing))
+    return ctime, sorted(out)
+
+
+def commit_file(commit, path, repo=None):
+    return commit_files(commit, [path], repo)[1][0][2]
+
+
+def tree_archive(commit, paths, repo=None):
+    """A tar of PATHS as committed in COMMIT, the same bytes on every run:
+    owner root, modes 0644/0755 (directories 0755), the commit's time."""
+    ctime, files = commit_files(commit, paths, repo)
+    buf = io.BytesIO()
+    dirs = sorted({"/".join(p.split("/")[:i]) for p, _x, _d in files for i in range(1, p.count("/") + 1)})
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        def info(name, kind, mode, size=0):
+            ti = tarfile.TarInfo(name)
+            ti.type, ti.mode, ti.size, ti.mtime = kind, mode, size, ctime
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = "root"
+            return ti
+        for d in dirs:
+            t.addfile(info(d, tarfile.DIRTYPE, 0o755))
+        for path, exe, data in files:
+            t.addfile(info(path, tarfile.REGTYPE, 0o755 if exe else 0o644, len(data)), io.BytesIO(data))
+    return buf.getvalue()
 
 
 def parse_plan(data):
@@ -689,7 +811,7 @@ def parse_plan(data):
     if not isinstance(plan, dict) or plan.get("format") != 1:
         raise Stop("the run plan must be a JSON object of format 1")
     nodes = plan.get("nodes")
-    if not isinstance(nodes, list) or not nodes or any(n not in NODES for n in nodes):
+    if not isinstance(nodes, list) or not nodes or any(not isinstance(n, str) or n not in NODES for n in nodes):
         bad.append("nodes must be a non-empty list of %s" % ", ".join(NODES))
     tree = plan.get("tree")
     if not isinstance(tree, dict) or not isinstance(tree.get("paths"), list) or not tree["paths"]:
@@ -724,16 +846,16 @@ def parse_plan(data):
         if not isinstance(c, str) or not c.strip() or any(ch in c for ch in "\n\r\0"):
             bad.append("step %s: command must be one non-empty line" % n)
         req = st.get("requires_downloads", [])
-        if not isinstance(req, list) or any(x not in dl for x in req):
+        if not isinstance(req, list) or any(not isinstance(x, str) or x not in dl for x in req):
             bad.append("step %s: requires_downloads must name downloads of the plan" % n)
     if bad:
         raise Stop("the run plan is refused: " + "; ".join(bad))
     return plan
 
 
-def load_plan(commit):
+def load_plan(commit, repo=None):
     """(plan, SHA-256 of its bytes) as committed in COMMIT."""
-    data = git_out(["show", "%s:%s" % (commit, PLAN_PATH)], timeout=60)
+    data = commit_file(commit, PLAN_PATH, repo)
     return parse_plan(data), hashlib.sha256(data).hexdigest()
 
 
@@ -1598,18 +1720,19 @@ class Run:
         return os.path.join(self.state_dir, "tree-%s.tar" % self.appr["commit"])
 
     def make_tree(self, plan):
-        """git archive of the approved commit (the plan's paths), made afresh."""
+        """(file, SHA-256) of the tar of the plan's paths in the approved commit,
+        built from verified git objects and written afresh, read-only."""
+        data = tree_archive(self.appr["commit"], plan["tree"]["paths"])
+        sha = hashlib.sha256(data).hexdigest()
         f = self.tree_file()
-        part = f + ".part"
-        for x in (f, part):
-            if os.path.lexists(x):
-                os.remove(x)
-        git_out(["archive", "--format=tar", "-o", part, self.appr["commit"], "--"] + plan["tree"]["paths"])
-        os.rename(part, f)
-        with open(f, "rb") as fh:
-            sha = hashlib.sha256(fh.read()).hexdigest()
+        if os.path.lexists(f):
+            os.chmod(f, 0o600)
+            os.remove(f)
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o400)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         self.log("tree archive of %s (%s): sha256 %s" % (self.appr["commit"][:12], " ".join(plan["tree"]["paths"]), sha))
-        return f
+        return f, sha
 
     def record_tree(self, sha, remote):
         rec = {"commit": self.appr["commit"], "sha256": sha, "remote": remote, "at": iso(now())}
@@ -1636,7 +1759,7 @@ class Run:
         g, _ = self.gcloud(op)
         name = name_of(self.rid, part)
         timeout = float(os.environ.get("HS6_REMOTE_TIMEOUT", "14400"))
-        part_file = final_file = upload_local = None
+        part_file = final_file = upload_local = tree_sha = None
         plan = None
         if g.execute:
             plan, plan_sha = load_plan(self.appr["commit"])
@@ -1645,6 +1768,14 @@ class Run:
                 raise Stop("%s is not a node of the approved run plan (%s)" % (part, ", ".join(plan["nodes"])))
         if op == "ssh":
             command = " ".join(cmd_args)
+            if plan is None:
+                # dry-run: show what the run plan at HEAD would run for this step
+                try:
+                    st = load_plan(repo_state()[0])[0]["ssh"].get(command)
+                except Stop:
+                    st = None
+                if st:
+                    print("DRY-RUN: step %r of the run plan at HEAD runs: %s" % (command, st["command"]))
             if plan is not None:
                 step = plan["ssh"].get(command)
                 if step is None:
@@ -1681,11 +1812,11 @@ class Run:
             local, remote = cmd_args
             if plan is not None:
                 if local != TREE_LOCAL or remote != plan["tree"]["remote"]:
-                    raise Stop("upload: the approved run plan allows only '%s %s' (git archive of the "
+                    raise Stop("upload: the approved run plan allows only '%s %s' (the tar of the "
                                "approved commit)" % (TREE_LOCAL, plan["tree"]["remote"]))
-                upload_local = self.make_tree(plan)
+                upload_local, tree_sha = self.make_tree(plan)
             elif local == TREE_LOCAL:
-                upload_local = "<git archive of the approved commit>"
+                upload_local = "<tar of the approved commit>"
             elif not os.path.isfile(local):
                 raise Stop("no such local file: %s" % local)
             else:
@@ -1742,7 +1873,10 @@ class Run:
                 rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
                                             "--command=sha256sum " + shlex.quote(cmd_args[1])], name, timeout)
                 got = out2.split()
-                if rc2 != 0 or not got or got[0] != want:
+                if tree_sha is not None and want != tree_sha:
+                    err += "\nthe tree file changed after it was made (%s, not %s): refused" % (want[:16], tree_sha[:16])
+                    rc = rc or 1
+                elif rc2 != 0 or not got or got[0] != want:
                     err += "\nSHA-256 check failed after the transfer (%s): %s" % (rc2, err2.strip())
                     rc = rc or 1
                 else:

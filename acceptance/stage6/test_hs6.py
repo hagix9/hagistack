@@ -35,7 +35,30 @@ TEST_PLAN = {
     "ssh": {"true": {"command": "true"}, "false": {"command": "false"}, "long-step": {"command": "long-step"}},
     "download": {"out.tar": "/root/out.tar"},
 }
-TREE_BYTES = ("mock tree %s LICENSE rocky10.2\n" % COMMIT).encode()
+FIXED_TREE_SHA256 = "553e90bef0f392e6003cdcc4a811f7650b0a213130a753cbf9cc3e64aa34b30d"
+GIT = ["/usr/bin/git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+
+
+def git_repo(root, plan):
+    """A small real repository: LICENSE, rocky10.2/, and the run plan."""
+    subprocess.run(GIT + ["-C", root, "init", "-q"], check=True)
+    os.makedirs(os.path.join(root, "rocky10.2", "sub"))
+    os.makedirs(os.path.join(root, "acceptance", "stage6"))
+    for rel, data in (("LICENSE", "MIT\n"), ("rocky10.2/a.sh", "#!/bin/sh\necho approved\n"),
+                      ("rocky10.2/sub/b.txt", "b\r\nline\n"), ("other.txt", "not shipped\n")):
+        with open(os.path.join(root, rel), "w", newline="") as f:
+            f.write(data)
+    os.chmod(os.path.join(root, "rocky10.2", "a.sh"), 0o755)
+    return git_commit(root, plan)
+
+
+def git_commit(root, plan):
+    with open(os.path.join(root, hs6.PLAN_PATH), "w") as f:
+        json.dump(plan, f)
+    subprocess.run(GIT + ["-C", root, "add", "-A"], check=True)
+    subprocess.run(GIT + ["-C", root, "commit", "-q", "--allow-empty", "-m", "plan"], check=True)
+    return subprocess.run(GIT + ["-C", root, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
 ACCOUNT = "tester@example.invalid"
 T0 = calendar.timegm((2026, 11, 20, 1, 0, 0))
 SINTER_INSTANCE = "sinter-v180-gate-o6s1a"
@@ -114,14 +137,16 @@ class Base(unittest.TestCase):
         self.mockbin = MOCK
         self.t = T0
         self.approval = os.path.join(self.tmp, "approval.json")
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo)
+        self.commit = git_repo(self.repo, TEST_PLAN)
         self.write_approval()
-        self.plan = os.path.join(self.tmp, "run-plan.json")
-        self.write_plan(TEST_PLAN)
         self.env = {"PATH": bindir + os.pathsep + "/usr/bin:/bin", "HOME": self.tmp,
                     "HS6_OWNER_SIGNERS": SIGNERS,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
                     "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10", "HS6_GIT": MOCK_GIT,
-                    "HS6_REGISTRY": os.path.join(self.tmp, "registry"), "MOCK_GIT_PLAN": self.plan}
+                    "HS6_REGISTRY": os.path.join(self.tmp, "registry"), "MOCK_GIT_REPO": self.repo,
+                    "MOCK_GIT_HEAD": self.commit}
         # in-process calls (Protection tests) must not reach the real gcloud either
         self._saved_env = {k: os.environ.get(k) for k in ("HS6_GCLOUD", "PATH")}
         os.environ["HS6_GCLOUD"] = os.path.join(bindir, "gcloud")
@@ -142,7 +167,7 @@ class Base(unittest.TestCase):
              "owner_statement": hs6.owner_statement(RID), "harness_sha256": hs6.harness_sha256(),
              "operations": list(hs6.OPERATIONS), "budget_usd": 8, "max_hours": 6,
              "approved_at": hs6.iso(T0 - 60), "expires_at": hs6.iso(T0 + 20 * 3600), "nonce": "ab" * 16,
-             "commit": COMMIT}
+             "commit": self.commit}
         a.update(over)
         a = {k: v for k, v in a.items() if v is not None}
         with open(self.approval, "w") as f:
@@ -154,8 +179,13 @@ class Base(unittest.TestCase):
             sign(self.approval, key)
 
     def write_plan(self, plan):
-        with open(self.plan, "w") as f:
-            json.dump(plan, f)
+        """Commit PLAN in the test repository and approve that commit."""
+        self.commit = git_commit(self.repo, plan)
+        self.env["MOCK_GIT_HEAD"] = self.commit
+        self.write_approval()
+
+    def tree_bytes(self):
+        return hs6.tree_archive(self.commit, ["LICENSE", "rocky10.2"], repo=self.repo)
 
     def hs(self, *args, approval=True, env=None, rid=RID):
         e = dict(self.env, HS6_NOW=str(self.t))
@@ -711,13 +741,13 @@ class Upload(Base):
         self.assertEqual(rc, hs6.EXIT_REMOTE, out)
         self.assertIn("SHA-256 check failed", out)
         self.assertFalse(os.path.exists(os.path.join(self.sdir, "tree-upload.json")))
-        want = hashlib.sha256(TREE_BYTES).hexdigest()
+        want = hashlib.sha256(self.tree_bytes()).hexdigest()
         self.set_mock(lambda s: s.update(remote_sha={"/tmp/tree.tar": want}))
         rc, out = self.hs("upload", "n1", "@tree", "/tmp/tree.tar")
         self.assertEqual(rc, 0, out)
         with open(os.path.join(self.sdir, "tree-upload.json")) as f:
             rec = json.load(f)
-        self.assertEqual((rec["commit"], rec["sha256"], rec["remote"]), (COMMIT, want, "/tmp/tree.tar"))
+        self.assertEqual((rec["commit"], rec["sha256"], rec["remote"]), (self.commit, want, "/tmp/tree.tar"))
 
 
 class RunPlan(Base):
@@ -725,6 +755,13 @@ class RunPlan(Base):
 
     def calls(self, word):
         return [c for c in self.mock().get("calls", []) if word in c]
+
+    def test_dry_run_shows_the_plan_command(self):
+        # dry-run has no test mode: it reads the plan at this checkout's real HEAD
+        rc, out = self.hs("ssh", "n1", "--", "build", approval=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("step 'build' of the run plan at HEAD runs: sudo ", out)
+        self.assertNotIn("calls", self.mock())
 
     def test_a_command_outside_the_plan_is_refused_before_any_ssh(self):
         self.up("n1")
@@ -748,7 +785,7 @@ class RunPlan(Base):
         rc, out = self.hs("ssh", "n1", "--", "extract")
         self.assertNotEqual(rc, 0, out)
         self.assertIn("needs the verified tree upload first", out)
-        want = hashlib.sha256(TREE_BYTES).hexdigest()
+        want = hashlib.sha256(self.tree_bytes()).hexdigest()
         self.set_mock(lambda s: s.update(remote_sha={"/tmp/tree.tar": want}))
         self.assertEqual(self.hs("upload", "n1", "@tree", "/tmp/tree.tar")[0], 0)
         rc, out = self.hs("ssh", "n1", "--", "extract")
@@ -790,14 +827,25 @@ class RunPlan(Base):
                 self.assertIn("allows only '@tree /tmp/tree.tar'", out)
         self.assertEqual(self.calls("scp"), [])
 
-    def test_the_tree_is_git_archive_of_the_approved_commit(self):
+    def test_the_tree_is_built_from_the_approved_commits_objects(self):
         log = os.path.join(self.tmp, "git.log")
         self.up("n1")
+        # a later commit and a changed working file do not change what is sent
+        approved = self.commit
+        with open(os.path.join(self.repo, "rocky10.2", "a.sh"), "w") as f:
+            f.write("echo INJECTED\n")
         self.hs("upload", "n1", "@tree", "/tmp/tree.tar", env={"MOCK_GIT_LOG": log})
         with open(log) as f:
-            self.assertEqual(f.read(), "archive %s LICENSE rocky10.2\n" % COMMIT)
-        with open(os.path.join(self.sdir, "tree-%s.tar" % COMMIT), "rb") as f:
-            self.assertEqual(f.read(), TREE_BYTES)
+            calls = f.read().split("\n")
+        self.assertTrue(all(c.startswith("--no-replace-objects") and c.endswith("cat-file --batch")
+                            for c in calls if c), calls)
+        f = os.path.join(self.sdir, "tree-%s.tar" % approved)
+        with open(f, "rb") as fh:
+            data = fh.read()
+        self.assertEqual(data, self.tree_bytes())
+        self.assertNotIn(b"INJECTED", data)
+        self.assertNotIn(b"not shipped", data)
+        self.assertEqual(stat.S_IMODE(os.stat(f).st_mode), 0o400)
 
     def test_a_download_outside_the_plan_is_refused(self):
         self.up("n1")
@@ -817,12 +865,18 @@ class RunPlan(Base):
 
     def test_no_plan_in_the_commit_refuses_remote_work_but_not_cleanup(self):
         self.up("n1")
-        os.remove(self.plan)
+        os.remove(os.path.join(self.repo, hs6.PLAN_PATH))
+        subprocess.run(GIT + ["-C", self.repo, "commit", "-q", "-am", "no plan"], check=True)
+        self.commit = subprocess.run(GIT + ["-C", self.repo, "rev-parse", "HEAD"], capture_output=True,
+                                     text=True).stdout.strip()
+        self.env["MOCK_GIT_HEAD"] = self.commit
+        self.write_approval()
         rc, out = self.hs("ssh", "n1", "--", "true")
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("git show failed", out)
+        self.assertIn("not in the commit: acceptance/stage6/run-plan.json", out)
         rc, out = self.hs("teardown")
         self.assertEqual(rc, 0, out)
+
 
     def test_malformed_plans_are_refused(self):
         bad = [
@@ -837,6 +891,9 @@ class RunPlan(Base):
             dict(TEST_PLAN, tree={"paths": ["/etc"], "remote": "/tmp/t"}),
             dict(TEST_PLAN, download={"out.tar": "/root/../etc/shadow"}),
             dict(TEST_PLAN, download={"../x": "/root/x"}),
+            dict(TEST_PLAN, nodes=[["n1"]]),
+            dict(TEST_PLAN, ssh={"x": {"command": "a", "requires_downloads": [["out.tar"]]}}),
+            dict(TEST_PLAN, ssh={"x": {"command": 5}}),
         ]
         self.up("n1")
         for plan in bad:
@@ -846,6 +903,97 @@ class RunPlan(Base):
                 self.assertNotEqual(rc, 0, out)
                 self.assertIn("run plan", out)
         self.assertEqual(self.calls("ssh"), [])
+
+
+class CommitContent(unittest.TestCase):
+    """What a commit holds is read from verified objects: nothing local changes it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hs6git-", dir=os.environ.get("TMPDIR"))
+        self.repo = self.tmp
+        env = dict(os.environ, GIT_AUTHOR_DATE="2026-11-14T00:00:00Z", GIT_COMMITTER_DATE="2026-11-14T00:00:00Z")
+        self._env = os.environ.copy()
+        os.environ.update(GIT_AUTHOR_DATE=env["GIT_AUTHOR_DATE"], GIT_COMMITTER_DATE=env["GIT_COMMITTER_DATE"])
+        try:
+            self.commit = git_repo(self.repo, TEST_PLAN)
+        finally:
+            os.environ.clear()
+            os.environ.update(self._env)
+        self.paths = ["LICENSE", "rocky10.2"]
+        self.clean = hs6.tree_archive(self.commit, self.paths, repo=self.repo)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def git(self, *args):
+        subprocess.run(GIT + ["-C", self.repo] + list(args), check=True, capture_output=True)
+
+    def test_the_archive_is_the_same_bytes_on_every_python(self):
+        # a fixed commit (fixed dates) gives a fixed archive, on 3.9 and on 3.13 alike
+        self.assertEqual(hashlib.sha256(self.clean).hexdigest(), FIXED_TREE_SHA256)
+
+    def test_the_archive_holds_exactly_the_committed_files(self):
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(self.clean)) as t:
+            members = {m.name: m for m in t.getmembers()}
+            self.assertEqual(sorted(members), ["LICENSE", "rocky10.2", "rocky10.2/a.sh", "rocky10.2/sub",
+                                               "rocky10.2/sub/b.txt"])
+            self.assertEqual(stat.S_IMODE(members["rocky10.2/a.sh"].mode), 0o755)
+            self.assertEqual(stat.S_IMODE(members["LICENSE"].mode), 0o644)
+            self.assertEqual(t.extractfile("rocky10.2/sub/b.txt").read(), b"b\r\nline\n")
+
+    def test_replace_objects_do_not_change_it(self):
+        other = subprocess.run(GIT + ["-C", self.repo, "hash-object", "-w", "--stdin"], input=b"echo INJECTED\n",
+                               capture_output=True, check=True).stdout.decode().strip()
+        blob = subprocess.run(GIT + ["-C", self.repo, "rev-parse", "%s:rocky10.2/a.sh" % self.commit],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.git("replace", blob, other)
+        shown = subprocess.run(GIT + ["-C", self.repo, "show", "%s:rocky10.2/a.sh" % self.commit],
+                               capture_output=True, check=True).stdout
+        self.assertEqual(shown, b"echo INJECTED\n")      # plain git is fooled ...
+        self.assertEqual(hs6.tree_archive(self.commit, self.paths, repo=self.repo), self.clean)   # ... this is not
+
+    def test_filters_attributes_and_line_endings_do_not_change_it(self):
+        with open(os.path.join(self.repo, ".git", "info", "attributes"), "w") as f:
+            f.write("* filter=x text eol=crlf\n")
+        self.git("config", "filter.x.smudge", "sed s/approved/INJECTED/")
+        self.git("config", "core.autocrlf", "true")
+        self.assertEqual(hs6.tree_archive(self.commit, self.paths, repo=self.repo), self.clean)
+
+    def test_the_working_tree_does_not_matter(self):
+        with open(os.path.join(self.repo, "rocky10.2", "a.sh"), "w") as f:
+            f.write("echo INJECTED\n")
+        with open(os.path.join(self.repo, hs6.PLAN_PATH), "w") as f:
+            f.write("{}")
+        self.assertEqual(hs6.tree_archive(self.commit, self.paths, repo=self.repo), self.clean)
+        self.assertEqual(hs6.load_plan(self.commit, repo=self.repo)[0], TEST_PLAN)
+
+    def test_a_corrupt_object_is_refused(self):
+        blob = subprocess.run(GIT + ["-C", self.repo, "rev-parse", "%s:LICENSE" % self.commit],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        import zlib
+        path = os.path.join(self.repo, ".git", "objects", blob[:2], blob[2:])
+        os.chmod(path, 0o644)
+        with open(path, "wb") as f:
+            f.write(zlib.compress(b"blob 4\0EVIL"))
+        with self.assertRaises(hs6.Stop):
+            hs6.tree_archive(self.commit, self.paths, repo=self.repo)
+
+    def test_missing_paths_links_and_bad_ids_are_refused(self):
+        with self.assertRaises(hs6.Stop):
+            hs6.tree_archive(self.commit, ["LICENSE", "nothere"], repo=self.repo)
+        with self.assertRaises(hs6.Stop):
+            hs6.tree_archive("c" * 40, self.paths, repo=self.repo)
+        with self.assertRaises(hs6.Stop):
+            hs6.tree_archive("HEAD", self.paths, repo=self.repo)
+        os.symlink("a.sh", os.path.join(self.repo, "rocky10.2", "link"))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "link")
+        head = subprocess.run(GIT + ["-C", self.repo, "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        with self.assertRaises(hs6.Stop):
+            hs6.tree_archive(head, self.paths, repo=self.repo)
 
 
 class CommittedRunPlan(unittest.TestCase):
@@ -869,10 +1017,12 @@ class CommittedRunPlan(unittest.TestCase):
         with open(os.path.join(HERE, "s66-node.sh")) as f:
             src = f.read()
         steps = src.split('STEPS="', 1)[1].split('"', 1)[0].split()
-        self.assertEqual(list(self.plan["ssh"]), ["extract"] + steps)
+        self.assertEqual(list(self.plan["ssh"]), ["extract"] + steps + ["status"])
+        self.assertEqual(self.plan["ssh"]["status"]["command"],
+                         "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh status")
         for name in steps:
             self.assertEqual(self.plan["ssh"][name]["command"],
-                             "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh " + name)
+                             "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh run " + name)
             self.assertIn("\ns_%s() {" % name, src)
         self.assertIn("{tree_sha256}", self.plan["ssh"]["extract"]["command"])
         self.assertEqual(self.plan["ssh"]["install"]["requires_downloads"], ["candidate.tar", "evidence-build.tar"])
@@ -1699,7 +1849,7 @@ class SignedApproval(Base):
         doc = hs6_approve.build_approval(RID, ["init", "network", "n2", "ssh", "upload", "teardown", "residual"],
                                          8.0, 6.0, 12.0, ACCOUNT, hs6.harness_sha256(),
                                          datetime.datetime.fromtimestamp(T0 - 60, datetime.timezone.utc), "cd" * 16,
-                                         COMMIT)
+                                         self.commit)
         with open(self.approval, "wb") as f:
             f.write((json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode())
         os.chmod(self.approval, 0o600)
@@ -1799,31 +1949,26 @@ class ApproveTool(unittest.TestCase):
         import hs6_approve
         repo = tempfile.mkdtemp(prefix="hs6plan-", dir=os.environ.get("TMPDIR"))
         try:
-            g = ["/usr/bin/git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-            subprocess.run(g[:3] + ["init", "-q"], check=True)
-            os.makedirs(os.path.join(repo, "acceptance", "stage6"))
-            with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
-                json.dump(TEST_PLAN, f)
-            subprocess.run(g + ["add", hs6.PLAN_PATH], check=True)
-            subprocess.run(g + ["commit", "-q", "-m", "plan"], check=True)
-            head = subprocess.run(g[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            plan = dict(TEST_PLAN, ssh={"true": {"command": "true"},
+                                        "inst": {"command": "sudo do-it", "requires_downloads": ["out.tar"]}})
+            head = git_repo(repo, plan)
             self.assertEqual(hs6_approve.run_plan_lines(repo, head, ["init", "teardown"]), [])
             lines = "\n".join(hs6_approve.run_plan_lines(repo, head, ["init", "ssh", "teardown"]))
-            self.assertIn("ssh steps : true, false, long-step", lines)
-            self.assertIn("downloads : out.tar", lines)
+            with open(os.path.join(repo, hs6.PLAN_PATH), "rb") as f:
+                self.assertIn("sha256    : " + hashlib.sha256(f.read()).hexdigest(), lines)
+            tree = hs6.tree_archive(head, ["LICENSE", "rocky10.2"], repo=repo)
+            self.assertIn("tree      : sha256 " + hashlib.sha256(tree).hexdigest(), lines)
+            self.assertIn("inst       sudo do-it   [after: out.tar]", lines)
+            self.assertIn("out.tar              <- /root/out.tar", lines)
             # the working file is not what is shown: only the commit's
             with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
                 f.write("{}")
-            self.assertIn("ssh steps : true", "\n".join(hs6_approve.run_plan_lines(repo, head, ["ssh"])))
-            with open(os.path.join(repo, hs6.PLAN_PATH), "w") as f:
-                json.dump(dict(TEST_PLAN, format=9), f)
-            subprocess.run(g + ["commit", "-q", "-am", "bad"], check=True)
-            head2 = subprocess.run(g[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            self.assertIn("sudo do-it", "\n".join(hs6_approve.run_plan_lines(repo, head, ["ssh"])))
+            head2 = git_commit(repo, dict(TEST_PLAN, format=9))
             with self.assertRaises(hs6_approve.Refused):
                 hs6_approve.run_plan_lines(repo, head2, ["upload"])
         finally:
             shutil.rmtree(repo)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

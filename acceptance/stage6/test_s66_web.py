@@ -18,6 +18,7 @@ sys.path.insert(0, HERE)
 import s66_web  # noqa: E402
 
 LOGO, SPLASH, FAV = b"<svg>hagistack logo</svg>", b"<svg>hagistack splash</svg>", b"ICOhagistack"
+TOUCH, PINNED = b"PNGhagistack-touch", b"<svg>hagistack pinned</svg>"
 DOC = {"hagistack-doc-logo-full.svg": b"<svg>doc full</svg>", "hagistack-doc-logo-full.png": b"PNGfull",
        "hagistack-doc-logo-vert.svg": b"<svg>doc vert</svg>", "hagistack-doc-logo-vert.png": b"PNGvert",
        "hagistack-doc-favicon.ico": b"ICOdoc"}
@@ -57,6 +58,9 @@ class Site(http.server.BaseHTTPRequestHandler):
 
 
 LOGIN = b'''<html><head><link rel="shortcut icon" href="/dashboard/static/dashboard/img/favicon.ico">
+<link rel="apple-touch-icon" href="/dashboard/static/dashboard/img/apple-touch-icon.png">
+<style>@import url("/dashboard/static/dashboard/css/b.css"); .z{background:url(/dashboard/static/dashboard/img/bg2.png)}</style>
+<img srcset="/dashboard/static/dashboard/img/i1.png 1x, /dashboard/static/dashboard/img/i2.png 2x">
 <link rel="stylesheet" href="/dashboard/static/dashboard/css/a.css"></head>
 <body><img class="splash-logo" src="/dashboard/static/dashboard/img/logo-splash.svg">
 <form method="POST" action="/dashboard/auth/login/">
@@ -73,7 +77,10 @@ def horizon_files(**over):
          "/dashboard/static/dashboard/img/bg.png": b"PNG",
          "/dashboard/static/dashboard/img/favicon.ico": FAV,
          "/dashboard/static/dashboard/img/logo.svg": LOGO,
-         "/dashboard/static/dashboard/img/logo-splash.svg": SPLASH}
+         "/dashboard/static/dashboard/img/logo-splash.svg": SPLASH,
+         "/dashboard/static/dashboard/img/apple-touch-icon.png": TOUCH,
+         "/dashboard/static/dashboard/img/bg2.png": b"PNG2", "/dashboard/static/dashboard/img/i1.png": b"I1",
+         "/dashboard/static/dashboard/img/i2.png": b"I2", "/dashboard/static/dashboard/css/b.css": b".y{}"}
     f.update(over)
     return {k: v for k, v in f.items() if v is not None}
 
@@ -99,7 +106,8 @@ class Base(unittest.TestCase):
         os.makedirs(self.images)
         os.makedirs(self.docimg)
         for n, b in (("hagistack-logo.svg", LOGO), ("hagistack-logo-splash.svg", SPLASH),
-                     ("hagistack-favicon.ico", FAV)):
+                     ("hagistack-favicon.ico", FAV), ("hagistack-apple-touch-icon.png", TOUCH),
+                     ("hagistack-safari-pinned-tab.svg", PINNED)):
             with open(os.path.join(self.images, n), "wb") as f:
                 f.write(b)
         for n, b in DOC.items():
@@ -183,6 +191,27 @@ class Horizon(Base):
             Site.do_POST = orig
         self.assertEqual(rc, 1, out)
         self.assertIn("not the login form (302)", out)
+
+
+class HorizonRefs(Base):
+    def test_style_blocks_srcset_and_imports_are_fetched(self):
+        for path in ("/dashboard/static/dashboard/img/bg2.png", "/dashboard/static/dashboard/img/i2.png",
+                     "/dashboard/static/dashboard/css/b.css"):
+            with self.subTest(path=path):
+                rc, out = self.horizon(horizon_files(**{path: None}))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(path + " returned HTTP 404", out)
+
+    def test_a_style_attribute_is_fetched(self):
+        page = ADMIN.replace(b"</body>", b'<div style="background:url(/dashboard/static/x.png)"></div></body>')
+        rc, out = self.horizon(horizon_files(**{"/dashboard/admin/": page}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("/dashboard/static/x.png returned HTTP 404", out)
+
+    def test_the_upstream_touch_icon_fails(self):
+        rc, out = self.horizon(horizon_files(**{"/dashboard/static/dashboard/img/apple-touch-icon.png": b"PNGup"}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL  login page: /dashboard/static/dashboard/img/apple-touch-icon.png", out)
 
 
 class Docs(Base):

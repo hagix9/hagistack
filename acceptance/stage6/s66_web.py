@@ -42,7 +42,11 @@ HORIZON_IMAGES = {
     "logo.svg": "hagistack-logo.svg",
     "logo-splash.svg": "hagistack-logo-splash.svg",
     "favicon.ico": "hagistack-favicon.ico",
+    "apple-touch-icon.png": "hagistack-apple-touch-icon.png",
+    "safari-pinned-tab.svg": "hagistack-safari-pinned-tab.svg",
 }
+# these must be loaded by some checked page; the others are compared when loaded
+HORIZON_REQUIRED = ("logo.svg", "logo-splash.svg", "favicon.ico")
 DOC_IMAGES = {
     "images/logo-full.svg": "hagistack-doc-logo-full.svg",
     "images/logo-full.png": "hagistack-doc-logo-full.png",
@@ -77,6 +81,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+CSS_URL = re.compile(r"url\(\s*(['\"]?)([^'\")]+)\1\s*\)")
+CSS_IMPORT = re.compile(r"@import\s+(?:url\(\s*)?(['\"]?)([^'\")\s;]+)\1")
+
+
+def css_refs(css):
+    """(kind, url) of what a stylesheet loads: @import first, then url(...)."""
+    out = [("style", m.group(2)) for m in CSS_IMPORT.finditer(css)]
+    for m in CSS_URL.finditer(css):
+        u = m.group(2).strip()
+        if not u.startswith("data:"):
+            out.append(("image" if u.split("?")[0].lower().endswith(IMAGE_EXT) else "font", u))
+    return out
+
+
 class Refs(html.parser.HTMLParser):
     """The resources a browser loads for a page (not links it may follow)."""
 
@@ -85,9 +103,22 @@ class Refs(html.parser.HTMLParser):
         self.refs = []      # (kind, url)
         self.forms = []     # (action, {hidden name: value})
         self._form = None
+        self._style = False
+
+    def handle_data(self, data):
+        if self._style:
+            self.refs.extend(css_refs(data))
 
     def handle_starttag(self, tag, attrs):
         a = {k: (v or "") for k, v in attrs}
+        if a.get("style"):
+            self.refs.extend(css_refs(a["style"]))
+        if tag in ("img", "source") and a.get("srcset"):
+            for part in a["srcset"].split(","):
+                if part.strip():
+                    self.refs.append(("image", part.split()[0]))
+        if tag == "style":
+            self._style = True
         if tag == "img" and a.get("src"):
             self.refs.append(("image", a["src"]))
         elif tag == "script" and a.get("src"):
@@ -109,10 +140,8 @@ class Refs(html.parser.HTMLParser):
     def handle_endtag(self, tag):
         if tag == "form":
             self._form = None
-
-
-CSS_URL = re.compile(r"url\(\s*(['\"]?)([^'\")]+)\1\s*\)")
-CSS_IMPORT = re.compile(r"@import\s+(['\"])([^'\"]+)\1")
+        if tag == "style":
+            self._style = False
 
 
 class Fetcher:
@@ -160,14 +189,7 @@ class Fetcher:
                 if st != 200:
                     self.r.line("FAIL", "%s: %s %s returned HTTP %s" % (page_url, kind, url, st))
                 if st == 200 and kind == "style":
-                    css = data.decode("utf-8", "replace")
-                    for m in CSS_IMPORT.finditer(css):
-                        todo.append(("style", urllib.parse.urljoin(url, m.group(2))))
-                    for m in CSS_URL.finditer(css):
-                        u = m.group(2).strip()
-                        if not u.startswith("data:"):
-                            todo.append(("image" if u.split("?")[0].lower().endswith(IMAGE_EXT) else "font",
-                                         urllib.parse.urljoin(url, u)))
+                    todo.extend((k, urllib.parse.urljoin(url, u)) for k, u in css_refs(data.decode("utf-8", "replace")))
             st, data = self.seen[url]
             if st == 200:
                 loaded[urllib.parse.urlsplit(url).path] = data
@@ -238,7 +260,7 @@ def horizon(a, r):
                        "%s returns HTTP 200 with a session, not the login form (%s)" % (url, st)):
             continue
         seen |= match_images(f.assets(url, body), HORIZON_IMAGES, images, r, page)
-    for key in HORIZON_IMAGES:
+    for key in HORIZON_REQUIRED:
         r.check(key in seen, "a checked page loads %s" % key)
 
 

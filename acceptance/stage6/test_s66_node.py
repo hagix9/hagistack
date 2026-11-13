@@ -25,9 +25,20 @@ class NodeFlow(unittest.TestCase):
         with open(os.path.join(HERE, "s66-node.sh")) as f:
             src = f.read()
         self.assertEqual(src.count("BASE=/var/tmp/hs6\n"), 1)
-        self.assertEqual(src.count('[ "$(id -u)" -eq 0 ] || '), 1)
+        self.assertEqual(src.count('[ "$(id -u)" -eq 0 ] || '), 2)
         src = src.replace("BASE=/var/tmp/hs6\n", "BASE='%s'\n" % base)
         src = src.replace('[ "$(id -u)" -eq 0 ] || ', ': || ')
+        # stand-ins: systemd-run runs the command in the foreground, systemctl knows no unit
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        with open(os.path.join(self.bin, "systemd-run"), "w") as f:
+            f.write('#!/bin/bash\necho "systemd-run $*" >> "%s/calls"\n'
+                    'while [ "${1#-}" != "$1" ]; do shift; done\nexec "$@"\n' % self.tmp)
+        with open(os.path.join(self.bin, "systemctl"), "w") as f:
+            f.write('#!/bin/bash\n[ -f "%s/busy" ] && [ "$1" = list-units ] && cat "%s/busy"\nexit 0\n'
+                    % (self.tmp, self.tmp))
+        for n in ("systemd-run", "systemctl"):
+            os.chmod(os.path.join(self.bin, n), 0o755)
         # stubs: a step fails when a file FAIL_<step> exists
         stubs = "".join('s_%s(){ [ -e "$BASE/FAIL_%s" ] && fail "stub %s" || pass "stub %s"; }\n' % (s, s, s, s)
                         for s in STEPS)
@@ -42,8 +53,10 @@ class NodeFlow(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def step(self, name):
-        p = subprocess.run(["/bin/bash", self.script, name], capture_output=True, text=True, timeout=60)
+    def step(self, *args):
+        env = dict(os.environ, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        p = subprocess.run(["/bin/bash", self.script] + list(args), capture_output=True, text=True,
+                           timeout=60, env=env)
         return p.returncode, p.stdout + p.stderr
 
     def test_steps_run_in_order_once_each(self):
@@ -70,9 +83,6 @@ class NodeFlow(unittest.TestCase):
     def test_evidence_runs_after_a_failed_install(self):
         for s in STEPS[:5]:
             self.assertEqual(self.step(s)[0], 0)
-        rc, out = self.step("evidence")
-        self.assertEqual(rc, 3, out)
-        self.assertIn("install has not started", out)
         open(os.path.join(self.base, "FAIL_install"), "w").close()
         self.assertEqual(self.step("install")[0], 1)
         rc, out = self.step("accept")
@@ -81,9 +91,52 @@ class NodeFlow(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
     def test_unknown_steps_are_refused(self):
-        for bad in ("", "extract", "build;id", "s_build"):
+        for bad in ("", "extract", "build;id", "s_build", "../x"):
             rc, out = self.step(bad)
             self.assertEqual(rc, 2, out)
+            rc, out = self.step("run", bad)
+            self.assertEqual(rc, 2, out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "calls")))
+
+    def test_run_starts_a_transient_unit_and_reports_its_result(self):
+        rc, out = self.step("run", "preflight")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("---- preflight: PASSED ----", out)
+        self.assertIn("PASS  stub preflight", out)
+        with open(os.path.join(self.tmp, "calls")) as f:
+            call = f.read()
+        self.assertIn("--unit=hs6-preflight --collect --wait", call)
+        self.assertTrue(call.rstrip().endswith("node.sh preflight"), call)
+        open(os.path.join(self.base, "FAIL_build"), "w").close()
+        rc, out = self.step("run", "build")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("---- build: NOT PASSED ----", out)
+
+    def test_run_refuses_while_a_step_is_running(self):
+        with open(os.path.join(self.tmp, "busy"), "w") as f:
+            f.write("hs6-build.service loaded active running /bin/bash node.sh build\n")
+        rc, out = self.step("run", "preflight")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("still running: hs6-build.service", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "calls")))
+
+    def test_status_reports_every_step(self):
+        self.step("run", "preflight")
+        rc, out = self.step("status")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("preflight  passed", out)
+        self.assertIn("build      not started", out)
+        self.assertIn("---- preflight.result ----", out)
+
+    def test_evidence_after_an_early_failure(self):
+        open(os.path.join(self.base, "FAIL_build"), "w").close()
+        rc, out = self.step("evidence")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("preflight has not started", out)
+        self.assertEqual(self.step("run", "preflight")[0], 0)
+        self.assertEqual(self.step("run", "build")[0], 1)
+        rc, out = self.step("run", "evidence")
+        self.assertEqual(rc, 0, out)
 
     def test_output_is_logged_per_step(self):
         self.step("preflight")
@@ -91,6 +144,50 @@ class NodeFlow(unittest.TestCase):
             self.assertIn("PASS  stub preflight", f.read())
         with open(os.path.join(self.base, "out", "preflight.result")) as f:
             self.assertEqual(f.read(), "PASS  stub preflight\n")
+
+
+class SecretScan(unittest.TestCase):
+    """The evidence scan of s66-node.sh, run on its own."""
+
+    def setUp(self):
+        with open(os.path.join(HERE, "s66-node.sh")) as f:
+            src = f.read()
+        self.code = src.split("SECRET_SCAN='", 1)[1].split("\n'\n", 1)[0]
+        self.tmp = tempfile.mkdtemp(prefix="s66scan-", dir=os.environ.get("TMPDIR"))
+        self.etc = os.path.join(self.tmp, "etc")
+        self.ev = os.path.join(self.tmp, "ev")
+        os.makedirs(self.etc)
+        os.makedirs(self.ev)
+        with open(os.path.join(self.etc, "secrets.env"), "w") as f:
+            f.write("DB_PASSWORD='Synthetic-DB-Pass-123'\nRPM_SET_SHA256=%s\nMGMT_IP=10.0.0.2\n" % ("a" * 64))
+        with open(os.path.join(self.etc, "admin-openrc"), "w") as f:
+            f.write("export OS_PASSWORD=Synthetic-Admin-456\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def scan(self, **files):
+        for n, data in files.items():
+            with open(os.path.join(self.ev, n), "w") as f:
+                f.write(data)
+        p = subprocess.run([sys.executable, "-I", "-B", "-c", self.code, self.ev, self.etc],
+                           capture_output=True, text=True)
+        return p.returncode, p.stdout
+
+    def test_clean_evidence_passes_and_the_set_identity_is_not_a_secret(self):
+        rc, out = self.scan(a="set RPM_SET_SHA256=%s on 10.0.0.2\n" % ("a" * 64))
+        self.assertEqual(rc, 0, out)
+
+    def test_passwords_keys_and_tokens_are_found_and_not_printed(self):
+        for data in ("x Synthetic-DB-Pass-123 y", "pw=Synthetic-Admin-456",
+                     "-----BEGIN OPENSSH PRIVATE KEY-----", "token gAAAA" + "B" * 80):
+            with self.subTest(data=data[:20]):
+                for n in os.listdir(self.ev):
+                    os.remove(os.path.join(self.ev, n))
+                rc, out = self.scan(log=data)
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.strip(), "log")
+                self.assertNotIn("Synthetic", out)
 
 
 class NodeScriptText(unittest.TestCase):
@@ -122,7 +219,8 @@ class NodeScriptText(unittest.TestCase):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]
         self.assertNotIn("cp -p /etc/hagistack", ev)
         self.assertNotIn("$OPENRC\" \"$ev", ev)
-        self.assertIn("the admin password appears in the evidence", ev)
+        self.assertIn("a secret appears in the evidence", ev)
+        self.assertIn("python3 -I -c \"$SECRET_SCAN\" \"$ev\"", ev)
 
 
 if __name__ == "__main__":
