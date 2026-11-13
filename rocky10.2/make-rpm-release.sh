@@ -85,6 +85,8 @@ if command -v git >/dev/null && git -C "$HERE" rev-parse --is-inside-work-tree >
     [ -z "$dirty" ] || die "files this candidate ships or runs are not committed:
 $dirty"
     ok "shipped files committed at $(git -C "$HERE" rev-parse --short HEAD)"
+elif [ -e "$HERE/../.git" ]; then
+    die "$HERE/.. is a git checkout, but git cannot read it (not installed, or not trusted): cannot check that the shipped files are committed"
 else
     echo "  note  not a git work tree: the shipped files are checked by their pins only"
 fi

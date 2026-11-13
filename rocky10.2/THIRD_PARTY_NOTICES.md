@@ -19,8 +19,9 @@ This file is copied into every release candidate by `make-rpm-release.sh`.
   the licence texts.
 - The RPMs are generated from Hagistack's own package definitions. They are
   **not** generated from RDO distgit packaging: no RDO spec file or other RDO
-  packaging file is used as an input. A byte comparison of every file in the
-  264 packages (binary and source, 24,877 files) with RDO's packaging files found
+  packaging file is used as an input. A byte comparison of the files in the
+  264 packages (binary and source; 24,877 files, compiled `.pyc` bytecode
+  excluded) with RDO's packaging files found
   two identical files: the two upstream Neutron commits in `third-party/neutron/`,
   which RDO also carries. Hagistack's own unit, logrotate, sudoers and
   configuration files share short lines with RDO's (keywords, commands and
@@ -49,7 +50,9 @@ Every binary RPM is built from a source RPM published with it, in
 archive (with its signature and the signing key where upstream signs it), the
 pinned patches and licence texts, Hagistack's own files, and `HAGISTACK-LICENSE`.
 `make-rpm-release.sh` refuses a candidate in which a binary has no source RPM, a
-source RPM has no binary, or a source RPM lacks `HAGISTACK-LICENSE`.
+source RPM has no binary, a binary's `SOURCEPKGID` is not the header digest of
+the source RPM it names, or a source RPM's `HAGISTACK-LICENSE` is missing or
+differs from `LICENSE`.
 
 ## Changes made to the upstream sources
 
