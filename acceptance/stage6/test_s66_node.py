@@ -128,6 +128,22 @@ class NodeFlow(unittest.TestCase):
         self.assertIn("build      not started", out)
         self.assertIn("---- preflight.result ----", out)
 
+    def test_evidence_is_not_taken_too_early(self):
+        self.assertEqual(self.step("run", "preflight")[0], 0)
+        rc, out = self.step("run", "evidence")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("evidence runs after accept has started or after a failed step", out)
+        # the refusal did not use up the step
+        self.assertFalse(os.path.isdir(os.path.join(self.base, "out", "evidence.started")))
+
+    def test_a_second_run_of_a_step_is_refused_before_any_unit(self):
+        self.assertEqual(self.step("run", "preflight")[0], 0)
+        os.remove(os.path.join(self.tmp, "calls"))
+        rc, out = self.step("run", "preflight")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("REFUSED: step preflight has already been started", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "calls")))
+
     def test_evidence_after_an_early_failure(self):
         open(os.path.join(self.base, "FAIL_build"), "w").close()
         rc, out = self.step("evidence")

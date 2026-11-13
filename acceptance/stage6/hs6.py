@@ -677,7 +677,9 @@ PLAN_TREE_PATH_RE = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}"
 # --batch) and each object's id is recomputed from its bytes, so what is read
 # is exactly the approved commit's content, or the run stops.
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
+           "GIT_NO_LAZY_FETCH": "1"}
+GIT_READ_TIMEOUT = 300
 GIT_FLAGS = ["--no-replace-objects", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
              "-c", "core.attributesFile=" + os.devnull]
 
@@ -699,6 +701,11 @@ class GitObjects:
                                       env=git_env())
         except OSError as e:
             raise Stop("git cat-file could not run (%s): refused" % e)
+        # a hung git is killed; the read then fails and the run stops
+        import threading
+        self.timer = threading.Timer(GIT_READ_TIMEOUT, self.p.kill)
+        self.timer.daemon = True
+        self.timer.start()
 
     def get(self, oid, want_type):
         if not re.fullmatch(r"[0-9a-f]{40}", oid):
@@ -717,6 +724,7 @@ class GitObjects:
         return data
 
     def close(self):
+        self.timer.cancel()
         try:
             self.p.stdin.close()
             self.p.wait(timeout=30)

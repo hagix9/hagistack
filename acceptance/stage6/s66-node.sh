@@ -30,8 +30,8 @@
 #
 # Each step runs once: a second start of a step refuses (no retry without a new
 # approval). Each step needs the step before it to have passed, except evidence,
-# which needs only preflight to have started, so the logs of an early failure
-# can be fetched too. Only one step runs at a time. Output: /var/tmp/hs6/out/<step>.log and
+# which runs once accept has started or once a step has failed, so the logs of
+# an early failure can be fetched too. Only one step runs at a time. Output: /var/tmp/hs6/out/<step>.log and
 # <step>.result (one PASS / FAIL / NOTE line per check). Exit 0 only when no
 # check failed.
 #
@@ -507,6 +507,7 @@ run_step() {     # run_step STEP: one step as a transient service, then its log
     case " $STEPS " in *" $step "*) ;; *) echo "usage: s66-node.sh run {${STEPS// /|}}"; return 2 ;; esac
     busy="$(running_units)"
     [ -z "$busy" ] || { echo "STOP: a stage 6-6 step is still running: $busy (use status)"; return 3; }
+    [ ! -d "$OUT/$step.started" ] || { echo "REFUSED: step $step has already been started (use status)"; return 3; }
     self="$(readlink -f "$0")"
     systemd-run --unit="hs6-$step" --collect --wait --quiet --service-type=exec \
         --setenv=HOME=/root --setenv=LANG=C.UTF-8 /bin/bash "$self" "$step"
@@ -542,6 +543,14 @@ main() {
     for s in $STEPS; do [ "$s" = "$STEP" ] && break; prev="$s"; done
     if [ "$STEP" = evidence ]; then
         [ -d "$OUT/preflight.started" ] || { echo "STOP: preflight has not started"; exit 3; }
+        # once only, so not too early: after accept started, or after a step that failed
+        local failed=""
+        for s in $STEPS; do
+            [ "$s" = evidence ] && break
+            [ -d "$OUT/$s.started" ] && [ ! -e "$OUT/$s.passed" ] && failed="$s"
+        done
+        [ -d "$OUT/accept.started" ] || [ -n "$failed" ] \
+            || { echo "STOP: evidence runs after accept has started or after a failed step"; exit 3; }
         [ -z "$(running_units | grep -vx 'hs6-evidence.service')" ] || { echo "STOP: another step is running"; exit 3; }
     elif [ -n "$prev" ] && [ ! -e "$OUT/$prev.passed" ]; then
         echo "STOP: step $prev has not passed"; exit 3
