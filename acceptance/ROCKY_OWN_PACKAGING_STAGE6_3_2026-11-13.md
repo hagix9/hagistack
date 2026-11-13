@@ -11,7 +11,9 @@ deleted. Stage 6-1 was not re-run.
 | `e6cfda3` | `THIRD_PARTY_NOTICES.md`: the changes made to the upstream sources, trademarks, and rc4's metadata as the source of names and paths |
 | `3a0bb8c` | this record (first version); stage 6-2 record updated to the rewritten commit ids |
 | `9b5aad0` | release guards and notice fixes from the independent audit (H-1, M-1, M-2, L-1–L-3); `release_check.py` |
-| (this update) | audit results and the re-run on Rocky |
+| `f99dde4` | audit results and the re-run on Rocky |
+| `322674e` | re-audit LOWs: a git checkout that git cannot read is refused; notices say what was compared and checked |
+| (this update) | re-audit result |
 
 ## Git history (Owner approved the rewrite)
 
@@ -222,7 +224,29 @@ source obligation applies is a legal judgement; this record does not make it.
 - A run with a relative `--set-dir`/`--out` and a clean (stub) git work tree gives
   output identical to the first run.
 
-**Re-audit:** (below)
+**Re-audit** (same agent, of `9b5aad0`/`f99dde4`, its own reproductions):
+- **BLOCKER/HIGH/MEDIUM 0.** H-1, M-1 and L-1 no longer reproduce. Also tested: a
+  symlinked `--out` inside the set, and a git clone with an uncommitted notice
+  and an ignored file in `third-party/`.
+- No new fail-open path was found in `make-rpm-release.sh` or `release_check.py`.
+- LOW:
+  - L-a: without a usable `git`, a git checkout was shipped unchecked (with only a
+    note).
+  - L-b: the notices did not say that `.pyc` was excluded from the 24,877 files.
+  - L-c: the source-offer paragraph described the weaker checks.
+- NOT VERIFIED: a difference of one file (24,877 against the auditor's 24,878).
+  It does not block.
+- Verdicts: release generation GO; free and commercial redistribution
+  (technical) GO; SRPM publication GO; Git history GO (for a push of this branch
+  alone).
+
+**LOW fixes** (`322674e`):
+- A checkout with `.git` that `git` cannot read is refused.
+- The notices say that `.pyc` was excluded, and describe the `SOURCEPKGID` and
+  byte-equal licence checks.
+- Re-run on Rocky: **41/41**. The one new case is a `.git` checkout with no git
+  installed (the VM has none), which is refused. The asset is unchanged
+  (`da5471b0…`).
 
 ## Owner decisions and legal points
 
