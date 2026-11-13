@@ -16,6 +16,7 @@
     "u1",
     "ssh",
     "upload",
+    "download",
     "teardown",
     "residual"
   ],

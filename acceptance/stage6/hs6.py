@@ -57,7 +57,11 @@ NODES = {
 }
 NETWORK_PARTS = ("net", "subnet", "fw-iap", "fw-int", "router", "nat")
 ALL_PARTS = NETWORK_PARTS + tuple(NODES)
-OPERATIONS = ("init", "network", "n1", "n2", "n3", "n4", "u1", "ssh", "upload", "teardown", "residual")
+OPERATIONS = ("init", "network", "n1", "n2", "n3", "n4", "u1", "ssh", "upload", "download", "teardown", "residual")
+# download: a file from a node of this run into <state-dir>/downloads/<NAME>, never
+# overwriting, kept only when its SHA-256 equals the node's sha256sum of it.
+DOWNLOAD_NAME_RE = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+DOWNLOAD_REMOTE_RE = r"/[A-Za-z0-9._/+-]{1,511}"
 CLEANUP_OPS = ("teardown", "residual")
 
 # Tokyo list prices (USD), read from cloud.google.com pricing pages on 2026-11-12.
@@ -1464,9 +1468,23 @@ class Run:
         g, _ = self.gcloud(op)
         name = name_of(self.rid, part)
         timeout = float(os.environ.get("HS6_REMOTE_TIMEOUT", "14400"))
+        part_file = final_file = None
         if op == "ssh":
             args = ["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
                     "--command=" + " ".join(cmd_args)]
+        elif op == "download":
+            remote, fname = cmd_args
+            if not re.fullmatch(DOWNLOAD_REMOTE_RE, remote) or ".." in remote.split("/"):
+                raise Stop("download: the remote path must be absolute and plain: %r" % remote)
+            if not re.fullmatch(DOWNLOAD_NAME_RE, fname) or fname.endswith(".part"):
+                raise Stop("download: the local name must be a plain file name: %r" % fname)
+            ddir = os.path.join(self.state_dir, "downloads")
+            final_file = os.path.join(ddir, fname)
+            part_file = final_file + ".part"
+            for f in (final_file, part_file):
+                if os.path.lexists(f):
+                    raise Stop("download: %s exists already (nothing is overwritten)" % f)
+            args = ["compute", "scp", name + ":" + remote, part_file, "--zone=" + ZONE, "--tunnel-through-iap", P()]
         else:
             local, remote = cmd_args
             if not os.path.isfile(local):
@@ -1488,6 +1506,8 @@ class Run:
                 raise Stop("project-wide ssh-keys differ from the baseline before %s: stop" % op)
         logdir = os.path.join(self.state_dir, "remote")
         os.makedirs(logdir, exist_ok=True)
+        if op == "download":
+            os.makedirs(os.path.dirname(final_file), mode=0o700, exist_ok=True)
         stamp = "%s-%s-%s" % (iso(now()).replace(":", ""), part, op)
         rc, out, err = 0, "", ""
         status = EXIT_REMOTE
@@ -1520,8 +1540,26 @@ class Run:
                     rc = rc or 1
                 else:
                     out += "upload verified: %s %s\n" % (want, cmd_args[1])
+            if op == "download":
+                verified = False
+                if rc == 0 and stopped is None and os.path.isfile(part_file) and not os.path.islink(part_file):
+                    with open(part_file, "rb") as f:
+                        got_local = hashlib.sha256(f.read()).hexdigest()
+                    rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
+                                                "--command=sha256sum " + shlex.quote(cmd_args[0])], name, timeout)
+                    got = out2.split()
+                    if rc2 == 0 and got and got[0] == got_local:
+                        os.replace(part_file, final_file)
+                        verified = True
+                        out += "download verified: %s %s -> downloads/%s\n" % (got_local, cmd_args[0], cmd_args[1])
+                    else:
+                        err += "\nSHA-256 check failed after the transfer (%s): %s" % (rc2, err2.strip())
+                if not verified:
+                    rc = rc or 1
             status = 0 if rc == 0 else EXIT_REMOTE
         finally:
+            if part_file and os.path.lexists(part_file):
+                os.remove(part_file)     # an unverified or partial download is not kept
             with open(os.path.join(logdir, stamp + ".log"), "w") as f:
                 f.write("# %s %s rc=%s\n# command: %s\n%s\n# stderr\n%s\n" % (op, name, rc, " ".join(args), out, err))
             self.log("remote %s %s rc=%s log=remote/%s.log" % (op, name, rc, stamp))
@@ -1660,7 +1698,7 @@ def main(argv=None):
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--approval")
     ap.add_argument("command", choices=["plan", "init", "create-network", "create-node", "delete-node",
-                                        "teardown", "status", "residual", "ssh", "upload", "watch"])
+                                        "teardown", "status", "residual", "ssh", "upload", "download", "watch"])
     ap.add_argument("rest", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     r = None
@@ -1693,6 +1731,10 @@ def main(argv=None):
             if len(rest) != 3:
                 raise Stop("upload NODE LOCAL REMOTE")
             return r.remote(rest[0], rest[1:], "upload")
+        if a.command == "download":
+            if len(rest) != 3:
+                raise Stop("download NODE REMOTE NAME")
+            return r.remote(rest[0], rest[1:], "download")
     except Stop as e:
         print("STOP: %s" % e, file=sys.stderr)
         if e.teardown and r is not None and r.appr is not None:

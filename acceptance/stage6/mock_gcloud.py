@@ -144,6 +144,16 @@ def main():
                 print("line 1 of the failing step\n" + "x" * 1000)
                 sys.stderr.write("step failed\n")
                 sys.exit(3)
+            if rest[0] == "scp":
+                src_, dst_ = [x for x in args if not x.startswith("-")][-2:]
+                if ":" in src_ and os.path.isabs(dst_):      # a download: write the node's file
+                    data = s.get("remote_files", {}).get(src_.split(":", 1)[1])
+                    if data is None:
+                        save(s)
+                        sys.stderr.write("scp: no such file\n")
+                        sys.exit(1)
+                    with open(dst_, "w") as fh:
+                        fh.write(data)
             if cmd.startswith("sha256sum "):
                 out = s.get("remote_sha", {}).get(cmd.split(" ", 1)[1], "0" * 64) + "  " + cmd.split(" ", 1)[1]
             else:

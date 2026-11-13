@@ -8,6 +8,7 @@ calls the real gcloud; every test checks the marker is absent.
 """
 import calendar
 import hashlib
+import stat
 import json
 import os
 import shutil
@@ -698,6 +699,58 @@ class Upload(Base):
         self.set_mock(lambda s: s.update(remote_sha={"/tmp/a.bin": want}))
         rc, out = self.hs("upload", "n1", f, "/tmp/a.bin")
         self.assertEqual(rc, 0, out)
+
+
+class Download(Base):
+    def test_download_is_kept_only_when_the_checksum_matches(self):
+        self.up("n1")
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "payload"}))
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertIn("SHA-256 check failed", out)
+        ddir = os.path.join(self.sdir, "downloads")
+        self.assertEqual(os.listdir(ddir), [], "an unverified download is not kept")
+        want = hashlib.sha256(b"payload").hexdigest()
+        self.set_mock(lambda s: s.update(remote_sha={"/root/out.tar": want}))
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("download verified", out)
+        with open(os.path.join(ddir, "out.tar")) as f:
+            self.assertEqual(f.read(), "payload")
+        self.assertEqual(stat.S_IMODE(os.stat(ddir).st_mode), 0o700)
+
+    def test_download_never_overwrites(self):
+        self.up("n1")
+        want = hashlib.sha256(b"payload").hexdigest()
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "payload"},
+                                         remote_sha={"/root/out.tar": want}))
+        self.assertEqual(self.hs("download", "n1", "/root/out.tar", "out.tar")[0], 0)
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "other"}))
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("exists already", out)
+        with open(os.path.join(self.sdir, "downloads", "out.tar")) as f:
+            self.assertEqual(f.read(), "payload")
+
+    def test_download_refuses_odd_paths_and_names(self):
+        self.up("n1")
+        for remote, name in (("relative/x", "x"), ("/root/../etc/x", "x"), ("/root/x;rm", "x"),
+                             ("/root/x", "../x"), ("/root/x", "a/b"), ("/root/x", ".hidden"),
+                             ("/root/x", "x.part"), ("/root/x", "")):
+            with self.subTest(remote=remote, name=name):
+                rc, out = self.hs("download", "n1", remote, name)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("download:", out)
+
+    def test_download_needs_the_operation_in_the_approval(self):
+        self.write_approval(operations=["init", "network", "n1", "ssh", "upload", "teardown", "residual"])
+        self.up("n1")
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": "payload"},
+                                         remote_sha={"/root/out.tar": hashlib.sha256(b"payload").hexdigest()}))
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("download", out)
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "downloads", "out.tar")))
 
 
 class GateHardening(Base):

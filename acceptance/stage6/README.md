@@ -4,6 +4,15 @@ The harness creates and deletes the GCE resources of one stage 6 run of the
 own-RPM acceptance (`../ROCKY_OWN_PACKAGING_STAGE6_PLAN_2026-11-12.md`), and runs
 commands on those nodes through IAP. It does not install OpenStack by itself. The
 per-configuration steps in the plan are run with `hs6.py ssh` and `hs6.py upload`.
+`hs6.py download NODE REMOTE NAME` (operation `download`, added in stage 6-5) brings
+one file back from a node of the run:
+- It is written only to `<state-dir>/downloads/NAME` (mode 0700 directory), and
+  never overwrites an existing file.
+- It is kept only if its SHA-256 equals the node's `sha256sum` of the remote file.
+  A partial or unverified transfer is deleted.
+- The remote path must be absolute and plain, and NAME a plain file name.
+- Like `ssh` and `upload`, it runs only under the guards (ssh-keys baseline, cost
+  and time limits, lock).
 
 **It is dry-run unless the Owner approved the run.** Without an approval file, every
 command prints the gcloud calls it would make and calls nothing, not even read-only
