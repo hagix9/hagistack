@@ -22,7 +22,10 @@ This file is copied into every release candidate by `make-rpm-release.sh`.
   packaging file is used as an input. A comparison of the built packages with
   RDO's packaging files found only two identical files: the two upstream Neutron
   commits in `third-party/neutron/`, which RDO also carries. (Release candidates up to rc4 were built from RDO
-  distgit by the older path, `build-rpms.sh`.)
+  distgit by the older path, `build-rpms.sh`.) So that rc4 installations
+  upgrade cleanly, the package names, installed paths, modes, owners and the
+  configuration directory layout follow rc4's binary packages. They were taken
+  from rc4's package metadata, not from the contents of RDO's files.
 - Sources: OpenStack release tarballs are checked against the SHA-256 pinned in
   the definition and against their upstream GPG signature, with the OpenStack
   release key pinned in `gazpacho.manifest`. The ten definitions built from PyPI
@@ -44,6 +47,37 @@ archive (with its signature and the signing key where upstream signs it), the
 pinned patches and licence texts, Hagistack's own files, and `HAGISTACK-LICENSE`.
 `make-rpm-release.sh` refuses a candidate in which a binary has no source RPM, a
 source RPM has no binary, or a source RPM lacks `HAGISTACK-LICENSE`.
+
+## Changes made to the upstream sources
+
+Hagistack changed the files listed here from the upstream release they come from.
+Each change is in the spec file of that package's source RPM (`Patch` lines and
+`%prep`). The changelog of the binary RPMs does not list these changes; it says
+only "Hagistack packaging of the upstream release".
+
+- **Neutron 28.0.2** (`openstack-neutron`, `openstack-neutron-common`,
+  `python3-neutron` and the other packages from the same source RPM):
+  - Two upstream Neutron commits are applied as `Patch0001` and `Patch0002`
+    (`third-party/neutron/`). They change
+    `neutron/common/ovn/constants.py`,
+    `neutron/plugins/ml2/drivers/ovn/mech_driver/mech_driver.py`,
+    `neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/impl_idl_ovn.py` and
+    `neutron/plugins/ml2/drivers/ovn/mech_driver/ovsdb/maintenance.py`.
+    `third-party/neutron/NOTICE.md` says how the patches differ from the
+    commits as published upstream.
+  - `requirements.txt`: the version is dropped from the `psutil` requirement.
+  - `neutron/tests/fullstack/servers/metadata.py`: the shebang
+    `#!/usr/bin/env python` becomes `#!/usr/bin/python3`.
+- **Horizon** (`python-django-horizon` source RPM): `requirements.txt`, the
+  `tzdata` requirement is removed.
+- **qrcode** (`python3-qrcode`): the `#!/usr/bin/env python` shebang line is
+  removed from the Python modules that have one.
+- **python-barbicanclient, python-keystoneauth1, python-keystonemiddleware**:
+  `doc/source/conf.py`, one Sphinx extension is removed from the list of
+  extensions so that the documentation builds.
+- **Configuration samples** that Keystone, Neutron and Placement generate at
+  build time from their upstream sources: option values that would name the
+  build machine are replaced with placeholders.
 
 ## Licence texts per package
 
@@ -97,6 +131,25 @@ Notes on the XStatic packages built here:
 - **term.js 0.0.7** (`python3-XStatic-term-js`) is MIT licensed by Christopher
   Jeffrey (full text in `term.js`). Its header states that parts derive from
   Fabrice Bellard's jslinux terminal, used "with the author's permission".
+
+## Trademarks
+
+OpenStack, Rocky Linux and Font Awesome are trademarks of their owners. The
+names are used here only to say what the software is and what it runs on.
+Hagistack is not affiliated with, endorsed by or sponsored by the OpenStack
+project or the OpenInfra Foundation, the Rocky Enterprise Software Foundation
+or Fonticons, Inc. The licences listed above cover copyright; they grant no
+trademark rights.
+
+Some marks are in the packaged files exactly as upstream ships them:
+
+- `openstack-dashboard` installs Horizon's default images, including the
+  OpenStack logo (`static/dashboard/img/logo.svg` and `logo-splash.svg`) and
+  the favicon.
+- `python3-XStatic-Font-Awesome` contains the Font Awesome brand icons
+  (`brands.*`, `fa-brands-400.*`), which show the logos of other companies.
+
+Hagistack does not change these files, and adds no logo or other mark of its own.
 
 ## Code inside the Horizon source
 
