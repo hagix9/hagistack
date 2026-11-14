@@ -80,7 +80,7 @@ The notice of these changes is carried in four places:
   `/usr/share/doc` as documentation, and an install with
   `--setopt=tsflags=nodocs` (or `rpm --excludedocs`) leaves such files out; the
   notice is therefore not put there. `make-rpm-release.sh` refuses a release in
-  which a binary package lacks the notice, carries it twice, carries it flagged
+  which a binary package with files lacks the notice, carries it twice, carries it flagged
   as documentation, or carries a notice other than the one its spec writes.
 - **Inside the changed files**, where their format allows. Each changed file that
   is installed and takes `#` comments (Python and shell sources, the generated

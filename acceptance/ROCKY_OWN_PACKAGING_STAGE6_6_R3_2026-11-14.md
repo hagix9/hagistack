@@ -144,3 +144,28 @@ Evidence: `<TMP>/hagistack-s66r3a/state/` on the external SSD. It holds the ledg
 Verdict: **NO-GO**. The RPM build passed on real hardware. The release check failed
 on a checker/generator mismatch, so nodocs, brand, all-in-one and acceptance were not
 reached. No GCE resource of the run is left.
+
+## Fixes after run s66r3a
+
+| Commit | Content |
+|---|---|
+| `669b8bf` | `release_check.py check_notices` skips a binary RPM whose payload has no regular file (an extras subpackage). It does not count as a binary of its source, so a changed source with only such binaries is still refused. Two tests were added |
+| `0a78dc6` | Audit H-1: `s66-node.sh s_nodocs` compared the marked files of the `--excludedocs` root and of the root with docs. Placement's marked `policy.yaml.sample` is installed as `%doc`, so it is absent from the first root by design, and the comparison would have failed on the next run. Now `usr/share/doc/` of the root with docs is left out of the comparison and recorded in `marked-doc-files.txt`. L-1: the release check's docstring, `make-rpm-release.sh` and `THIRD_PARTY_NOTICES.md` name the extras exception |
+| this commit | LOW-3: one more sentence of `THIRD_PARTY_NOTICES.md`; this section |
+
+**Verification.**
+- `tests/test_release_check.py`: 24 tests OK on 3.13; 24 OK on 3.9 (1 skipped, genspec needs 3.11+).
+- `test_s66_node` and `test_s66_web`: 31 tests OK on 3.13 and on 3.9.
+- `packaging/test_genspec.py`: 38 tests OK on 3.13.
+- The new mark comparison was run in a shell on sample roots: 4 cases by the implementer, 7 by the auditor.
+
+**Independent audit.**
+- `669b8bf`: NO-GO, only because of H-1 (outside that commit).
+- `669b8bf` + `0a78dc6`: GO. 0 BLOCKER / HIGH / MEDIUM.
+- LOW-1: there is no automated test of the `s_nodocs` comparison; the sample-root runs are the evidence.
+- LOW-2: `marked-doc-files.txt` is recorded but not checked.
+- LOW-3 is fixed here.
+
+**Still not verified (NV-1).** On real RPMs, nothing after RPM number 112 of the notices check has run yet: the remaining 84 RPMs, the marks match, branding, members and lock generation. Only a new run shows them.
+
+A new run needs a new run id and the Owner's approval of the conditions that `--show` prints at the final commit.
