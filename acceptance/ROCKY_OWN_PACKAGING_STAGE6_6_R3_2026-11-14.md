@@ -406,3 +406,78 @@ Verdict: NO-GO.
 - On s66r3d's `diag/ping-before-restart.txt` the old pattern gives nothing (counted as 0) and `ping_received` gives 5 (BSD sed on macOS).
 - Not verified: GNU sed on the node (the pattern is plain POSIX BRE), and a ping on a real node.
 - No GCE run is made for this fix. The Horizon font and doc gif 404s are unchanged and wait for the Owner.
+
+## Stage 6-6-R4: the 404s after s66r3d
+
+| Commit | Content |
+|---|---|
+| `ccf4643` | Packaging: Horizon's glyphicons font path, the documentation theme's dead image reference, release checks, releases raised, notices |
+| `6368fd6` | Acceptance: explicit page checks for both, and the nodocs mark comparison counts the Sass mark |
+| this commit | this section |
+
+**Root causes (files read; s66r3d evidence and RPMs).**
+- Horizon fonts:
+  - Upstream `openstack_dashboard/themes/default/_variables.scss:84` sets `$icon-font-path: "../../bootstrap/fonts/bootstrap/"`. Upstream master still has this line; the file was last changed in 2016.
+  - `templates/_stylesheets.html` compresses `dashboard/scss/themes.scss`, and `CssAbsoluteFilter` resolves relative URLs against that file, so `../../` is the static root. This matches the s66r3d 404 URLs `/dashboard/static/bootstrap/fonts/bootstrap/glyphicons-halflings-regular.{eot,woff2,woff,ttf,svg}`.
+  - `get_xstatic_dirs` collects `xstatic.pkg.bootstrap_scss` under `horizon/lib/bootstrap_scss/`. On the s66r3d node, all five fonts were at `static/horizon/lib/bootstrap_scss/fonts/bootstrap/`, collected at httpd start from `xstatic-bootstrap-scss-common` and owned by no package.
+  - The asset existed; the path did not match.
+- Documentation gif:
+  - `combined.css` of openstackdocstheme 3.5.0 (also master) styles `.note` with `url('../images/side-note-pointer.gif')`. The theme's `images/` has never held that file.
+  - Sphinx notes are `admonition note`, and `.admonition.note` (line 800) sets the background again, so the image was never shown.
+  - In the 195 s66r3d RPMs, every documentation stylesheet `url()` that names a missing file is this one, in all 47 trees. There is no other.
+
+**Fixes.**
+- Horizon:
+  - `prep_extra` changes that one line to `../../horizon/lib/bootstrap_scss/fonts/bootstrap/`. It requires exactly one upstream line before, and exactly one new line and one `icon-font-path` line after.
+  - The file gets the change mark as a `//` comment (new `MARK_SLASH`; `mark_files` takes `.scss`).
+  - No font is copied: the fonts stay in their XStatic package.
+  - Not chosen:
+    - an httpd alias for the upstream URL, because the stylesheet would still name a path nothing provides;
+    - copying the fonts into this package, because they belong to the XStatic package.
+- Documentation:
+  - After `sphinx-build`, every HTML build replaces that declaration with `background: #e2f4dc; /* Hagistack: ... */`. The build stops unless the rule is there exactly once, and stops if any reference to the image is left in the tree.
+  - The DOC_CHANGE notice, THIRD_PARTY_NOTICES.md and Horizon's AUTHORING.md say so.
+- `release_check.py`:
+  - Every local `url()` in a documentation stylesheet must name a file its RPM installs.
+  - Both installed copies of `_variables.scss` must set the new path, once.
+  - The `//` mark counts only for `.scss` and the `#` mark only for other files.
+- `s66_web.py`:
+  - Horizon must load each of the five fonts with HTTP 200 from `.../static/horizon/lib/bootstrap_scss/fonts/bootstrap/`.
+  - The docs check fails if `side-note-pointer.gif` is requested and not answered 200.
+  - The existing "every asset HTTP 200" checks are unchanged.
+- Releases: the 47 documentation builds and Horizon raise their release to 3, with changelog date Sun Nov 15 2026. 48 generated specs change; the other 21 are byte-identical to `7f21cd4`.
+- `acceptance/stage6/run-plan.json`, `rocky10.2/hagistack` (chassis fix), and `ping_received` (ping fix) are unchanged.
+
+**Verification (tests run, macOS).**
+- Test suites:
+  - `test_genspec`: 42 of 42 (Python 3.13; it needs 3.11+).
+  - `test_release_check`: 28 of 28 on 3.13; 28 on 3.9, of which 1 is skipped (needs genspec).
+  - `test_s66_node` + `test_s66_web`: 53 of 53 on 3.9 and on 3.13.
+  - `test_hs6` + `test_s66_node` + `test_s66_web`: 240 of 240 on 3.9, from a run started before the last test edits.
+  - `test-ovs-system-id.sh`: 20 of 20.
+  - `test-build-own.sh`: 33 of 33.
+  - `test_adapt`: 71 of 71.
+  - `test_branding`: 5 of 5.
+  - `bash -n` on every changed shell script.
+- Pre-existing failures: `test-build-in-container.sh` (29 failed) and `test-build-rpms-staging.sh` (5 failed) fail the same way at `7f21cd4` on this Mac. This is the environment, not this change.
+- On real files:
+  - The generated documentation lines, run on s66r3d's `combined.css`, change only that line; a second run stops.
+  - The Horizon `prep_extra` and mark lines, run on upstream `_variables.scss`, change only line 84 and add the mark.
+  - The new release check finds exactly the 47 gif references in the s66r3d RPMs, and none in the fixed `combined.css`.
+- Not verified:
+  - rpmbuild on Rocky with GNU sed (the local runs use BSD sed through a shim; the expressions are POSIX BRE);
+  - pyscss with the leading `//` line;
+  - the five fonts answering HTTP 200 after `compress`;
+  - nodocs mark counts on a real node.
+  These need the next GCE run.
+
+**Independent audit (separate agent).**
+- No BLOCKER, HIGH or MEDIUM.
+- LOWs, two fixed:
+  - L2: the mark type is now tied to the file extension.
+  - L4: trailing whitespace.
+- LOWs recorded, not changed:
+  - L1: `css_missing` does not follow `@import "x.css"`, and would count percent-encoded, absolute or symlinked targets as missing (fail-closed; none in the real data).
+  - L3: the nodocs parse check does not parse `.scss` (a broken file would fail at `compress`).
+  - L5: the material theme's `$icon-font-path: "../icons/fonts/"` names no collected files. Upstream, out of scope; `s66_web` checks the default theme only.
+- NOT VERIFIED (blocks final acceptance until the GCE run): the real-node results listed above.
