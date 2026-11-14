@@ -393,3 +393,16 @@ Harness estimate US$1.63 (US$0.54 of it assumed), 2.19 h. Not a bill.
 - Both stay failures until the Owner decides.
 
 Verdict: NO-GO.
+
+## Fix after run s66r3d: the ping count
+
+| Commit | Content |
+|---|---|
+| `47f1b07` | `s66-node.sh` reads the received count with `ping_received`, which takes the summary line of iputils (`5 packets transmitted, 5 received`) and of busybox (`… 5 packets received`). An output without a summary line still counts as 0 |
+| this commit | this section |
+
+**Verification (tests run).**
+- `test_s66_node` and `test_s66_web`: 47 of 47 on Python 3.9 and 3.13. The new test runs the function under bash on six outputs: s66r3d's 5 of 5, iputils 0 with errors, busybox 3, two-digit counts, an SSH failure, and an empty file.
+- On s66r3d's `diag/ping-before-restart.txt` the old pattern gives nothing (counted as 0) and `ping_received` gives 5 (BSD sed on macOS).
+- Not verified: GNU sed on the node (the pattern is plain POSIX BRE), and a ping on a real node.
+- No GCE run is made for this fix. The Horizon font and doc gif 404s are unchanged and wait for the Owner.
