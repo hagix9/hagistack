@@ -278,11 +278,13 @@ def plan_hashes(top, head, ops):
 
 
 def conditions_sha256(doc, plan_sha, tree_sha):
-    """One SHA-256 over every condition the Owner approves (not the validity
-    window or the nonce, which are set when the record is written)."""
+    """One SHA-256 over every condition the Owner approves, including how long
+    the approval is valid (not its start time or the nonce, which are set when
+    the record is written)."""
     keys = ("run_id", "project", "zone", "account", "harness_sha256", "commit", "operations",
             "budget_usd", "max_hours")
     cond = {k: doc[k] for k in keys}
+    cond["valid_hours"] = round((hs6.parse_ts(doc["expires_at"]) - hs6.parse_ts(doc["approved_at"])) / 3600.0, 6)
     cond.update({"plan_sha256": plan_sha, "tree_sha256": tree_sha,
                  "nodes": {n: list(hs6.NODES[n]) for n in doc["operations"] if n in hs6.NODES},
                  "image": "%s/%s" % (hs6.IMAGE_PROJECT, hs6.IMAGE_FAMILY), "disk_type": hs6.DISK_TYPE})
@@ -321,7 +323,9 @@ def print_conditions(title, doc, ops, subject, plan_lines, cond_sha=None):
         print("  estimate    : about US$%.2f at %s h, US$%.2f at the %s h limit (list prices, not a bill)"
               % (cost_estimate(ops, planned), planned, cost_estimate(ops, doc["max_hours"]), doc["max_hours"]))
     print("  limits      : US$%s, %s h from the first creation (then automatic teardown)" % (doc["budget_usd"], doc["max_hours"]))
-    print("  valid       : %s to %s (UTC)" % (doc["approved_at"], doc["expires_at"]))
+    hours = (hs6.parse_ts(doc["expires_at"]) - hs6.parse_ts(doc["approved_at"])) / 3600.0
+    print("  valid       : %g h, %s to %s (UTC; a record starts when it is written)"
+          % (hours, doc["approved_at"], doc["expires_at"]))
     print("  commit      : %s (%s)" % (doc["commit"], subject))
     print("  harness     : hs6.py %s" % doc["harness_sha256"])
     for line in plan_lines:

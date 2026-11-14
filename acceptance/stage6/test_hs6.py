@@ -2168,6 +2168,7 @@ class ApproveTool(unittest.TestCase):
         for bad in (dict(conditions=cond), dict(conditions=cond, owner_approval="  "),
                     dict(conditions="0" * 64, owner_approval="ok"), dict(conditions=cond[:16], owner_approval="ok"),
                     dict(conditions=cond, owner_approval="ok", budget=7.0),
+                    dict(conditions=cond, owner_approval="ok", valid_hours=24.0),
                     dict(conditions=cond, owner_approval="ok", ops="init,network,n1,n2,ssh,upload,teardown")):
             with self.subTest(bad=bad), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(tool.Refused):
@@ -2183,10 +2184,16 @@ class ApproveTool(unittest.TestCase):
                           doc["commit"]), (hs6.APPROVAL_FORMAT_DEV, hs6.DEV_AUTHORITY, "chat 2026-11-14", cond, head))
         self.assertEqual(doc["plan_sha256"], hs6.load_plan(head, repo=repo)[1])
         self.assertRegex(doc["nonce"], r"^[0-9a-f]{32}$")
-        # never overwritten
+        # never overwritten, and never written beside a signature file
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(tool.Refused):
                 tool.dev_record(self._args(conditions=cond, owner_approval="again"))
+        os.rename(path, path + ".sig")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(tool.Refused) as c:
+                tool.dev_record(self._args(conditions=cond, owner_approval="again"))
+        self.assertIn(".sig already exists", str(c.exception))
+        self.assertFalse(os.path.exists(path))
 
     def test_conditions_sha_covers_what_is_approved_and_not_the_time(self):
         import datetime
@@ -2199,8 +2206,8 @@ class ApproveTool(unittest.TestCase):
         def sha(plan="p" * 64, tree="t" * 64, **over):
             return hs6_approve.conditions_sha256(hs6_approve.build_approval(**dict(base, **over)), plan, tree)
         ref = sha()
-        self.assertEqual(ref, sha(now=now + datetime.timedelta(hours=1), nonce="cd" * 16, valid_hours=3.0))
-        for other in (sha(commit="d" * 40), sha(ops=["init", "n2", "teardown"]), sha(budget=7.0),
+        self.assertEqual(ref, sha(now=now + datetime.timedelta(hours=1), nonce="cd" * 16))
+        for other in (sha(valid_hours=3.0), sha(valid_hours=24.0), sha(commit="d" * 40), sha(ops=["init", "n2", "teardown"]), sha(budget=7.0),
                       sha(max_hours=5.0), sha(harness_sha="1" * 64), sha(account="x@example.invalid"),
                       sha(rid="t6zzz"), sha(plan="q" * 64), sha(tree="u" * 64)):
             self.assertNotEqual(ref, other)

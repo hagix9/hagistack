@@ -142,12 +142,14 @@ TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WA
               "HS6_OWNER_SIGNERS", "HS6_GIT")
 
 # ------------------------------------------------------- Owner signing keys --
-# An approval is executed only if it carries the Owner's SSH signature
-# (`ssh-keygen -Y sign`, namespace below) made with one of these keys. Only the
+# A signed (format 3) approval is executed only if it carries the Owner's SSH
+# signature (`ssh-keygen -Y sign`, namespace below) made with one of these keys
+# (a development run record, format 4, has no signature; see below). Only the
 # public halves are here; the private key stays with the Owner, protected by a
 # passphrase or a hardware key, and is never given to the AI agent or to
 # ssh-agent. hs6_approve.py --setup prints the line to put here. While the tuple
-# is empty, no format-3 approval can be executed. Changing it changes this file's SHA-256, so
+# is empty, no format-3 approval can be executed. Changing it changes this file's
+# SHA-256, so
 # it needs the Owner's review like any other harness change (README).
 OWNER_SIGNING_KEYS = ()
 SIG_NAMESPACE = "hagistack-stage6-approval"
@@ -1054,7 +1056,7 @@ def load_approval(path, rid, op):
     if a.get("harness_sha256") != harness_sha256():
         if op in CLEANUP_OPS:
             # a run must always be cleanable: a harness fixed after init can still
-            # tear the run down and check it, under the Owner's signed approval
+            # tear the run down and check it, under the run's approval
             print("WARNING: hs6.py differs from the approved harness; allowed for %s only" % op,
                   file=sys.stderr)
         else:
