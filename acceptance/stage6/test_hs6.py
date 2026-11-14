@@ -8,6 +8,8 @@ calls the real gcloud; every test checks the marker is absent.
 """
 import calendar
 import hashlib
+import io
+import re
 import stat
 import json
 import os
@@ -1875,6 +1877,156 @@ class SignedApproval(Base):
         self.assertEqual(rc, 0, out)
 
 
+# Stage 6-6-R3: the development run record (format 4, recorded after the Owner's
+# chat approval, not signed). Everything except the signature is still checked.
+class DevRecord(Base):
+    QUOTE = "Owner approved conditions sha256 0123 in chat on 2026-11-14"
+
+    def write_dev(self, **over):
+        fields = dict(format=hs6.APPROVAL_FORMAT_DEV, authority=hs6.DEV_AUTHORITY, owner_approval=self.QUOTE)
+        fields.update(over)
+        self.write_approval(key=None, **fields)
+
+    def calls(self, word):
+        return [c for c in self.mock().get("calls", []) if word in c]
+
+    def refused(self, *args, want=None, **kw):
+        rc, out = self.hs(*args, **kw)
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        if want:
+            self.assertIn(want, out)
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "ledger.jsonl")), out)
+        return out
+
+    def test_the_record_the_tool_writes_runs_and_the_ledger_says_format_4(self):
+        import datetime
+        import hs6_approve
+        ops = ["init", "network", "n1", "ssh", "upload", "download", "teardown", "residual"]
+        doc = hs6_approve.build_approval(RID, ops, 8.0, 6.0, 12.0, ACCOUNT, hs6.harness_sha256(),
+                                         datetime.datetime.fromtimestamp(T0 - 60, datetime.timezone.utc), "cd" * 16,
+                                         self.commit, fmt=hs6.APPROVAL_FORMAT_DEV,
+                                         extra={"owner_approval": self.QUOTE})
+        self.assertNotIn("signed_with", doc)
+        os.unlink(self.approval + ".sig")   # Base wrote a signed approval
+        with open(self.approval, "wb") as f:
+            f.write((json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode())
+        os.chmod(self.approval, 0o600)
+        for args in (("init",), ("create-network",), ("create-node", "n1"), ("teardown",), ("residual",)):
+            rc, out = self.hs(*args)
+            self.assertEqual(rc, 0, (args, out))
+        self.assertEqual(self.ledger()[0]["approval_format"], hs6.APPROVAL_FORMAT_DEV)
+        self.assertTrue(any("instances create hagistack-s6-%s-n1" % RID in " ".join(c) for c in self.mutations()))
+        # the signed path is unchanged: its ledger says format 3
+        self.assertEqual(hs6.APPROVAL_FORMAT, 3)
+
+    def test_authority_text_and_owner_approval_are_required(self):
+        for over, want in ((dict(authority=None), "exact authority text"),
+                           (dict(authority="Owner said so"), "exact authority text"),
+                           (dict(owner_approval=None), "where and how the Owner approved"),
+                           (dict(owner_approval="   "), "where and how the Owner approved"),
+                           (dict(owner_approval=["yes"]), "where and how the Owner approved"),
+                           (dict(owner_approval="x" * 2001), "where and how the Owner approved")):
+            with self.subTest(over=over):
+                self.write_dev(**over)
+                self.refused("init", want=want)
+        self.assertNotIn("calls", self.mock())
+
+    def test_a_record_with_a_signature_file_or_another_format_is_refused(self):
+        self.write_dev()
+        with open(self.approval + ".sig", "wb") as f:
+            f.write(b"not a signature")
+        os.chmod(self.approval + ".sig", 0o600)
+        self.refused("init", want="has no signature, but")
+        os.unlink(self.approval + ".sig")
+        for fmt in (2, 5, "4", 4.0, 4.5, True, None):
+            with self.subTest(fmt=fmt):
+                self.write_dev(format=fmt)
+                self.refused("init", want="approval format must be 3")
+        self.assertNotIn("calls", self.mock())
+
+    def test_every_other_check_still_applies(self):
+        cases = (
+            (dict(run_id="t6zzz"), "run_id is not"),
+            (dict(project="other-project"), "project/zone"),
+            (dict(zone="us-east1-b"), "project/zone"),
+            (dict(owner_statement="I approve"), "owner_statement"),
+            (dict(harness_sha256="0" * 64), "harness_sha256"),
+            (dict(commit="d" * 40), "not the approved commit"),
+            (dict(commit=None), "full id of the approved commit"),
+            (dict(budget_usd=8.01), "budget_usd must be"),
+            (dict(max_hours=6.5), "budget_usd must be"),
+            (dict(operations=["init", "network", "n1"]), "must include teardown"),
+            (dict(operations=["init", "rm", "teardown"]), "non-empty subset"),
+            (dict(approved_at=hs6.iso(T0 - 25 * 3600), expires_at=hs6.iso(T0 - 3600)), "not valid now"),
+            (dict(approved_at=hs6.iso(T0 - 60), expires_at=hs6.iso(T0 + 25 * 3600)), "at most 24h"),
+            (dict(nonce="short"), "nonce"),
+            (dict(account="no-at-sign"), "tests only"),
+        )
+        for over, want in cases:
+            with self.subTest(over=over):
+                self.write_dev(**over)
+                self.refused("init", want=want)
+        self.write_dev()
+        self.refused("init", env={"HS6_EXECUTE": None}, want="HS6_EXECUTE is not set")
+        self.refused("init", env={"HS6_EXECUTE": "t6zzz"}, want="HS6_EXECUTE is not set")
+        self.refused("init", env={"HS6_GCLOUD": None, "HS6_NOW": None, "HS6_REGISTRY": None,
+                                  "HS6_OWNER_SIGNERS": None, "HS6_GIT": None}, want="test account")
+        self.assertNotIn("calls", self.mock())
+
+    def test_an_operation_outside_the_record_is_refused(self):
+        self.write_dev(operations=["init", "network", "teardown", "residual"])
+        self.up()
+        rc, out = self.hs("create-node", "n1")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("operation n1 is not approved", out)
+        rc, out = self.hs("ssh", "n1", "--", "true")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("operation ssh is not approved", out)
+        self.assertFalse([c for c in self.mutations() if "instances" in " ".join(c)])
+
+    def test_the_run_plan_still_limits_what_a_node_gets(self):
+        self.write_dev()
+        self.up("n1")
+        rc, out = self.hs("ssh", "n1", "--", "rm", "-rf", "/")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not a step of the approved run plan", out)
+        f = os.path.join(self.tmp, "a.bin")
+        with open(f, "wb") as fh:
+            fh.write(b"x")
+        rc, out = self.hs("upload", "n1", f, "/tmp/tree.tar")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("allows only '@tree /tmp/tree.tar'", out)
+        rc, out = self.hs("download", "n1", "/etc/shadow", "out.tar")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not in the approved run plan", out)
+        self.assertEqual(self.calls("ssh"), [])
+        self.assertEqual(self.calls("scp"), [])
+
+    def test_a_record_starts_one_run_only_and_cleanup_survives_expiry(self):
+        self.write_dev()
+        self.up("n1")
+        with open(os.path.join(self.tmp, "registry", "used-run-ids"), "w") as f:
+            f.write("")
+        sdir = self.sdir
+        self.sdir = os.path.join(self.tmp, "run2")
+        os.makedirs(self.sdir)
+        before = len(self.mutations())
+        rc, out = self.hs("init")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("already started a run", out)
+        self.assertEqual(len(self.mutations()), before)
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, "ledger.jsonl")))
+        self.sdir = sdir
+        # past expiry: no new work, but teardown and residual still run
+        self.write_dev(approved_at=hs6.iso(T0 - 25 * 3600), expires_at=hs6.iso(T0 - 3600))
+        rc, out = self.hs("create-node", "n2")
+        self.assertEqual(rc, hs6.EXIT_REFUSED, out)
+        self.assertIn("not valid now", out)
+        self.assertEqual(self.hs("teardown")[0], 0)
+        self.assertEqual(self.hs("residual")[0], 0)
+
+
 class ApproveTool(unittest.TestCase):
     """hs6_approve.py's own guards (the signing step itself needs the Owner)."""
     def tool(self, *args, env=None):
@@ -1969,6 +2121,104 @@ class ApproveTool(unittest.TestCase):
                 hs6_approve.run_plan_lines(repo, head2, ["upload"])
         finally:
             shutil.rmtree(repo)
+
+    def _dev_repo(self):
+        repo = tempfile.mkdtemp(prefix="hs6dev-", dir=os.environ.get("TMPDIR"))
+        self.addCleanup(shutil.rmtree, repo)
+        return repo, git_repo(repo, TEST_PLAN)
+
+    def _patched(self, repo, head, appdir):
+        import hs6_approve
+        saved = (hs6_approve.run_inputs, hs6_approve.APPROVAL_DIR)
+
+        def inputs(args):
+            ops = [o.strip() for o in args.ops.split(",") if o.strip()]
+            return head, "subject", repo, ops, ACCOUNT
+        hs6_approve.run_inputs = inputs
+        hs6_approve.APPROVAL_DIR = appdir
+
+        def restore():
+            hs6_approve.run_inputs, hs6_approve.APPROVAL_DIR = saved
+        self.addCleanup(restore)
+        return hs6_approve
+
+    def _args(self, **over):
+        import argparse
+        a = dict(run_id=RID, ops="init,network,n1,ssh,upload,download,teardown,residual", budget=8.0,
+                 max_hours=6.0, valid_hours=12.0, conditions=None, owner_approval=None)
+        a.update(over)
+        return argparse.Namespace(**a)
+
+    def test_show_then_dev_record_writes_only_the_approved_conditions(self):
+        import contextlib
+        repo, head = self._dev_repo()
+        appdir = os.path.join(repo + "-approvals")
+        self.addCleanup(shutil.rmtree, appdir, True)
+        tool = self._patched(repo, head, appdir)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(tool.show(self._args()), 0)
+        shown = buf.getvalue()
+        self.assertFalse(os.path.exists(appdir), "--show writes nothing")
+        cond = re.search(r"conditions  : sha256 ([0-9a-f]{64})", shown).group(1)
+        for want in ("n2-standard-8", "pd-standard 100 GB", "rocky-linux-cloud/rocky-linux-10", "US$8.0",
+                     "6.0 h", head, "estimate    : about US$"):
+            self.assertIn(want, shown)
+        # without the Owner's approval details, or with other conditions: nothing is written
+        for bad in (dict(conditions=cond), dict(conditions=cond, owner_approval="  "),
+                    dict(conditions="0" * 64, owner_approval="ok"), dict(conditions=cond[:16], owner_approval="ok"),
+                    dict(conditions=cond, owner_approval="ok", budget=7.0),
+                    dict(conditions=cond, owner_approval="ok", ops="init,network,n1,n2,ssh,upload,teardown")):
+            with self.subTest(bad=bad), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(tool.Refused):
+                    tool.dev_record(self._args(**bad))
+                self.assertFalse(os.path.exists(os.path.join(appdir, RID + ".json")))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tool.dev_record(self._args(conditions=cond, owner_approval="chat 2026-11-14")), 0)
+        path = os.path.join(appdir, RID + ".json")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        with open(path) as f:
+            doc = json.load(f)
+        self.assertEqual((doc["format"], doc["authority"], doc["owner_approval"], doc["conditions_sha256"],
+                          doc["commit"]), (hs6.APPROVAL_FORMAT_DEV, hs6.DEV_AUTHORITY, "chat 2026-11-14", cond, head))
+        self.assertEqual(doc["plan_sha256"], hs6.load_plan(head, repo=repo)[1])
+        self.assertRegex(doc["nonce"], r"^[0-9a-f]{32}$")
+        # never overwritten
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(tool.Refused):
+                tool.dev_record(self._args(conditions=cond, owner_approval="again"))
+
+    def test_conditions_sha_covers_what_is_approved_and_not_the_time(self):
+        import datetime
+        import hs6_approve
+        now = datetime.datetime(2026, 11, 20, tzinfo=datetime.timezone.utc)
+        base = dict(rid=RID, ops=["init", "n1", "teardown"], budget=8.0, max_hours=6.0, valid_hours=12.0,
+                    account=ACCOUNT, harness_sha="0" * 64, now=now, nonce="ab" * 16, commit=COMMIT,
+                    fmt=hs6.APPROVAL_FORMAT_DEV)
+
+        def sha(plan="p" * 64, tree="t" * 64, **over):
+            return hs6_approve.conditions_sha256(hs6_approve.build_approval(**dict(base, **over)), plan, tree)
+        ref = sha()
+        self.assertEqual(ref, sha(now=now + datetime.timedelta(hours=1), nonce="cd" * 16, valid_hours=3.0))
+        for other in (sha(commit="d" * 40), sha(ops=["init", "n2", "teardown"]), sha(budget=7.0),
+                      sha(max_hours=5.0), sha(harness_sha="1" * 64), sha(account="x@example.invalid"),
+                      sha(rid="t6zzz"), sha(plan="q" * 64), sha(tree="u" * 64)):
+            self.assertNotEqual(ref, other)
+
+    def test_show_and_dev_record_refuse_bad_command_lines(self):
+        rc, out = self.tool("--show", "--dev-record", "--run-id", RID)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("separate steps", out)
+        rc, out = self.tool("--dev-record", "--run-id", RID)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--conditions", out)
+
+    def test_the_cost_estimate_of_the_stage_6_6_run(self):
+        import hs6_approve
+        ops = ["init", "network", "n1", "ssh", "upload", "download", "teardown", "residual"]
+        self.assertLess(hs6_approve.cost_estimate(ops, 6.0), hs6.COST_STOP_ALL)
+        self.assertGreater(hs6_approve.cost_estimate(ops, 6.0), hs6_approve.cost_estimate(ops, 4.0))
+        self.assertEqual(hs6_approve.cost_estimate(["init", "teardown"], 6.0), 0.0)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -16,8 +16,13 @@ read-only gcloud).
     hs6.py --run-id RID --state-dir DIR status        (local only: ledger, cost, guards)
     hs6.py --run-id RID --state-dir DIR [--approval FILE] residual
 
-An approval FILE is executed only with FILE.sig, the Owner's SSH signature made
-by hs6_approve.py with a key pinned in OWNER_SIGNING_KEYS.
+An approval FILE is one of:
+  - format 3: FILE plus FILE.sig, the Owner's SSH signature made by
+    hs6_approve.py with a key pinned in OWNER_SIGNING_KEYS (kept, not required);
+  - format 4: a development run record that the executing agent writes with
+    `hs6_approve.py --dev-record` after the Owner approved the shown conditions
+    in chat. The harness checks its contents but CANNOT verify that the Owner
+    approved it: that part is an operating rule (README, "Development runs").
 
 See README.md for the safety model. Python 3.9+, standard library only.
 """
@@ -142,12 +147,19 @@ TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WA
 # public halves are here; the private key stays with the Owner, protected by a
 # passphrase or a hardware key, and is never given to the AI agent or to
 # ssh-agent. hs6_approve.py --setup prints the line to put here. While the tuple
-# is empty, nothing can be executed. Changing it changes this file's SHA-256, so
+# is empty, no format-3 approval can be executed. Changing it changes this file's SHA-256, so
 # it needs the Owner's review like any other harness change (README).
 OWNER_SIGNING_KEYS = ()
 SIG_NAMESPACE = "hagistack-stage6-approval"
 SIGNER_ID = "hagistack-owner"
 APPROVAL_FORMAT = 3
+# A development run record (format 4) is not signed. The harness checks the same
+# run id, commit, harness, operations, limits and validity as for format 3, and
+# this exact authority text, which says what the record is. Who approved it is
+# not something the harness can check; it is the operating rule in the README.
+APPROVAL_FORMAT_DEV = 4
+DEV_AUTHORITY = ("Owner approval given in chat for the conditions shown by hs6_approve.py --show; "
+                 "recorded by the executing agent; not cryptographically verified")
 # The approval names the commit to run (full id). The repository's HEAD must be
 # that commit, with no change to a tracked file (untracked files are allowed),
 # whenever a non-cleanup operation runs.
@@ -730,6 +742,12 @@ class GitObjects:
             self.p.wait(timeout=30)
         except (OSError, subprocess.SubprocessError):
             self.p.kill()
+        finally:
+            for f in (self.p.stdout, self.p.stderr):
+                try:
+                    f.close()
+                except OSError:
+                    pass
 
 
 def _tree_entries(data):
@@ -956,8 +974,8 @@ def verify_owner_signature(data, sig):
     """Raises Stop unless sig is the Owner's SSH signature of exactly data."""
     keys = owner_signing_keys()
     if not keys:
-        raise Stop("no Owner signing key is pinned in hs6.py (OWNER_SIGNING_KEYS): nothing can be executed. "
-                   "See README, 'Approving a run'.")
+        raise Stop("no Owner signing key is pinned in hs6.py (OWNER_SIGNING_KEYS): a signed (format 3) "
+                   "approval cannot be executed. See README, 'Approving a run (signed, format 3)'.")
     for k in keys:
         if not re.fullmatch(r"(ssh-ed25519|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( [^\n]*)?", k):
             raise Stop("a pinned Owner signing key is not an ed25519 public key line: refused")
@@ -987,9 +1005,10 @@ def load_approval(path, rid, op):
     HS6_EXECUTE=<rid> => execute. Anything else stops. For cleanup operations
     an approval that has expired still counts, so a run can always be torn down.
 
-    The approval is PATH (JSON) plus PATH.sig, the Owner's SSH signature of
-    exactly those bytes. A file without a valid signature by a pinned Owner key
-    is refused, whoever wrote it."""
+    Format 3: PATH (JSON) plus PATH.sig, the Owner's SSH signature of exactly
+    those bytes; without a valid signature by a pinned Owner key it is refused.
+    Format 4: a development run record (no signature; see DEV_AUTHORITY). Both
+    formats get every other check below."""
     if not path:
         if os.environ.get("HS6_EXECUTE"):
             raise Stop("HS6_EXECUTE is set but no approval file was given")
@@ -1002,12 +1021,27 @@ def load_approval(path, rid, op):
     if not isinstance(a, dict):
         raise Stop("approval file is not a JSON object")
     _decide_test_mode(a.get("account"))
-    if a.get("format") != APPROVAL_FORMAT:
-        raise Stop("approval format must be %d (an Owner-signed approval from hs6_approve.py); "
-                   "unsigned or chat-based approval records are refused" % APPROVAL_FORMAT)
-    if not os.path.lexists(path + ".sig"):
-        raise Stop("approval has no Owner signature (%s.sig is missing): refused" % os.path.basename(path))
-    verify_owner_signature(data, _read_checked(path + ".sig"))
+    fmt = a.get("format")
+    if type(fmt) is not int:   # 3.0, "3" or true are not a format
+        fmt = None
+    if fmt == APPROVAL_FORMAT:
+        if not os.path.lexists(path + ".sig"):
+            raise Stop("approval has no Owner signature (%s.sig is missing): refused" % os.path.basename(path))
+        verify_owner_signature(data, _read_checked(path + ".sig"))
+    elif fmt == APPROVAL_FORMAT_DEV:
+        if a.get("authority") != DEV_AUTHORITY:
+            raise Stop("a development run record (format 4) must carry the exact authority text of "
+                       "hs6_approve.py --dev-record: refused")
+        quote = a.get("owner_approval")
+        if not isinstance(quote, str) or not quote.strip() or len(quote) > 2000:
+            raise Stop("a development run record must say where and how the Owner approved "
+                       "(owner_approval, 1-2000 characters): refused")
+        if os.path.lexists(path + ".sig"):
+            raise Stop("a development run record has no signature, but %s.sig exists: refused "
+                       "(remove one of them)" % os.path.basename(path))
+    else:
+        raise Stop("approval format must be %d (Owner-signed) or %d (development run record from "
+                   "hs6_approve.py --dev-record): refused" % (APPROVAL_FORMAT, APPROVAL_FORMAT_DEV))
     problems = []
     if not isinstance(a.get("nonce"), str) or not re.fullmatch(r"[0-9a-f]{32,64}", a.get("nonce", "")):
         problems.append("nonce must be 32-64 lowercase hex digits")
@@ -1298,7 +1332,8 @@ class Run:
                    "image": {"project": IMAGE_PROJECT, "name": img["name"], "id": str(img["id"])},
                    "quota_free": {"%s/%s" % k: v for k, v in quotas.items() if k in need},
                    "harness_sha256": harness_sha256(),
-                   "approval_sha256": appr["_sha256"], "approval_nonce": appr["nonce"]}
+                   "approval_sha256": appr["_sha256"], "approval_nonce": appr["nonce"],
+                   "approval_format": appr["format"]}
             self.ledger.append(hdr, [])
             with open(used_path, "a") as f:
                 f.write(self.rid + "\n")

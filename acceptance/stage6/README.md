@@ -25,8 +25,8 @@ gcloud.
 | `hs6.py` | the harness (Python 3.9+, standard library only) |
 | `mock_gcloud.py` | a gcloud stand-in for the tests; it contacts nothing and reads no credentials |
 | `test_hs6.py` | local tests: `python3 test_hs6.py` (put `TMPDIR` on the external SSD) |
-| `hs6_approve.py` | the Owner's tool: shows the conditions and signs one run's approval |
-| `APPROVAL.template.json` | the shape of an Owner approval; not valid as it is (it has no signature) |
+| `hs6_approve.py` | shows a run's conditions (`--show`), records the Owner's approval of them (`--dev-record`), or signs one (format 3) |
+| `APPROVAL.template.json` | the shape of a signed (format 3) approval; not valid as it is (it has no signature) |
 | `mock_git.py` | a git stand-in for the tests (`HS6_GIT`, test mode only) |
 | `run-plan.json` | the run plan: what an approved run may send to, run on and fetch from its nodes |
 | `s66-node.sh` | stage 6-6 steps on n1 (build, release checks, nodocs, install, acceptance, evidence) |
@@ -57,11 +57,17 @@ The command line gives only the run id, the node name and the state directory.
 
 Execution needs **all** of the following:
 
-1. An approval file (`--approval FILE`, kept outside the repository) **and**
-   `FILE.sig`, the Owner's SSH signature of exactly that file (see "Approving a run").
-   The signature must verify against a key pinned in `OWNER_SIGNING_KEYS` in
-   `hs6.py`, in the namespace `hagistack-stage6-approval`. The file has:
-   - `format` 3 and a random `nonce`;
+1. An approval file (`--approval FILE`, kept outside the repository), either
+   - a **development run record** (`format` 4, written by `hs6_approve.py
+     --dev-record` after the Owner approved the shown conditions; see "Development
+     runs"). It has no signature: the harness checks its contents, not who approved; or
+   - a **signed approval** (`format` 3) **and** `FILE.sig`, the Owner's SSH signature
+     of exactly that file (see "Approving a run (signed, format 3)"). The signature
+     must verify against a key pinned in `OWNER_SIGNING_KEYS` in `hs6.py`, in the
+     namespace `hagistack-stage6-approval`.
+
+   Both formats have, and the harness checks:
+   - the `format` and a random `nonce`;
    - the run id, project and zone;
    - the gcloud account;
    - the exact `owner_statement` the harness prints for the run;
@@ -315,12 +321,63 @@ down. To go on testing:
 
 Do not edit or delete `stops.jsonl` to continue a run.
 
-## Approving a run
+## Development runs (format 4: the normal path)
 
-Only an approval the Owner signed is executed. An approval written by anyone else,
-including an AI agent writing down a chat message, has no valid signature and is
-refused. Chat approval cannot be accepted: the harness gets no verifiable sender
-from the chat, so it cannot tell the Owner's message from text the agent produced.
+Stage 6-6-R3 made this the path for development GCE runs. It needs no key, no pin and
+no signature file.
+
+1. The agent shows the Owner every condition of the run:
+
+   ```sh
+   python3 -I acceptance/stage6/hs6_approve.py --show --run-id h6abc1
+   ```
+
+   It prints the run id, project, zone, account, operations, the node (machine type,
+   disk, image), a list-price estimate, the limits, the commit, the harness's
+   SHA-256, the run plan with its SHA-256, the tree's SHA-256, and one **conditions
+   SHA-256** over all of them. It writes nothing.
+2. The Owner approves those conditions explicitly in chat, naming the run id and the
+   conditions SHA-256 (the first 12 digits are enough to name it).
+3. Only then, the agent records the approval:
+
+   ```sh
+   python3 -I acceptance/stage6/hs6_approve.py --dev-record --run-id h6abc1 \
+       --conditions <full conditions sha256> --owner-approval "<where and when the Owner approved>"
+   ```
+
+   It recomputes the conditions and refuses, writing nothing, if they differ from the
+   approved SHA-256 (another commit, harness, plan, tree, operations, budget or hours).
+   It writes `~/hagistack-approvals/<run id>.json` (mode 600, never overwritten) with
+   `format` 4, the fixed `authority` text, the Owner's approval note, the plan and
+   tree SHA-256 and the conditions SHA-256.
+4. The agent runs the harness with `--approval` that file and `HS6_EXECUTE=<run id>`.
+
+**What the harness does not check.** It cannot tell whether the Owner approved: any
+process of the same OS user can write a format-4 record, and the same user's gcloud
+credentials can call GCE without the harness at all. The record is the agent's
+statement that the Owner approved; it is not a proof. This is an operating rule:
+
+- The agent creates, changes or deletes no GCE resource (and runs no `--dev-record`)
+  without the Owner's explicit approval of the shown conditions in this run's chat.
+  A task instruction that describes a run is not that approval.
+- A new run id, a new VM, more time or a higher budget needs a new approval.
+- Cleanup (`teardown`, `residual`) of a run that was started is always allowed, also
+  after the record expired.
+
+**What the harness still enforces for a format-4 record**, exactly as for format 3:
+the run id, project and zone; the commit (HEAD, no changed tracked file) and the
+harness's SHA-256; the operations (with `teardown`); budget ≤ US$8 and hours ≤ 6;
+validity ≤ 24 h; one run per record (`used-approvals`) and per run id; the run plan
+(only its ssh steps, only the commit's tree as the upload, only its downloads, only
+its nodes); the cost and time guards; the account and the test-hook refusals. A
+record with an `.sig` beside it, another `authority` text or no approval note is
+refused. The ledger header records `approval_format`.
+
+## Approving a run (signed, format 3)
+
+Kept from stage 6-6, not required for development runs. While `OWNER_SIGNING_KEYS` is
+empty, a format-3 approval cannot be executed. An approval written by anyone else
+than the Owner has no valid signature and is refused.
 
 **Once:** the Owner creates an approval key and the public half is pinned:
 
@@ -361,7 +418,7 @@ hours, validity, nonce, the harness's SHA-256 and the commit are all inside the 
 changing any byte breaks the signature. A signature cannot be moved to another file.
 An approval for one run id is refused for any other, and an approval that has started
 a run (`init`) is recorded in `~/.config/hagistack-stage6/used-approvals` and cannot
-start another. While `OWNER_SIGNING_KEYS` is empty, nothing can be executed.
+start another. While `OWNER_SIGNING_KEYS` is empty, no format-3 approval can be executed.
 
 **What it does not protect against.** The harness and `hs6_approve.py` run as the
 same OS user as the implementer. A same-user process can:
@@ -412,7 +469,8 @@ on a volume that records owners, for example in the Owner's home directory.
 The same checks apply to `FILE.sig`.
 
 **Who may sign.** Only the Owner, with the key and passphrase that only the Owner
-holds. Implementers and automation never write, sign or edit an approval.
+holds. Implementers and automation never write, sign or edit a format-3 approval
+(a format-4 record is written by the agent, under the rule in "Development runs").
 
 A change to `hs6.py` after the approval makes the SHA-256 differ, and the harness then
 refuses every operation except cleanup.
