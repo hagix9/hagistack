@@ -4,9 +4,9 @@
 name = "python-osprofiler"
 project = "osprofiler"
 version = "4.3.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "osprofiler-4.3.0.tar.gz"
 sha256 = "77a8da2b23bb5f9048054bd5ccc45d0ac84574ca8a88ef120b8fac6e8864e24c"
 signing_key = "0xc71b007ef97887fd8fb6365ceb4fd6d618e62181"

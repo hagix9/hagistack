@@ -79,6 +79,23 @@ Choices:
   happen. The XStatic packages are present at build time because
   `%pyproject_buildrequires -r` installs the runtime requirements
   (`requirements.txt`).
+- Glyphicons font path (added after stage 6-6 run s66r3d, where the dashboard
+  asked for `/dashboard/static/bootstrap/fonts/bootstrap/glyphicons-halflings-regular.*`
+  and got 404 for all five fonts). Facts: `openstack_dashboard/themes/default/_variables.scss`
+  line 84 sets `$icon-font-path: "../../bootstrap/fonts/bootstrap/" !default;`
+  (unchanged on upstream master since 2016); `templates/_stylesheets.html`
+  compresses `dashboard/scss/themes.scss`, and the compressor's
+  `CssAbsoluteFilter` resolves relative URLs against that file, so `../../` is
+  the static root; `utils/settings.py` `get_xstatic_dirs` collects
+  `xstatic.pkg.bootstrap_scss` (NAME `bootstrap_scss`) under
+  `horizon/lib/bootstrap_scss/`, and on the s66r3d node the five fonts were at
+  `static/horizon/lib/bootstrap_scss/fonts/bootstrap/`. Choice: `prep_extra`
+  changes that one line to `../../horizon/lib/bootstrap_scss/fonts/bootstrap/`,
+  checking exactly one upstream line before and exactly one new line after, and
+  the file gets the change mark as a `//` comment. Not chosen: an httpd alias
+  for the upstream URL (the stylesheet would still name a path nothing
+  provides), or copying the fonts into this package (they belong to the
+  XStatic package and its licence).
 - Bytecode outside site-packages: `%py_byte_compile` on the project directory,
   after the symlinks exist (so `local_settings` is compiled as in rc4).
 - `%{_datadir}/openstack-dashboard/{manage.py,openstack_dashboard,static}` are

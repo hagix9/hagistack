@@ -22,6 +22,16 @@ MANIFEST = os.path.join(HERE, '..', 'gazpacho.manifest')
 DEFS = sorted(glob.glob(os.path.join(HERE, 'defs', '*.toml')))
 
 
+def run_bash(lines, cwd):
+    """Run spec shell lines under bash in cwd. GNU sed -i takes no suffix; on a
+    host whose sed is BSD's (macOS) a function gives it the empty one."""
+    import subprocess
+    shim = 'sed() { if [ "$1" = -i ]; then shift; command sed -i "" "$@"; else command sed "$@"; fi; }\n' \
+        if sys.platform == 'darwin' else ''
+    return subprocess.run(['bash', '-c', 'set -e\n' + shim + '\n'.join(lines) + '\n'], cwd=cwd,
+                          capture_output=True, text=True, env={'PATH': os.environ['PATH'], 'LC_ALL': 'C'})
+
+
 def manifest_rows():
     rows, keys = {}, {}
     for line in open(MANIFEST):
@@ -210,7 +220,39 @@ class ChangesNotice(unittest.TestCase):
                         self.assertIn(f"cp -p '%{{SOURCE{80 + genspec.DOC_SOURCES.index(f)}}}' '{h}/_static/{rel}'", after)
                     # the guard: any logo-named file or icon left under _static that is not Hagistack's stops the build
                     self.assertRegex(after, r"find '%s/_static' -type f .*-iname '\*logo\*' -o -iname '\*\.ico'.* \|\| exit 1" % h)
+                    # the theme's dead side-note-pointer.gif reference is removed, in this order
+                    css = genspec.doc_css_lines(h)
+                    self.assertIn('\n'.join(css) + '\n', after)
+                    self.assertIn('side-note-pointer.gif', genspec.DOC_CHANGE)
         self.assertEqual(built, 47)
+
+    def test_the_doc_css_lines_remove_only_the_dead_reference(self):
+        rule = ".note {\n  color: #33730a;\n  %s }\n"
+        old = rule % genspec.DOC_CSS_OLD
+        cases = [  # (combined.css or None, other file text, exit 0?)
+            ('a {}\n' + old + '.x { background: url(../images/loading.gif); }\n', '<p>note</p>', True),
+            (None, '', False),
+            ('a {}\n', '', False),
+            (old + old, '', False),
+            (old, 'see side-note-pointer.gif', False),
+        ]
+        for css, other, ok in cases:
+            with self.subTest(css=css, other=other), tempfile.TemporaryDirectory() as d:
+                st = os.path.join(d, 'html', '_static', 'css')
+                os.makedirs(st)
+                if css is not None:
+                    with open(os.path.join(st, 'combined.css'), 'w') as fh:
+                        fh.write(css)
+                with open(os.path.join(d, 'html', 'index.html'), 'w') as fh:
+                    fh.write(other)
+                r = run_bash(genspec.doc_css_lines('html'), d)
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+                if ok:
+                    got = open(os.path.join(st, 'combined.css')).read()
+                    self.assertEqual(got, css.replace(genspec.DOC_CSS_OLD, genspec.DOC_CSS_NEW))
+                    self.assertNotIn('side-note-pointer', got)
+                    self.assertIn('url(../images/loading.gif)', got)
+                    self.assertIn('background: #e2f4dc; /* Hagistack:', got)
 
     def test_release_check_uses_the_same_doc_table(self):
         import importlib.util
@@ -295,19 +337,21 @@ class ChangesNotice(unittest.TestCase):
                 for it in src['mark_files']:
                     where = build if it.get('stage') == 'build' else prep
                     self.assertIn(f"test -f '{it['path']}' || {{", where)
-                    self.assertIn(f"grep -qxF '{genspec.MARK}' '{it['path']}' || exit 1", where)
+                    self.assertIn(f"grep -qxF '{genspec.mark_for(it['path'])}' '{it['path']}' || exit 1", where)
                     self.assertIn(f"- {it['path']}", notice)
                 if any(it.get('stage') == 'build' for it in src['mark_files']):
                     # marked after the samples are generated and scrubbed
                     self.assertGreater(build.index('grep -qxF'), build.index(src['build_extra'][-1][:40]))
-        self.assertEqual(marked, {'openstack-neutron': 26, 'python-django-horizon': 1, 'python3-qrcode': 1,
+        self.assertEqual(marked, {'openstack-neutron': 26, 'python-django-horizon': 2, 'python3-qrcode': 1,
                                   'openstack-keystone': 2, 'openstack-placement': 2, 'openstack-nova': 1,
                                   'python-openstacksdk': 1, 'python-os-ken': 1})
 
     def test_files_installed_elsewhere_name_their_place(self):
         # release_check.py matches these by the named path, not by file name
         want = {'openstack-keystone': {'tools/sample_data.sh': '/usr/share/keystone/sample_data.sh'},
-                'python-django-horizon': {'manage.py': '/usr/share/openstack-dashboard/manage.py'}}
+                'python-django-horizon': {'manage.py': '/usr/share/openstack-dashboard/manage.py',
+                                          'openstack_dashboard/themes/default/_variables.scss':
+                                          '/usr/share/openstack-dashboard/openstack_dashboard/themes/default/_variables.scss'}}
         for name, places in want.items():
             src, pkgs = genspec.load(os.path.join(HERE, 'defs', name + '.toml'))
             spec = genspec.generate(src, pkgs)
@@ -324,9 +368,61 @@ class ChangesNotice(unittest.TestCase):
                         self.assertTrue(it.get('installed', '').startswith('/'))
 
     def test_mark_text_is_safe_in_the_shell_and_awk(self):
-        self.assertNotIn("'", genspec.MARK)
-        self.assertNotIn('%', genspec.MARK)
+        for m in (genspec.MARK, genspec.MARK_SLASH):
+            self.assertNotIn("'", m)
+            self.assertNotIn('%', m)
+            self.assertNotIn('\\', m)
         self.assertTrue(genspec.MARK.startswith('# '))
+        self.assertEqual(genspec.MARK_SLASH, '//' + genspec.MARK[1:])
+
+    def test_sass_files_get_the_slash_mark(self):
+        self.assertEqual(genspec.mark_for('a/_variables.scss'), genspec.MARK_SLASH)
+        self.assertEqual(genspec.mark_for('a/b.py'), genspec.MARK)
+        src, pkgs = genspec.load(os.path.join(HERE, 'defs', 'python-django-horizon.toml'))
+        prep = genspec.generate(src, pkgs).split('%prep\n', 1)[1].split('%generate_buildrequires', 1)[0]
+        f = 'openstack_dashboard/themes/default/_variables.scss'
+        self.assertIn(f"grep -qxF '{genspec.MARK_SLASH}' '{f}' || {{ awk -v m='{genspec.MARK_SLASH}' ", prep)
+        self.assertNotIn(f"grep -qxF '{genspec.MARK}' '{f}'", prep)
+        # the marking lines run under bash on a Sass file: the mark is line 1, the rest unchanged
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, f)
+            os.makedirs(os.path.dirname(p))
+            with open(p, 'w') as fh:
+                fh.write('// a flag\n$x: 1 !default;\n')
+            lines = [ln for ln in prep.splitlines() if f"'{f}'" in ln and not ln.startswith('#')]
+            self.assertEqual(len(lines), 3)
+            r = run_bash(lines, d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(open(p).read(), genspec.MARK_SLASH + '\n// a flag\n$x: 1 !default;\n')
+            self.assertEqual(run_bash(lines, d).returncode, 0)          # a second run leaves it as it is
+            self.assertEqual(open(p).read().count('Hagistack'), 1)
+
+    def test_the_dashboard_glyphicons_font_path(self):
+        # s66r3d: the default theme asked for static/bootstrap/fonts/bootstrap/ (404 for all five fonts)
+        src, pkgs = genspec.load(os.path.join(HERE, 'defs', 'python-django-horizon.toml'))
+        lines = [ln for ln in src['prep_extra'] if 'icon-font-path' in ln]
+        self.assertEqual(len(lines), 4)
+        self.assertIn('_variables.scss', ' '.join(c for c in src['changes'] if 'icon-font-path' in c))
+        upstream = '$icon-font-path: "../../bootstrap/fonts/bootstrap/" !default;'
+        new = '$icon-font-path: "../../horizon/lib/bootstrap_scss/fonts/bootstrap/" !default;'
+        f = 'openstack_dashboard/themes/default/_variables.scss'
+        cases = [  # (file text, exit 0?, text after)
+            (f'$icon-font-name: "g" !default;\n{upstream}\n$x: 1;\n', True, f'$icon-font-name: "g" !default;\n{new}\n$x: 1;\n'),
+            ('$x: 1;\n', False, None),
+            (f'{upstream}\n{upstream}\n', False, None),
+            (f'{upstream}\n$icon-font-path: "../x/";\n', False, None),
+            (f'  {upstream}\n', False, None),
+        ]
+        for text, ok, after in cases:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, f)
+                os.makedirs(os.path.dirname(p))
+                with open(p, 'w') as fh:
+                    fh.write(text)
+                r = run_bash(lines, d)
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+                if ok:
+                    self.assertEqual(open(p).read(), after)
 
     def test_percent_is_escaped(self):
         self.assertEqual(genspec.rpm_text('100% and %prep'), '100%% and %%prep')
@@ -374,6 +470,14 @@ description = "d"
     def test_minimal_definition_loads(self):
         src, pkgs = self.load(self.BASE + '[[package]]\nname = "python3-x"\nkind = "python"\nmodules = ["x"]\n')
         self.assertIn('%pyproject_save_files -l x', genspec.generate(src, pkgs))
+
+    def test_mark_files_take_sass_but_not_other_types(self):
+        base = self.BASE + 'changes = ["c"]\nchangelog_date = "Sun Nov 15 2026"\n'
+        pkg = '[[package]]\nname = "python3-x"\nkind = "python"\nmodules = ["x"]\n'
+        self.load(base + 'mark_files = [{ path = "x/_a.scss" }]\n' + pkg)
+        for bad in ('x/a.css', 'x/a.html', 'x/a.scss.orig'):
+            with self.subTest(bad=bad):
+                self.refused(base + 'mark_files = [{ path = "%s" }]\n' % bad + pkg)
 
     def refused(self, text):
         with self.assertRaises(genspec.DefError):

@@ -86,14 +86,17 @@ The notice of these changes is carried in four places:
   is installed and takes `#` comments (Python and shell sources, the generated
   configuration samples) gets one comment line saying that it is changed and
   pointing to `HAGISTACK-CHANGES`. The line goes after a `#!` line and a Python
-  coding line, so neither moves. The definitions list these files
+  coding line, so neither moves. A changed Sass file (Horizon's
+  `themes/default/_variables.scss`) gets the same line as a `//` comment. The definitions list these files
   (`mark_files`), and the release check refuses a set in which one of them lacks
   the line. The other changed files carry no line inside them:
   - Hagistack's images that replace upstream's, and the documentation theme's
     replaced images, are image files. They are Hagistack's own files, and the
     SVGs and PNGs say so in a comment or a text chunk.
   - Built documentation is generated, and the edited `doc/source/conf.py` and
-    `requirements.txt` files are not installed.
+    `requirements.txt` files are not installed. The one line changed in the
+    documentation theme's `combined.css` carries its own `/* Hagistack: ... */`
+    comment.
   - Horizon's removed leftover file is not shipped at all.
 - **This file and `third-party/`.**
 
@@ -132,6 +135,13 @@ changes to upstream files; they are new files under the MIT License.
     is replaced in the source tree before the static files are collected. An
     unused leftover of upstream's, `openstack-one-color-alt.svg.old` (the
     OpenStack wordmark), is removed.
+  - `openstack_dashboard/themes/default/_variables.scss`: the glyphicons font
+    path `$icon-font-path` becomes `../../horizon/lib/bootstrap_scss/fonts/bootstrap/`
+    (upstream: `../../bootstrap/fonts/bootstrap/`). That is where Horizon
+    collects the fonts of the `XStatic-Bootstrap-SCSS` package. Upstream's path
+    names a directory nothing provides, so each of the five font requests was
+    answered 404. No font is copied: the fonts stay in their own package (see
+    "JavaScript, CSS and fonts used by the dashboard").
   - `/etc/openstack-dashboard/local_settings` is upstream's
     `local_settings.py.example` with Hagistack's changes, each marked with a
     "Hagistack:" comment. Among them, the page title is set to
@@ -153,7 +163,12 @@ changes to upstream files; they are new files under the MIT License.
 - **HTML documentation (47 source packages).** It is built with OpenStack's
   documentation theme, `openstackdocstheme`. The theme's OpenStack logo images
   and its favicon are replaced in the built HTML with Hagistack's own; see
-  "Trademarks". The documentation text and the theme's other files are
+  "Trademarks". In the theme's `_static/css/combined.css`, the `.note` rule
+  loses `url('../images/side-note-pointer.gif') no-repeat left center` and keeps
+  its background colour. The theme does not ship that image (3.5.0 or master),
+  so every page's request for it was answered 404. Sphinx's notes use the more
+  specific `.admonition.note` rule, which sets the background again, so the image
+  was never shown. The documentation text and the theme's other files are
   unchanged.
 - **openstacksdk:** `openstack/tests/ansible/hooks/post_test_hook.sh` (in
   `python3-openstacksdk-tests`) gets its shebang rewritten by rpm (`#!/bin/sh`

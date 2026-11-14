@@ -3,9 +3,9 @@
 name = "python-oslo-config"
 project = "oslo.config"
 version = "10.3.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 # rc4 published this package at epoch 2; keeping it lets the new build replace rc4.
 epoch = 2
 tarball = "oslo_config-10.3.0.tar.gz"

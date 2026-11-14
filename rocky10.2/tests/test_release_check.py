@@ -190,6 +190,23 @@ class Notices(Base):
         self.refused(rc.check_notices, self.set, want='marks tools/run.sh, but no RPM built from it installs that file '
                                                       'with the mark at /usr/share/x/run.sh')
 
+    def test_a_sass_file_carries_the_slash_mark(self):
+        # the dashboard's _variables.scss: // comments, MARK_SLASH
+        self.assertEqual(rc.MARK_SLASH, b'//' + rc.MARK[1:])
+        spec = NOTICE_SPEC.replace("Name: x\n%prep\n", "Name: x\n%prep\ntest -f 'x/_v.scss' || { echo 'x/_v.scss: the file to mark is missing' >&2; exit 1; }\n")
+        self.pkg('srpms', 'x-1-1.src.rpm', {'x.spec': spec.encode()})
+        scss = './usr/lib/python3.12/site-packages/x/_v.scss'
+        self.good(extra={scss: ('%s\n$a: 1;\n' % rc.MARK_SLASH.decode()).encode()})
+        rc.check_notices(self.set)
+        # the # mark in a Sass file, or no mark, is not the mark genspec writes there
+        for body in ('%s\n$a: 1;\n' % MARK, '/* Hagistack */\n$a: 1;\n'):
+            self.good(extra={scss: body.encode()})
+            self.refused(rc.check_notices, self.set, want='marks x/_v.scss')
+        # and the // mark in a Python file is not its mark either
+        self.good(extra={scss: ('%s\n' % rc.MARK_SLASH.decode()).encode(),
+                         './usr/lib/python3.12/site-packages/x/marked.py': ('%s\nx = 1\n' % rc.MARK_SLASH.decode()).encode()})
+        self.refused(rc.check_notices, self.set, want='marks x/marked.py')
+
     def test_a_marked_file_without_the_mark_is_refused(self):
         self.good(marked=False)
         self.refused(rc.check_notices, self.set, want='marks x/marked.py')
@@ -233,6 +250,7 @@ class Notices(Base):
         except ModuleNotFoundError:          # genspec needs Python 3.11 (tomllib)
             self.skipTest('genspec needs Python 3.11+')
         self.assertEqual(rc.MARK.decode(), gs.MARK)
+        self.assertEqual(rc.MARK_SLASH.decode(), gs.MARK_SLASH)
         self.assertEqual(rc.CHANGES_DIR, '/usr/share/hagistack/changes/')
 
 
@@ -248,6 +266,8 @@ class Branding(Base):
                 f.write(data)
             for pl in rc.BRANDING[img]:
                 self.files['.' + rc.DASH + pl] = data
+        for rel in rc.DASH_VARIABLES:
+            self.files['.' + rc.DASH + rel] = b'// mark\n$icon-font-name: "x" !default;\n' + rc.DASH_ICON_FONT + b'\n'
         self.docs = os.path.join(self.d, 'docs')
         os.makedirs(self.docs)
         self.doc_files = {}
@@ -315,6 +335,47 @@ class Branding(Base):
                 files['./usr/share/doc/python-x-doc/html/_static/' + rel] = b'not ours'
                 self.doc(files)
                 self.refused(self.check, want=rel)
+
+    def test_the_dashboard_glyphicons_font_path(self):
+        self.doc(self.doc_files)
+        for rel in rc.DASH_VARIABLES:
+            for bad in (None, b'$icon-font-path: "../../bootstrap/fonts/bootstrap/" !default;\n',
+                        rc.DASH_ICON_FONT + b'\n' + rc.DASH_ICON_FONT + b'\n',
+                        rc.DASH_ICON_FONT + b'\n$icon-font-path: "../x/" !default;\n'):
+                with self.subTest(rel=rel, bad=bad):
+                    files = dict(self.files)
+                    if bad is None:
+                        files.pop('.' + rc.DASH + rel)
+                    else:
+                        files['.' + rc.DASH + rel] = bad
+                    self.dash(files)
+                    self.refused(self.check, want=rel + ' does not set the glyphicons font path')
+
+    def test_a_doc_stylesheet_that_names_a_missing_file_is_refused(self):
+        # s66r3d: openstackdocstheme's combined.css named images/side-note-pointer.gif
+        self.dash(self.files)
+        css = './usr/share/doc/python-x-doc/html/_static/css/combined.css'
+        files = dict(self.doc_files)
+        files[css] = b".note { background: #e2f4dc url('../images/side-note-pointer.gif') no-repeat left center; }"
+        self.doc(files)
+        self.refused(self.check, want='combined.css refers to ../images/side-note-pointer.gif, which the package does not install')
+        # as genspec leaves it, with every other kind of reference that must pass
+        files[css] = (b".note { background: #e2f4dc; /* Hagistack: url(../images/gone.gif) removed */ }\n"
+                      b".a { background: url(\"../images/logo-full.svg\") } .b { background: url(../favicon.ico?v=1#x) }\n"
+                      b".c { background: url(data:image/png;base64,AAAA) } .d { src: url(https://example.org/f.woff) }\n"
+                      b".e { src: url(//example.org/f.woff) } .f { filter: url(#svgfilter) }")
+        self.doc(files)
+        self.check()
+        files[css] += b"\n.g { src: url( '../fonts/missing.woff' ) }"
+        self.doc(files)
+        self.refused(self.check, want='refers to ../fonts/missing.woff')
+
+    def test_css_missing_resolves_against_the_stylesheet(self):
+        names = {'/d/html/_static/images/a.png', '/d/html/_static/css/b.png'}
+        f = '/d/html/_static/css/x.css'
+        self.assertEqual(rc.css_missing(f, b'url(../images/a.png) url(b.png) url(./b.png)', names), [])
+        self.assertEqual(rc.css_missing(f, b'url(../../_static/images/a.png) url(a.png)', names), ['a.png'])
+        self.assertEqual(rc.css_missing(f, b'/* url(gone.png) */ url("../images/a.png")', names), [])
 
     def test_no_doc_tree_is_refused(self):
         self.dash(self.files)

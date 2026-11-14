@@ -6,9 +6,9 @@
 name = "openstack-glance"
 project = "glance"
 version = "32.0.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 epoch = 1
 tarball = "glance-32.0.0.tar.gz"
 sha256 = "e92cce22edf09f573c7083cecb783f19b526a3be9bc34c4018e658962b9d98e5"

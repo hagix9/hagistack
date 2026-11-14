@@ -4,9 +4,9 @@
 name = "python-os-traits"
 project = "os-traits"
 version = "3.6.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "os_traits-3.6.0.tar.gz"
 sha256 = "0fef8ef5c17ca98388551bb6c0b2d2fe2dee305b1e1866e780c0e776df6fcb60"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

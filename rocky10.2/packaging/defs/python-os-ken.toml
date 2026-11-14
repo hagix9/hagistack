@@ -4,9 +4,9 @@
 name = "python-os-ken"
 project = "os-ken"
 version = "4.1.2"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 # Hagistack's changes to installed files (written into %changelog and
 # HAGISTACK-CHANGES by genspec.py).
 changes = [

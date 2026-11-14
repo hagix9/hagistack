@@ -4,9 +4,9 @@
 name = "python-ovsdbapp"
 project = "ovsdbapp"
 version = "2.16.1"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "ovsdbapp-2.16.1.tar.gz"
 sha256 = "8189d1e4089d288763f8666eecde2d260d5c1be11e8dcecc38b858d6d4bbe447"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

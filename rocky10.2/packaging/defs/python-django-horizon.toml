@@ -14,7 +14,7 @@
 name = "python-django-horizon"
 project = "horizon"
 version = "25.7.3"
-release = "2"
+release = "3"
 epoch = 1
 tarball = "horizon-25.7.3.tar.gz"
 sha256 = "0a9a1d90475bc290d4af934ff53b9ed4c2cbe063150ca48a17c64c03447c5117"
@@ -38,18 +38,21 @@ buildrequires = ["gettext", "systemd-rpm-macros"]
 
 # Hagistack's changes to the upstream tree: written into %changelog and
 # HAGISTACK-CHANGES (installed in every binary package) by genspec.py.
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 changes = [
   "requirements.txt: the tzdata requirement is removed; the system tzdata package is required instead.",
   "manage.py, installed as /usr/share/openstack-dashboard/manage.py: the shebang becomes #!/usr/bin/python3.",
   "openstack_dashboard/static/dashboard/img/logo.svg, logo-splash.svg, favicon.ico, apple-touch-icon.png and safari-pinned-tab.svg, and the material theme's templates/material/openstack-one-color.svg and openstack-one-color-alt.svg (its inline header logo), are replaced with Hagistack's own images, and the unused upstream file openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old (the OpenStack wordmark) is removed. Upstream's images, which show the OpenStack logo, are not shipped.",
   "At build time the translation catalogues are compiled (.po to .mo) and the static files are collected; the generated files replace the .po sources.",
+  "openstack_dashboard/themes/default/_variables.scss: $icon-font-path, upstream \"../../bootstrap/fonts/bootstrap/\", becomes \"../../horizon/lib/bootstrap_scss/fonts/bootstrap/\", where collectstatic puts the Bootstrap glyphicons fonts of the python3-XStatic-Bootstrap-SCSS package (Horizon serves every XStatic package under static/horizon/lib/<name>/). The compiled stylesheet asked for /dashboard/static/bootstrap/fonts/bootstrap/glyphicons-halflings-regular.* (eot, woff2, woff, ttf, svg), a directory nothing provides, and every request was answered 404.",
   "/etc/openstack-dashboard/local_settings is upstream's openstack_dashboard/local/local_settings.py.example with the changes the packaged layout and the installer need, each marked with a Hagistack: comment; among them the page title and logo text, SITE_BRANDING = Hagistack Dashboard (upstream: OpenStack Dashboard).",
 ]
 # Changed files that are installed and have # comments: genspec.py puts a
 # comment line into each (after a #! line), saying that it is changed.
 mark_files = [
   { path = "manage.py", installed = "/usr/share/openstack-dashboard/manage.py" },
+  # Sass: marked with a // comment (genspec MARK_SLASH)
+  { path = "openstack_dashboard/themes/default/_variables.scss", installed = "/usr/share/openstack-dashboard/openstack_dashboard/themes/default/_variables.scss" },
 ]
 # The dashboard shows Hagistack's own logo, not the OpenStack logo: every image
 # of upstream's that shows it (the default theme's four images and the Safari
@@ -119,7 +122,16 @@ prep_extra = ["sed -i '/^tzdata[>=]/d' requirements.txt",
   # An unused leftover in the upstream tree: the OpenStack wordmark (Adobe
   # Illustrator export). It is not referenced by any template; it is removed.
   "test -f 'openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old' || exit 1",
-  "rm -f 'openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old'"]
+  "rm -f 'openstack_dashboard/themes/material/templates/material/openstack-one-color-alt.svg.old'",
+  # The default theme's glyphicons font path (see changes). The stylesheet is
+  # compiled from static/dashboard/scss/, so ../../ is the static root, and
+  # collectstatic puts xstatic.pkg.bootstrap_scss (NAME bootstrap_scss) under
+  # horizon/lib/bootstrap_scss/ (openstack_dashboard/utils/settings.py
+  # get_xstatic_dirs). Exactly one upstream line before, exactly one new line after.
+  "test \"$(grep -cxF '$icon-font-path: \"../../bootstrap/fonts/bootstrap/\" !default;' openstack_dashboard/themes/default/_variables.scss)\" = 1 || exit 1",
+  "sed -i 's|^\\$icon-font-path: \"\\.\\./\\.\\./bootstrap/fonts/bootstrap/\" !default;$|$icon-font-path: \"../../horizon/lib/bootstrap_scss/fonts/bootstrap/\" !default;|' openstack_dashboard/themes/default/_variables.scss",
+  "test \"$(grep -cxF '$icon-font-path: \"../../horizon/lib/bootstrap_scss/fonts/bootstrap/\" !default;' openstack_dashboard/themes/default/_variables.scss)\" = 1 || exit 1",
+  "test \"$(grep -c 'icon-font-path' openstack_dashboard/themes/default/_variables.scss)\" = 1 || exit 1"]
 [[package]]
 name = "openstack-dashboard"
 kind = "files"

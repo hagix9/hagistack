@@ -4,9 +4,9 @@
 name = "python-oslo-upgradecheck"
 project = "oslo.upgradecheck"
 version = "2.7.1"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "oslo_upgradecheck-2.7.1.tar.gz"
 sha256 = "9ab2e726d32e47cab4f9c42580e2726e311d8243f3e44f2f67f4875517f29ef4"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

@@ -18,7 +18,10 @@
         theme's); openstack-dashboard installs Hagistack's images (from
         IMAGES_DIR) at each place they replace; every HTML documentation tree
         (a directory .../html/_static) holds Hagistack's documentation images
-        (from DOCS_DIR) at each of the theme's logo and favicon paths.
+        (from DOCS_DIR) at each of the theme's logo and favicon paths, and
+        every local url(...) in a stylesheet there names a file the same RPM
+        installs; openstack-dashboard's default theme points the glyphicons
+        font path at horizon/lib/bootstrap_scss/fonts/bootstrap/.
     release_check.py notices SET_DIR
         every binary RPM built from a source RPM whose spec writes
         HAGISTACK-CHANGES, except one that installs no file (an extras
@@ -35,6 +38,7 @@ saying what is wrong and exits 1. Runs with python3 -I and the standard library.
 import gzip
 import hashlib
 import os
+import posixpath
 import re
 import stat
 import subprocess
@@ -247,6 +251,30 @@ def rpm_query(path, fmt):
     return p.stdout.decode('utf-8', 'replace')
 
 
+# Local url(...) targets in a stylesheet: a quoted or bare URL, comments ignored.
+CSS_URL_RE = re.compile(rb"""url\(\s*(['"]?)([^)'"]*)\1\s*\)""")
+CSS_COMMENT_RE = re.compile(rb'/\*.*?\*/', re.S)
+# The default theme's glyphicons font path, as genspec's horizon definition sets
+# it: the stylesheet is compiled from static/dashboard/scss/, and collectstatic
+# puts the python3-XStatic-Bootstrap-SCSS fonts under horizon/lib/bootstrap_scss/.
+DASH_ICON_FONT = b'$icon-font-path: "../../horizon/lib/bootstrap_scss/fonts/bootstrap/" !default;'
+DASH_VARIABLES = ('openstack_dashboard/themes/default/_variables.scss', 'static/themes/default/_variables.scss')
+
+
+def css_missing(css_path, data, names):
+    """The local url(...) targets of the stylesheet installed at css_path that
+    are not among names (the installed paths of the same RPM)."""
+    out = []
+    for m in CSS_URL_RE.finditer(CSS_COMMENT_RE.sub(b'', data)):
+        u = m.group(2).decode('utf-8', 'replace').strip()
+        if not u or u.startswith(('data:', '#', '//')) or re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', u):
+            continue
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(css_path), u.split('#', 1)[0].split('?', 1)[0]))
+        if target not in names:
+            out.append(u)
+    return out
+
+
 def check_branding(set_dir, images_dir, docs_dir):
     doc_want = {}
     for rel, img in DOC_BRANDING.items():
@@ -271,7 +299,9 @@ def check_branding(set_dir, images_dir, docs_dir):
             dash = n
         found = {}
         trees = {}            # html/_static directory -> {relative path: bytes}
-        for name, data in payload(os.path.join(repo, n)):
+        content = list(payload(os.path.join(repo, n)))
+        names = {name for name, _ in content}
+        for name, data in content:
             h = hashlib.sha256(data).hexdigest()
             if h in UPSTREAM_LOGOS:
                 raise Bad('%s installs %s, which is upstream\'s %s (the OpenStack logo)' % (n, name, UPSTREAM_LOGOS[h]))
@@ -280,6 +310,10 @@ def check_branding(set_dir, images_dir, docs_dir):
             m = re.match(r'(/usr/share/doc/.+/html/_static)/(.+)$', name)
             if m:
                 trees.setdefault(m.group(1), {})[m.group(2)] = data
+                if name.endswith('.css'):
+                    missing = css_missing(name, data, names)
+                    if missing:
+                        raise Bad('%s: %s refers to %s, which the package does not install' % (n, name, ', '.join(missing)))
         for tree, files in sorted(trees.items()):
             doc_trees += 1
             for rel, data in doc_want.items():
@@ -289,6 +323,12 @@ def check_branding(set_dir, images_dir, docs_dir):
             for path, data in want.items():
                 if found.get(path) != data:
                     raise Bad('%s does not install Hagistack\'s image at %s' % (n, path))
+            files = dict(content)
+            for rel in DASH_VARIABLES:
+                lines = files.get(DASH + rel, b'').split(b'\n')
+                if lines.count(DASH_ICON_FONT) != 1 or sum(b'icon-font-path' in ln for ln in lines) != 1:
+                    raise Bad('%s: %s%s does not set the glyphicons font path to horizon/lib/bootstrap_scss/fonts/bootstrap/ (once)'
+                              % (n, DASH, rel))
     if dash is None:
         raise Bad('openstack-dashboard is not in the set')
     if doc_trees == 0:
@@ -299,6 +339,7 @@ CHANGES_DIR = '/usr/share/hagistack/changes/'
 # genspec.py MARK, and the shell line genspec writes for each marked file.
 MARK = (b"# Hagistack: this file is changed from the upstream release; the changes are "
         b"listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.")
+MARK_SLASH = b'//' + MARK[1:]           # genspec.py MARK_SLASH, for Sass files
 MARKED_RE = re.compile(r"^test -f '([^']+)' \|\| \{ echo '[^']+: the file to mark is missing'", re.M)
 INSTALLED_RE = re.compile(r"^# hagistack-mark-installed: (\S+) (/\S+)$", re.M)
 
@@ -403,7 +444,8 @@ def check_notices(set_dir):
         if not rpm_query(path, '%{CHANGELOGNAME}').endswith(' - ' + want_evr):
             raise Bad('%s: the newest changelog entry is not for %s (release raised without an entry?)' % (n, want_evr))
         for f, data in content:
-            if MARK in data.split(b'\n'):
+            # the mark genspec writes for the file's type: // for Sass, # otherwise
+            if (MARK_SLASH if f.endswith('.scss') else MARK) in data.split(b'\n'):
                 marked_found[src].add(f)
         # The notice is Hagistack's text: the package says MIT and carries the licence.
         files = [f for f, _ in content]

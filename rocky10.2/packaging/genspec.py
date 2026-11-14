@@ -20,7 +20,8 @@ package shares:
     Hagistack's own (replace_files, e.g. the dashboard's logo);
   * HTML documentation built with OpenStack's documentation theme gets
     Hagistack's logo and favicon in place of the theme's OpenStack ones
-    (DOC_BRANDING), stated as a change like the ones above;
+    (DOC_BRANDING), and loses the theme's one reference to an image the theme
+    does not ship (DOC_CSS_OLD), stated as a change like the ones above;
   * a pyproject build (pyproject-rpm-macros): build and runtime requirements
     come from upstream metadata through the Python dependency generator;
   * an import check of the top-level modules, Sphinx HTML documentation,
@@ -89,7 +90,22 @@ DOC_SOURCES = sorted({f for _, f in DOC_BRANDING})       # Source80 ...
 DOC_CHANGE = ("HTML documentation: it is built with OpenStack's documentation theme (openstackdocstheme); "
               "the theme's OpenStack logo images (_static/images/logo-full, logo-vert, openstack-logo-full and "
               "openstack-logo-vert, .svg and .png) and its favicon (_static/favicon.ico) are replaced in the built "
-              "HTML with Hagistack's own. The documentation text and the theme's other files are unchanged.")
+              "HTML with Hagistack's own. In the theme's _static/css/combined.css the .note rule loses "
+              "url('../images/side-note-pointer.gif') no-repeat left center, a reference to an image the theme "
+              "does not ship (every request for it was answered 404), and keeps its background colour; the line "
+              "carries a comment saying so. The documentation text and the theme's other files are unchanged.")
+# The theme's combined.css (openstackdocstheme 3.5.0, also master) styles .note
+# with ../images/side-note-pointer.gif, which the theme has never shipped, so
+# every page asked for it and got 404. Sphinx's notes are "admonition note",
+# whose own rule (.admonition.note, more specific) sets the background again,
+# so the image was never shown: only the dead reference is removed. The build
+# stops unless the rule is there exactly once before and no reference to the
+# image is left after.
+DOC_CSS_FILE = 'css/combined.css'
+DOC_CSS_GIF = 'side-note-pointer.gif'
+DOC_CSS_OLD = "background: #e2f4dc url('../images/side-note-pointer.gif') no-repeat left center;"
+DOC_CSS_NEW = ("background: #e2f4dc; /* Hagistack: the url() of an image the theme does not ship is removed; "
+               "see HAGISTACK-CHANGES under /usr/share/hagistack/changes/ */")
 
 
 # Where every binary package of a source package with stated changes installs
@@ -103,6 +119,9 @@ CHANGES_DIR = CHANGES_ROOT + '/changes'
 MARK = ("# Hagistack: this file is changed from the upstream release; the changes are "
         "listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/.")
 MARK_EXTS = ('.py', '.sh', '.ini', '.conf', '.sample', '.yaml', '.cfg')
+# The same comment for a file whose format has // line comments (Sass).
+MARK_SLASH = '//' + MARK[1:]
+MARK_SLASH_EXTS = ('.scss',)
 MARK_STAGES = ('prep', 'build')
 
 
@@ -171,7 +190,8 @@ def load(path):
         mp = it['path']
         need(isinstance(mp, str) and re.fullmatch(r'[A-Za-z0-9_./-]+', mp) and not mp.startswith('/')
              and '..' not in mp.split('/'), f'{path}: mark_files path must be a relative path in the source tree')
-        need(mp.endswith(MARK_EXTS), f'{path}: mark_files: {mp} is not a file type with # comments {MARK_EXTS}')
+        need(mp.endswith(MARK_EXTS + MARK_SLASH_EXTS),
+             f'{path}: mark_files: {mp} is not a file type with # comments {MARK_EXTS} or // comments {MARK_SLASH_EXTS}')
     if src.get('mark_files'):
         need(src.get('changes'), f'{path}: mark_files marks changed files: list the changes in changes')
     for it in src.get('replace_files', []):
@@ -291,27 +311,54 @@ def ships_hagistack_text(src, p):
     return has_hagistack_files(p) or carries_changes(src, p)
 
 
+def mark_for(path):
+    """The comment line that marks a changed file of this type."""
+    return MARK_SLASH if path.endswith(MARK_SLASH_EXTS) else MARK
+
+
 def mark_lines(src, stage):
-    """Shell lines that put MARK into each file of mark_files for this stage."""
+    """Shell lines that put MARK (MARK_SLASH for Sass) into each file of
+    mark_files for this stage."""
     out = []
     for it in src.get('mark_files', []):
         if it.get('stage', 'prep') != stage:
             continue
         f = it['path']
+        mark = mark_for(f)
         if it.get('installed'):
             # read by release_check.py: where the RPMs install this file
             out.append(f"# hagistack-mark-installed: {f} {it['installed']}")
         out.append(f"test -f '{f}' || {{ echo '{f}: the file to mark is missing' >&2; exit 1; }}")
         # The first two lines are held back: the mark goes after a #! on line 1 and
         # after a coding line on line 1 or 2 (PEP 263), whichever is later.
-        out.append(f"grep -qxF '{MARK}' '{f}' || {{ awk -v m='{MARK}' "
+        out.append(f"grep -qxF '{mark}' '{f}' || {{ awk -v m='{mark}' "
                    "'function flush(i) { if (!p) print m; for (i = 1; i <= n; i++) { print b[i]; if (i == p) print m } f = 1 } "
                    "NR <= 2 { b[NR] = $0; n = NR; if (NR == 1 && /^#!/) p = 1; "
                    "if (/^[ \\t\\f]*#.*coding[:=][ \\t]*[-_.a-zA-Z0-9]+/) p = NR; next } "
                    "!f { flush() } { print } END { if (!f) flush() }' "
                    f"'{f}' > '{f}.hagistack-mark' && cat '{f}.hagistack-mark' > '{f}' && rm -f '{f}.hagistack-mark'; }} || exit 1")
-        out.append(f"grep -qxF '{MARK}' '{f}' || exit 1")
+        out.append(f"grep -qxF '{mark}' '{f}' || exit 1")
     return out
+
+
+def doc_css_lines(d):
+    """Shell lines that drop the theme's dead side-note-pointer.gif reference
+    from <d>/_static/css/combined.css (DOC_CSS_OLD), for a spec's %build."""
+    css = f'{d}/_static/{DOC_CSS_FILE}'
+    # sed: the old text as a basic regular expression, '|' as the delimiter
+    def q(t):                     # inside '...' in the shell
+        return t.replace("'", "'\\''")
+    old = q(re.sub(r'([.*\[\]^$\\])', r'\\\1', DOC_CSS_OLD))
+    new = q(DOC_CSS_NEW.replace('\\', '\\\\').replace('&', '\\&'))
+    for t in (old, new):
+        assert '|' not in t and '%' not in t
+    return [
+        f"test -f '{css}' || {{ echo '{css}: the documentation theme file is missing' >&2; exit 1; }}",
+        f"test \"$(grep -cF -- '{q(DOC_CSS_OLD)}' '{css}')\" = 1 "
+        f"|| {{ echo '{css}: the theme rule for {DOC_CSS_GIF} is not there exactly once' >&2; exit 1; }}",
+        f"sed -i 's|{old}|{new}|' '{css}'",
+        f"! grep -rlF -- '{DOC_CSS_GIF}' '{d}' || {{ echo '{d}: {DOC_CSS_GIF} is still referenced' >&2; exit 1; }}",
+    ]
 
 
 def rpm_text(s):
@@ -503,6 +550,7 @@ def generate(src, pkgs):
         alts = ' || '.join(f"cmp -s \"$f\" '%{{SOURCE{80 + i}}}'" for i in range(len(DOC_SOURCES)))
         w(f"find '{d}/_static' -type f \\( -iname '*logo*' -o -iname '*.ico' \\) -print | while IFS= read -r f; do "
           f"{alts} || {{ echo \"$f: a logo or icon that is not Hagistack's\" >&2; exit 1; }}; done || exit 1")
+        s.extend(doc_css_lines(d))
     w('')
     w('%install')
     w('%pyproject_install')

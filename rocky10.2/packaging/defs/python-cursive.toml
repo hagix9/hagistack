@@ -4,9 +4,9 @@
 name = "python-cursive"
 project = "cursive"
 version = "0.2.3"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "cursive-0.2.3.tar.gz"
 sha256 = "f435f6cdbe6a517f054c1105c36e436d7868124f1b227d310fe809d918a8c10c"
 signing_key = "0xa7475c5f2122fec3f90343223fe3bf5aad1080e4"

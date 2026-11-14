@@ -4,9 +4,9 @@
 name = "python-os-vif"
 project = "os-vif"
 version = "4.3.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "os_vif-4.3.0.tar.gz"
 sha256 = "2d819eed0ac45a3606120f67f64f838eca1ff61653f310b33be185e028fee435"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

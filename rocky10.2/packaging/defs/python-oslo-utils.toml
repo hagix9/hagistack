@@ -4,9 +4,9 @@
 name = "python-oslo-utils"
 project = "oslo.utils"
 version = "10.0.1"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 tarball = "oslo_utils-10.0.1.tar.gz"
 sha256 = "21bfc29bb4c1cd9afb4ef741fb8e39468fa5485e60717f4f90f3ad3dce8a1f22"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"

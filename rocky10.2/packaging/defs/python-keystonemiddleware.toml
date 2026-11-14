@@ -4,7 +4,7 @@
 name = "python-keystonemiddleware"
 project = "keystonemiddleware"
 version = "12.0.0"
-release = "2"
+release = "3"
 tarball = "keystonemiddleware-12.0.0.tar.gz"
 sha256 = "234ff0b5d35541ac1113396339e2d6e26b1f7a1d7867bca223f488073e207cd4"
 signing_key = "0xb8e9315f48553ec5aff9ffe5e69d97da9efb5aff"
@@ -21,7 +21,7 @@ buildrequires = ["python3dist(sphinx)", "python3dist(openstackdocstheme)", "pyth
 
 # Hagistack's changes to the upstream tree: written into %changelog and
 # HAGISTACK-CHANGES (installed in every binary package) by genspec.py.
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 changes = [
   "doc/source/conf.py: the Sphinx extension sphinxcontrib.rsvgconverter is removed from the extension list (it is only for PDF output and not available on the builder). The HTML documentation in python-keystonemiddleware-doc is built from the edited file.",
 ]

@@ -4,9 +4,9 @@
 name = "python-keystoneclient"
 project = "python-keystoneclient"
 version = "5.8.0"
-release = "2"
+release = "3"
 # Stage 6-5-R1: rebuilt with the change notice (and Hagistack doc logos where docs are built).
-changelog_date = "Fri Nov 13 2026"
+changelog_date = "Sun Nov 15 2026"
 epoch = 1
 tarball = "python_keystoneclient-5.8.0.tar.gz"
 sha256 = "3ca87c67c404298ce862310b569f545a58acf75cd5685094c82f35320b3a355d"
