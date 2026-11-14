@@ -362,3 +362,34 @@ The stylesheet that asks for it is not recorded.
 - What `ovn-controller` does with a renamed system id.
 
 The Ubuntu build is not checked for the same problem.
+
+## GCE run s66r3d (commit `a1e41ac`, conditions `df40b510…9621`)
+
+Owner approval: "s66r3d df40b510 承認" in chat on 2026-11-15 (format 4 dev record `f82627af…3d5b`, not signed). One n2-standard-8, Rocky 10.2 x86_64 (image rocky-linux-10-v20261110), pd-standard 100 GB, asia-northeast1-a, own VPC and Cloud NAT.
+
+| Step | Result |
+|---|---|
+| preflight, build, release, nodocs, pack | PASSED (candidate `5887acf2…1133`, evidence-build `9d52ece8…c073`) |
+| install | PASSED (all-in-one rc=0, 495 s) |
+| accept | NOT PASSED, 4 failed checks (below) |
+| evidence | PASSED, 47 diag files, 0 withheld (evidence-final `c04f3a63…9776`) |
+| teardown, residual | all 7 resources deleted; "none of run s66r3d left"; watch ended |
+
+Harness estimate US$1.63 (US$0.54 of it assumed), 2.19 h. Not a bill.
+
+**The chassis fix works on the real node.**
+- `chassis_named` passed before and after the restart of 14 units: the only southbound chassis, `system-id.conf` and the host name agree.
+- The ovsdb-server journal shows `ovs-ctl` setting `external-ids:system-id` to the host name at both starts (18:29:50 and 18:40:16 UTC).
+- `network agent list`: the OVN Metadata agent and the OVN Controller Gateway agent are up under the host name before the restart, after it and at evidence time.
+- `ovn-nbctl show` keeps `gateway chassis: [<host>]` and `ovn-sbctl show` keeps the `cr-lrp` port binding on the host chassis at all three points.
+- s66-g3, created after the restart, is ACTIVE, takes the metadata-injected SSH key and reads its instance-id. This is what failed in s66r3b and s66r3c.
+- Not checked separately: there is no `ovs-vsctl get … system-id` dump (the journal and the southbound DB stand for it), and no guest-to-guest ping after the restart (the plan has none).
+
+**Failed check 1: the ping count is a defect in the check, not in the network.** `diag/ping-before-restart.txt` holds `5 packets transmitted, 5 received, 0% packet loss` and `exit 0`. The check reads the count with `sed 's/.* \([0-9]*\) packets received.*/\1/p'`, which never matches iputils' output (`N received`), so it reported 0/5. The pattern dates from `4467c1d`, so the 0/5 in s66r3a, s66r3b and s66r3c is likely the same defect; only s66r3d kept the output to show it.
+
+**Failed checks 2–4: the same 404s as before, criteria unchanged.**
+- Horizon, before and after the restart: five `glyphicons-halflings-regular.*` under `/dashboard/static/bootstrap/fonts/bootstrap/`. The reference is upstream Horizon's `openstack_dashboard/themes/default/_variables.scss:84` (`$icon-font-path: "../../bootstrap/fonts/bootstrap/"`), shipped unchanged in Hagistack's `openstack-dashboard-25.7.3-2.el10`. The fonts are on the node at `static/horizon/lib/bootstrap_scss/fonts/bootstrap/` (collected, not owned by a package) from the external `xstatic-bootstrap-scss-common-3.3.7.1-14.el10s`, and in `bootswatch-fonts`. The asset exists but the URL path does not match.
+- Documentation: `_static/images/side-note-pointer.gif`. The reference is `_static/css/combined.css:110` in Hagistack's `openstack-glance-doc-32.0.0-2.el10`. The CSS comes from the build dependency `openstackdocstheme` (external), which ships no such image; no file of that name is on the node.
+- Both stay failures until the Owner decides.
+
+Verdict: NO-GO.
