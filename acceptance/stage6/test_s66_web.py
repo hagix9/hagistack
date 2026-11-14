@@ -70,6 +70,16 @@ ADMIN = b'''<html><head><link rel="icon" href="/dashboard/static/dashboard/img/f
 <body><img src="/dashboard/static/dashboard/img/logo.svg"> admin</body></html>'''
 
 
+FONTS = "/dashboard/static/horizon/lib/bootstrap_scss/fonts/bootstrap/"
+def glyph_css(path):
+    """The compiled stylesheet's glyphicons @font-face, as Horizon writes it."""
+    p = path + b"glyphicons-halflings-regular."
+    return (b"@font-face{font-family:'Glyphicons Halflings';src:url(%seot);"
+            b"src:url(%seot?#iefix) format('embedded-opentype'),url(%swoff2) format('woff2'),"
+            b"url(%swoff) format('woff'),url(%sttf) format('truetype'),"
+            b"url(%ssvg#glyphicons_halflingsregular) format('svg')}") % ((p,) * 6)
+
+
 def horizon_files(**over):
     f = {"/dashboard/auth/login/": LOGIN, "/dashboard/admin/": ADMIN, "/dashboard/admin/hypervisors/": ADMIN,
          "/dashboard/project/instances/": ADMIN,
@@ -81,6 +91,9 @@ def horizon_files(**over):
          "/dashboard/static/dashboard/img/apple-touch-icon.png": TOUCH,
          "/dashboard/static/dashboard/img/bg2.png": b"PNG2", "/dashboard/static/dashboard/img/i1.png": b"I1",
          "/dashboard/static/dashboard/img/i2.png": b"I2", "/dashboard/static/dashboard/css/b.css": b".y{}"}
+    f["/dashboard/static/dashboard/css/b.css"] = glyph_css(b"../../horizon/lib/bootstrap_scss/fonts/bootstrap/")
+    for n in s66_web.GLYPHICONS:
+        f[FONTS + n] = b"FONT"
     f.update(over)
     return {k: v for k, v in f.items() if v is not None}
 
@@ -193,6 +206,28 @@ class Horizon(Base):
         self.assertIn("not the login form (302)", out)
 
 
+class HorizonFonts(Base):
+    def test_the_fonts_at_the_upstream_path_fail(self):
+        # what s66r3d saw: the stylesheet asks static/bootstrap/fonts/bootstrap/
+        rc, out = self.horizon(horizon_files(**{
+            "/dashboard/static/dashboard/css/b.css": glyph_css(b"../../bootstrap/fonts/bootstrap/")}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("/dashboard/static/bootstrap/fonts/bootstrap/glyphicons-halflings-regular.woff2 returned HTTP 404", out)
+        self.assertIn("FAIL  the stylesheets load glyphicons-halflings-regular.ttf from ...%s (HTTP not asked for)"
+                      % s66_web.GLYPHICONS_DIR, out)
+
+    def test_a_stylesheet_without_the_fonts_fails(self):
+        rc, out = self.horizon(horizon_files(**{"/dashboard/static/dashboard/css/b.css": b".y{}"}))
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count("(HTTP not asked for)"), 5, out)
+
+    def test_one_missing_font_fails(self):
+        rc, out = self.horizon(horizon_files(**{FONTS + "glyphicons-halflings-regular.svg": None}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL  the stylesheets load glyphicons-halflings-regular.svg", out)
+        self.assertIn("PASS  the stylesheets load glyphicons-halflings-regular.eot", out)
+
+
 class HorizonRefs(Base):
     def test_style_blocks_srcset_and_imports_are_fetched(self):
         for path in ("/dashboard/static/dashboard/img/bg2.png", "/dashboard/static/dashboard/img/i2.png",
@@ -242,6 +277,23 @@ class Docs(Base):
         rc, out = self.docs(self.docs_files(**{"/index.html": b'<img src="_static/images/nothere.png">'}))
         self.assertEqual(rc, 1, out)
         self.assertIn("HTTP 404", out)
+
+    def test_good_docs_do_not_ask_for_the_side_note_image(self):
+        rc, out = self.docs(self.docs_files())
+        self.assertIn("PASS  the theme's side-note-pointer.gif is not asked for", out)
+
+    def test_the_theme_side_note_rule_fails_as_in_s66r3d(self):
+        css = b".note{background:#e2f4dc url('../images/side-note-pointer.gif') no-repeat left center}"
+        rc, out = self.docs(self.docs_files(**{"/_static/css/t.css": css}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("side-note-pointer.gif returned HTTP 404", out)
+        self.assertIn("FAIL  the theme's side-note-pointer.gif is asked for (HTTP 404)", out)
+
+    def test_the_rule_as_genspec_leaves_it_passes(self):
+        css = (b".note{background: #e2f4dc; /* Hagistack: the url() of an image the theme does not ship is removed; "
+               b"see HAGISTACK-CHANGES under /usr/share/hagistack/changes/ */ }")
+        rc, out = self.docs(self.docs_files(**{"/_static/css/t.css": css}))
+        self.assertEqual(rc, 0, out)
 
 
 if __name__ == "__main__":

@@ -16,12 +16,17 @@ from the file and sent only in the POST body, never printed), then checks the
 login page, two admin pages and one project page. The Hagistack logos must be
 the bytes in --images (hagistack-logo.svg, -logo-splash.svg, -favicon.ico),
 and the splash logo, the header logo and the favicon must each be loaded by
-some checked page.
+some checked page. The stylesheets must load the five Bootstrap glyphicons
+fonts from static/horizon/lib/bootstrap_scss/fonts/bootstrap/, where
+collectstatic puts them (s66r3d asked for static/bootstrap/fonts/bootstrap/
+and got 404 for each).
 
 docs: checks the documentation index page. Every theme logo it loads must be
 the bytes in --images (hagistack-doc-*), and each of the theme's logo and
 favicon paths under _static/ must serve those bytes too. Which of them the page
-itself shows depends on the theme's templates and is reported as a NOTE.
+itself shows depends on the theme's templates and is reported as a NOTE. The
+theme's side-note-pointer.gif, which it never shipped, must not be asked for,
+or else load with HTTP 200 like everything else.
 
 One PASS / FAIL / NOTE line per check; exit 1 if any check failed. Standard
 library only.
@@ -47,6 +52,9 @@ HORIZON_IMAGES = {
 }
 # these must be loaded by some checked page; the others are compared when loaded
 HORIZON_REQUIRED = ("logo.svg", "logo-splash.svg", "favicon.ico")
+GLYPHICONS_DIR = "/static/horizon/lib/bootstrap_scss/fonts/bootstrap/"
+GLYPHICONS = tuple("glyphicons-halflings-regular." + e for e in ("eot", "woff2", "woff", "ttf", "svg"))
+DOC_DEAD_IMAGE = "side-note-pointer.gif"
 DOC_IMAGES = {
     "images/logo-full.svg": "hagistack-doc-logo-full.svg",
     "images/logo-full.png": "hagistack-doc-logo-full.png",
@@ -262,6 +270,11 @@ def horizon(a, r):
         seen |= match_images(f.assets(url, body), HORIZON_IMAGES, images, r, page)
     for key in HORIZON_REQUIRED:
         r.check(key in seen, "a checked page loads %s" % key)
+    for name in GLYPHICONS:
+        got = sorted(st for u, (st, _d) in f.seen.items()
+                     if urllib.parse.urlsplit(u).path.endswith(GLYPHICONS_DIR + name))
+        r.check(200 in got, "the stylesheets load %s from ...%s (HTTP %s)"
+                % (name, GLYPHICONS_DIR, ", ".join(map(str, got)) or "not asked for"))
 
 
 def docs(a, r):
@@ -273,6 +286,9 @@ def docs(a, r):
     if not r.check(st == 200, "documentation index %s returns HTTP 200 (%s)" % (url, st)):
         return
     seen = match_images(f.assets(url, body), mapping, images, r, "documentation index")
+    dead = sorted(st for u, (st, _d) in f.seen.items() if urllib.parse.urlsplit(u).path.endswith("/" + DOC_DEAD_IMAGE))
+    r.check(all(st == 200 for st in dead), "the theme's %s is %s" % (
+        DOC_DEAD_IMAGE, "not asked for" if not dead else "asked for (HTTP %s)" % ", ".join(map(str, dead))))
     r.line("NOTE", "theme images the index loads: %s" % (", ".join(sorted(seen)) or "none"))
     # the theme's logo files themselves, whether or not this page shows one
     for key, img in sorted(mapping.items()):

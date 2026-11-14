@@ -274,6 +274,13 @@ class NodeScriptText(unittest.TestCase):
         want = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                     and any(getattr(t, "id", None) == "MARK" for t in n.targets))
         self.assertIn('\nMARK="%s"\n' % want, self.src)
+        # Sass files carry the same text after // (genspec MARK_SLASH), and the nodocs check counts both
+        self.assertIn('\nMARK_SLASH="//${MARK#\\#}"', self.src)
+        nd = self.src.split("s_nodocs() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(nd.count('grep -rlxF -e "$MARK" -e "$MARK_SLASH" usr etc'), 2)
+        r = subprocess.run(["bash", "-c", 'MARK="%s"; MARK_SLASH="//${MARK#\\#}"; printf %%s "$MARK_SLASH"' % want],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout, "//" + want[1:])
 
     def test_accept_waits_for_the_second_guest_and_keeps_diagnostics(self):
         acc = self.src.split("s_accept() {", 1)[1].split("\n}\n", 1)[0]

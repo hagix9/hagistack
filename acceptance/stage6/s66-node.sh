@@ -58,6 +58,7 @@ OPENRC=/etc/hagistack/admin-openrc
 GUEST_KEY=/etc/hagistack/hagistack-key
 export OPENRC GUEST_KEY
 MARK="# Hagistack: this file is changed from the upstream release; the changes are listed in HAGISTACK-CHANGES under /usr/share/hagistack/changes/."
+MARK_SLASH="//${MARK#\#}"   # the same for Sass files (genspec MARK_SLASH)
 STEPS="preflight build release nodocs pack install accept evidence"
 
 STEP="${1:-}"
@@ -221,8 +222,8 @@ s_nodocs() {
     # (a marked file installed as %doc, such as placement's policy.yaml.sample,
     # is rightly absent with --excludedocs), and the files still parse
     local m1 m2 m2docs bad=""
-    m1="$(cd "$r1" && grep -rlxF -- "$MARK" usr etc 2>/dev/null | sort)"
-    m2="$(cd "$r2" && grep -rlxF -- "$MARK" usr etc 2>/dev/null | sort)"
+    m1="$(cd "$r1" && grep -rlxF -e "$MARK" -e "$MARK_SLASH" usr etc 2>/dev/null | sort)"
+    m2="$(cd "$r2" && grep -rlxF -e "$MARK" -e "$MARK_SLASH" usr etc 2>/dev/null | sort)"
     m2docs="$(printf '%s\n' "$m2" | grep '^usr/share/doc/')"
     printf '%s\n' "$m1" > "$OUT/marked-files.txt"
     printf '%s\n' "$m2docs" > "$OUT/marked-doc-files.txt"
