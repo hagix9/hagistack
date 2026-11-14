@@ -333,3 +333,32 @@ reading (the fonts are only in a package outside the set) was incomplete.
 **Documentation image (1 failure). Found where it is not.**
 `_static/images/side-note-pointer.gif` exists in no installed file on the node.
 The stylesheet that asks for it is not recorded.
+
+## Fix after run s66r3c: the chassis name survives a restart
+
+| Commit | Content |
+|---|---|
+| `5570c7c` | `rocky10.2/hagistack` `phase_ovn` writes the host name to `/etc/openvswitch/system-id.conf` (0644, `restorecon`, ASCII names only, read back) before openvswitch starts. On a re-run that finds another running id it sets the host name, warns that a southbound record under the old name may remain, and restarts an active metadata agent. `s66-node.sh` checks before and after the restart that the only chassis is named after the host in the southbound DB and in `system-id.conf`, and keeps the ping count's output and exit status in `diag/` |
+| this commit | this section |
+
+**Verification (tests run).**
+- `rocky10.2/tests/test-ovs-system-id.sh`: 20 of 20 under macOS `/bin/bash` 3.2. It runs the function and the re-run block, taken out of `hagistack` as text, with stubs. A mutant without the metadata-agent restart was caught.
+- `test_s66_node` and `test_s66_web`: 46 of 46 on Python 3.13 and 3.9.
+- Not run: the suite under bash 5 on Rocky. This Mac has no bash 4 or later.
+
+**Independent audit:**
+- First audit GO; M1 (a re-run did not restart the metadata agent) and L3 (temporary file) fixed.
+- Targeted recheck GO, BLOCKER, HIGH and MEDIUM 0.
+- The auditor read upstream branch-3.5 `ovs-ctl.in` and the rhel `ovsdb-server.service`: with `system-id.conf` present, `--system-id=random` uses it on every start and never rewrites it.
+
+**Open LOWs:**
+- `chassis_named` fits a single node only.
+- A re-run while openvswitch alone is stopped skips the restart.
+- A stale southbound chassis is warned about, not removed.
+
+**NOT VERIFIED (decided by the next GCE run):**
+- The NFV SIG `openvswitch3.5` unit matches upstream.
+- The chassis name, metadata agent and `cr-lrp` binding survive the restart.
+- What `ovn-controller` does with a renamed system id.
+
+The Ubuntu build is not checked for the same problem.
