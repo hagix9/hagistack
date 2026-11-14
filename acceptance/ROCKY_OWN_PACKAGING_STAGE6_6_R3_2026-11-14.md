@@ -91,3 +91,56 @@ The run plan SHA-256 is unchanged from stage 6-6
 changes with every commit, because the archive carries the commit's time.
 
 Verdict at the end of this preparation: **OWNER APPROVAL WAIT**.
+
+## GCE run s66r3a (after the Owner's approval)
+
+The Owner replied `s66r3a 03a302e8 承認` in chat to the conditions `--show` printed at
+`b3d3589`. The record was written with `--dev-record`; its conditions SHA-256 matched
+(`03a302e8…`). Times below are in UTC on 2026-11-14.
+
+| # | Step | Result |
+|---|---|---|
+| 1 | init (quota, image, baseline) | passed. 96 existing resources recorded; image `rocky-linux-10-v20261110` |
+| 2 | network and n1 (n2-standard-8, pd-standard 100 GB) | created |
+| — | tree upload and extract | SHA-256 `b183ce3a…` verified locally and by the node |
+| — | preflight | 0 failed checks. Rocky Linux 10.2, x86_64, vmx, SELinux enforcing |
+| 3 | build | **passed** in 5804 s: 69 SRPMs, 195 RPMs. Set `4ee923b64a1029d02b93ce36e42f187008c2be36fa0960a75bb17167959ee675` is new (not `6c43da…`). Every RPM's source RPM is in the set |
+| 4–5 | release | **failed** (see below) |
+| 6–11 | nodocs, pack, downloads of candidate and build evidence, install, all-in-one, acceptance | not run. The node script refuses a step whose previous step did not pass |
+| 12 | evidence | passed. `evidence-final.tar` (398 entries) downloaded; SHA-256 `8075bce5…` matched the node's |
+| 13 | teardown | n1, nat, router, both firewall rules, subnet and network deleted |
+| 14 | residual | "none of run s66r3a left"; `watch` reported the run torn down |
+
+The harness's cost estimate was US$1.39 accrued (US$0.54 of it assumed for egress and
+NAT data). The run took 1.72 h from the first creation. This is an estimate; the bill
+is in Cloud Billing.
+
+**The release failure.** `make-rpm-release.sh` passed the set, header, licence-file,
+manifest and source-RPM checks. It then stopped at the change-notice check:
+
+> `python3-keystone+ldap-29.1.0-2.el10.noarch.rpm` must install HAGISTACK-CHANGES …; it installs none
+
+Cause: the generator and the checker disagree.
+- `genspec.py` (`carries_changes`) leaves `kind = "extras"` subpackages out of
+  `HAGISTACK-CHANGES`.
+- An extras subpackage comes from `%pyproject_extras_subpkg` and has no `%files` of
+  its own in the generated spec. It only carries the requirements of the extra, so
+  it ships no file at all.
+- `release_check.py check_notices` demands the notice from every binary RPM of a
+  source RPM that declares changes.
+
+Nine extras subpackages exist (keystone, glance-store, oslo-cache, oslo-db,
+oslo-service, tooz). The check stops at the first one whose source RPM has changes.
+This check was added in stage 6-5-R2 and had not run on real RPMs before this run.
+
+The RPMs themselves are not shown faulty by this: what fails is the rule in the
+checker. The fix is a change to `release_check.py` (or to `genspec.py`) plus a local
+test, then a new GCE run under a new run id. That needs a new approval from the
+Owner.
+
+Evidence: `<TMP>/hagistack-s66r3a/state/` on the external SSD. It holds the ledger,
+`operations.log`, the remote logs, step outputs and `downloads/evidence-final.tar`.
+
+Verdict: **NO-GO**. The RPM build passed on real hardware. The release check failed
+on a checker/generator mismatch, so nodocs, brand, all-in-one and acceptance were not
+reached. No GCE resource of the run is left.
