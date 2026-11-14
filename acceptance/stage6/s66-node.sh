@@ -213,13 +213,17 @@ s_nodocs() {
     l1=$(find "$r1/usr/share/licenses" -name HAGISTACK-LICENSE -type f 2>/dev/null | wc -l)
     l2=$(find "$r2/usr/share/licenses" -name HAGISTACK-LICENSE -type f 2>/dev/null | wc -l)
     check "HAGISTACK-LICENSE kept under --excludedocs ($l1 of $l2)" [ "$l1" -gt 0 -a "$l1" -eq "$l2" ]
-    # in-file marks: present, the same in both roots, and the files still parse
-    local m1 m2 bad=""
+    # in-file marks: present, the same in both roots apart from documentation
+    # (a marked file installed as %doc, such as placement's policy.yaml.sample,
+    # is rightly absent with --excludedocs), and the files still parse
+    local m1 m2 m2docs bad=""
     m1="$(cd "$r1" && grep -rlxF -- "$MARK" usr etc 2>/dev/null | sort)"
     m2="$(cd "$r2" && grep -rlxF -- "$MARK" usr etc 2>/dev/null | sort)"
+    m2docs="$(printf '%s\n' "$m2" | grep '^usr/share/doc/')"
     printf '%s\n' "$m1" > "$OUT/marked-files.txt"
-    check "$(echo "$m1" | grep -c .) installed files carry the mark, the same with and without docs" \
-        [ -n "$m1" -a "$m1" = "$m2" ]
+    printf '%s\n' "$m2docs" > "$OUT/marked-doc-files.txt"
+    check "$(echo "$m1" | grep -c .) installed files carry the mark, the same with and without docs (plus $(echo "$m2docs" | grep -c .) marked documentation files only with docs)" \
+        [ -n "$m1" -a "$m1" = "$(printf '%s\n' "$m2" | grep -v '^usr/share/doc/')" ]
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         case "$f" in

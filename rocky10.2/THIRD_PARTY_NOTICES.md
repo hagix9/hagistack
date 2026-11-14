@@ -71,8 +71,9 @@ The notice of these changes is carried in four places:
     each of them: the documentation theme's logos are replaced (see below).
 
   From these lists:
-  - every binary package built from them installs the list as
-    `/usr/share/hagistack/changes/<package>/HAGISTACK-CHANGES`;
+  - every binary package built from them that installs files installs the list as
+    `/usr/share/hagistack/changes/<package>/HAGISTACK-CHANGES` (an extras
+    subpackage installs no file, only requirements, and carries none);
   - the `%changelog` of those binary packages repeats it.
 
   The notice is a plain file, not documentation. rpm marks every file under

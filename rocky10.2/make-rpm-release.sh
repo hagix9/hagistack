@@ -183,9 +183,10 @@ done
 ok "srpms/ holds exactly the set's source RPMs (header digests match), each with HAGISTACK-LICENSE = LICENSE"
 # Hagistack's changes to upstream sources are stated inside the RPMs: each binary
 # of a source RPM that declares changes installs HAGISTACK-CHANGES as its spec
-# writes it, and its changelog lists them.
+# writes it, and its changelog lists them. A binary that installs no file (an
+# extras subpackage, requirements only) has nothing a notice could accompany.
 msg="$(python3 -I "$HERE/release_check.py" notices "$SET_DIR")" || die "$msg"
-ok "every binary of a source RPM with changes to upstream installs HAGISTACK-CHANGES"
+ok "every binary with files of a source RPM with changes to upstream installs HAGISTACK-CHANGES"
 # The dashboard and the HTML documentation show Hagistack's logo: no RPM carries
 # an OpenStack-logo image (Horizon's or the documentation theme's), and
 # Hagistack's images are at each place they replace.

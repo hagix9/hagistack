@@ -21,7 +21,8 @@
         (from DOCS_DIR) at each of the theme's logo and favicon paths.
     release_check.py notices SET_DIR
         every binary RPM built from a source RPM whose spec writes
-        HAGISTACK-CHANGES installs that notice once, as a plain file (not
+        HAGISTACK-CHANGES, except one that installs no file (an extras
+        subpackage: requirements only), installs that notice once, as a plain file (not
         documentation, so an install with nodocs keeps it) at
         /usr/share/hagistack/changes/<package>/, with exactly the text the
         spec writes; it carries HAGISTACK-LICENSE and an MIT tag; its newest
