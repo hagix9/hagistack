@@ -272,3 +272,64 @@ The two 404 checks are unchanged: they still fail if the assets are missing.
 - the documentation theme's `side-note-pointer.gif`.
 
 Whether to keep them as failures, or to exclude assets that no Hagistack RPM ships, with a reason, is the Owner's decision. The next run records where those files are, if anywhere.
+
+## GCE run s66r3c (after the Owner's approval)
+
+The Owner replied `s66r3c 8278d720 承認` to the conditions `--show` printed at
+`a81b4e9`. The record was written with `--dev-record` and the conditions SHA-256
+matched.
+
+| # | Step | Result |
+|---|---|---|
+| 1–2 | init, network, n1 | passed. Image `rocky-linux-10-v20261110` |
+| — | upload, extract, preflight | passed. Tree `6e9aa8a1…` verified |
+| 3 | build | **passed** in 5574 s: 69 SRPMs, set new |
+| 4–5 | release | **passed**. Byte-identical candidates, 195 RPMs, tag `rocky10.2-rpms-2026.1-rc3` |
+| 6 | nodocs | **passed**. 170 notices; 34 marked files (plus 1 marked documentation file) |
+| 9 | pack and downloads | passed. `candidate.tar` `2c5e1276…`, `evidence-build.tar` `1c752e37…` |
+| 10 | all-in-one install | **passed** in 460 s |
+| 11 | acceptance | **7 failures**, the same as s66r3b (below). Everything else passed, before and after the restart |
+| 12 | evidence | passed. 46 diagnostic files kept, 0 withheld; `evidence-final.tar` `4f016135…` |
+| 13–14 | teardown, residual | VM and the run's network resources deleted; nothing of the run left |
+
+Harness estimate US$1.63 (US$0.54 of it assumed), 2.2 h. **Verdict: NO-GO.**
+
+### What the diagnostics show
+
+**After the restart: Neutron agents, SSH and metadata of s66-g3 (3 failures).
+Cause found.** Before the restart the OVN chassis was named after the host;
+after it, the chassis is `fdb2ff80-…`, a random UUID. The ovsdb-server journal
+shows `ovs-ctl` setting `external-ids:system-id` to that UUID when it starts:
+once at install and again at the restart. EL's ovsdb-server unit starts
+`ovs-ctl --system-id=random`, which takes the id from
+`/etc/openvswitch/system-id.conf` (written with a fresh UUID at the first
+start). `rocky10.2/hagistack` sets `system-id` to the host name with
+`ovs-vsctl` after the first start, so a restart undoes it. Consequences seen in
+`state-after-restart.txt`:
+- the OVN Metadata agent is gone from the agent list (only the controller under the new chassis name remains), so metadata fails and the guest gets no key;
+- the router's `cr-lrp` gateway binding is gone, since the gateway chassis is still the host name. The acceptance does not test this.
+
+The fix is in the product (`rocky10.2/hagistack`): make the system id the host
+name in a way that survives a restart, for example by writing
+`/etc/openvswitch/system-id.conf` too. Not changed yet. Whether the Ubuntu
+build has the same problem is not checked.
+
+**Before the restart: s66-g1 pings s66-g2 (1 failure). Cause not found.** Both
+guests got their DHCP lease and metadata (console logs). `ping -c 1 -W 2` from
+s66-g1 to s66-g2 succeeded ("answered a first ping"), and the following
+`ping -c 5` counted 0. That count throws away stderr and the ping output, so
+the evidence cannot tell a loss of every packet from an SSH or parse failure.
+It stays a failure with an unknown cause.
+
+**Horizon fonts (2 failures, before and after the restart). Partly found.** The
+5 glyphicons fonts the page asks for under
+`/dashboard/static/bootstrap/fonts/bootstrap/` exist on the node under
+`/usr/share/openstack-dashboard/static/horizon/lib/bootstrap_scss/fonts/bootstrap/`
+(collected static files, owned by no package), and also in
+`xstatic-bootstrap-scss-common`. So the fonts are deployed but asked for at a
+different URL. Why the stylesheet uses that path is not determined. The earlier
+reading (the fonts are only in a package outside the set) was incomplete.
+
+**Documentation image (1 failure). Found where it is not.**
+`_static/images/side-note-pointer.gif` exists in no installed file on the node.
+The stylesheet that asks for it is not recorded.
