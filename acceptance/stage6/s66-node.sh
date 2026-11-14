@@ -362,6 +362,14 @@ guest_ssh() {    # guest_ssh <ip> <command>
     ip netns exec "$ns" ssh -i "$GUEST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR "cirros@$1" "$2"
 }
+# ping_received <file>: the received count from ping's summary line, empty if
+# there is none. iputils prints "5 packets transmitted, 5 received", busybox
+# "5 packets transmitted, 5 packets received". The earlier pattern needed
+# "packets received", so s66r3d counted 0 for an iputils ping that got 5 of 5.
+ping_received() {
+    sed -n 's/^[0-9][0-9]* packets transmitted, \([0-9][0-9]*\) \(packets \)\{0,1\}received.*/\1/p' "$1" | sed -n 1p
+}
+
 guest_checks() {  # guest_checks <label> <name> [<name2>]
     local l="$1" ip1 ip2 iid
     ip1="$(guest_boot "$2")"
@@ -382,7 +390,7 @@ guest_checks() {  # guest_checks <label> <name> [<name2>]
             # the output and exit status are kept: s66r3c counted 0 after a first reply
             mkdir -p -m 0700 "$OUT/diag"
             { guest_ssh "$ip1" "ping -c 5 $ip2" 2>&1; echo "==== exit $?"; } > "$OUT/diag/ping-$l.txt"
-            got="$(sed -n 's/.* \([0-9]*\) packets received.*/\1/p' "$OUT/diag/ping-$l.txt")"
+            got="$(ping_received "$OUT/diag/ping-$l.txt")"
             check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
         fi
     fi

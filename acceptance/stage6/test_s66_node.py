@@ -301,8 +301,35 @@ class NodeScriptText(unittest.TestCase):
         g = self.src.split("guest_checks() {", 1)[1].split("\n}\n", 1)[0]
         keep = g.index('> "$OUT/diag/ping-$l.txt"')
         self.assertIn('2>&1; echo "==== exit $?"; }', g)
-        self.assertLess(keep, g.index("packets received"))
+        self.assertLess(keep, g.index('got="$(ping_received "$OUT/diag/ping-$l.txt")"'))
         self.assertIn('mkdir -p -m 0700 "$OUT/diag"', g)
+
+    def test_ping_received_reads_iputils_and_busybox(self):
+        # the function is run by bash on summaries as ping prints them; the first is
+        # s66r3d's diag/ping-before-restart.txt, which the old pattern read as 0
+        f = "ping_received() {" + self.src.split("ping_received() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        cases = [
+            ("64 bytes from 10.10.10.200: icmp_seq=5 ttl=64 time=0.383 ms\n\n"
+             "--- 10.10.10.200 ping statistics ---\n"
+             "5 packets transmitted, 5 received, 0% packet loss, time 4080ms\n"
+             "rtt min/avg/max/mdev = 0.383/0.481/0.793/0.156 ms\n==== exit 0\n", "5"),
+            ("--- 10.10.10.200 ping statistics ---\n"
+             "5 packets transmitted, 0 received, +5 errors, 100% packet loss, time 4086ms\n==== exit 1\n", "0"),
+            ("--- 10.10.10.200 ping statistics ---\n"
+             "5 packets transmitted, 3 packets received, 40% packet loss\n==== exit 1\n", "3"),
+            ("--- 10.10.10.200 ping statistics ---\n"
+             "15 packets transmitted, 12 received, 20% packet loss\n", "12"),
+            ("ssh: connect to host 10.10.10.58 port 22: Connection timed out\n==== exit 255\n", ""),
+            ("", ""),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            for i, (text, want) in enumerate(cases):
+                p = os.path.join(d, "ping-%d.txt" % i)
+                with open(p, "w") as fh:
+                    fh.write(text)
+                r = subprocess.run(["bash", "-c", f + 'ping_received "$1"', "_", p],
+                                   capture_output=True, text=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, want), text)
 
     def test_the_evidence_never_copies_hagistack_etc(self):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]
