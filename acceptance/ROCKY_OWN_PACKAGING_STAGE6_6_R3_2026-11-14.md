@@ -169,3 +169,68 @@ reached. No GCE resource of the run is left.
 **Still not verified (NV-1).** On real RPMs, nothing after RPM number 112 of the notices check has run yet: the remaining 84 RPMs, the marks match, branding, members and lock generation. Only a new run shows them.
 
 A new run needs a new run id and the Owner's approval of the conditions that `--show` prints at the final commit.
+
+## GCE run s66r3b (after the Owner's approval)
+
+The Owner replied `s66r3b 67923078 承認` to the conditions `--show` printed at
+`38053ad`. The record was written with `--dev-record` and the conditions SHA-256
+matched.
+
+| # | Step | Result |
+|---|---|---|
+| 1–2 | init, network, n1 | passed. Image `rocky-linux-10-v20261110` |
+| — | upload, extract, preflight | passed. Tree `960a1ac5…` verified; Rocky Linux 10.2 x86_64, vmx, SELinux enforcing |
+| 3 | build | **passed** in 5772 s: 69 SRPMs, 195 RPMs. Set new, not `6c43da…` |
+| 4–5 | release | **passed**. make-rpm-release.sh twice, byte-identical candidates, lock names the set, 195 RPMs and tag `rocky10.2-rpms-2026.1-rc3`, SHA256SUMS verify. The change-notice check passed for every RPM with files |
+| 6 | nodocs | **passed**. 170 RPMs carry a notice; all kept under `--excludedocs`; no file under /usr/share/doc (6016 with docs); HAGISTACK-LICENSE 170 of 170; 34 marked files the same in both roots (plus 1 marked documentation file only with docs) |
+| 9 | pack and downloads | passed. `candidate.tar` `b4ee5275…` and `evidence-build.tar` `780b635d…`, SHA-256 matched the node's |
+| 10 | all-in-one install | **passed** in 496 s. The deployment records the new set, not the old one; 104 installed packages carry the set's headers; no novnc |
+| 11 | acceptance | **7 failed checks** (below) |
+| 12 | evidence | passed. `evidence-final.tar` `7008af9e…` downloaded and matched; the secret scan found nothing |
+| 13–14 | teardown, residual | n1 and the network deleted; "none of run s66r3b left" |
+
+The harness's cost estimate was US$1.65 accrued over 2.22 h.
+
+**Acceptance. These passed before and after the restart of 14 units:**
+- Keystone token, Nova API and services, Neutron API, Placement, hypervisor up;
+- the Horizon sign-in test (`tests-horizon-login.sh`);
+- Hagistack's favicon, apple-touch-icon, safari-pinned-tab, logo and logo-splash on
+  the login and admin pages;
+- the documentation RPM installs, and all its theme logos and favicon are Hagistack's.
+
+Also passed: guest s66-g1 SSH and metadata before the restart, 0 failed units, and
+only the new set's packages installed.
+
+**The 7 failures:**
+
+| Check | Failure | What the evidence shows |
+|---|---|---|
+| Horizon pages, before and after the restart (2) | `static/bootstrap/fonts/bootstrap/glyphicons-halflings-regular.{eot,woff2,woff,ttf,svg}` return HTTP 404 | The fonts belong to `python3-XStatic-Bootstrap-SCSS` / `xstatic-bootstrap-scss-common` 3.3.7.1-14.el10s, which is not part of the Hagistack set. Whether that package leaves them out, or Horizon's static files point to the wrong place, is not determined. Every Hagistack image loaded |
+| documentation page (1) | `_static/images/side-note-pointer.gif` returns HTTP 404 | The theme's stylesheet refers to an image that is not installed. Whether upstream ships it is not determined. Every Hagistack logo loaded |
+| s66-g1 pings s66-g2, before the restart (1) | 0 of 5 received | The ping runs once, right after s66-g2 becomes ACTIVE, with no wait for its boot. The SSH check, by contrast, waits up to 300 s. The security group allows ICMP. Cause not determined: a guest that has not finished booting, or a real data-path fault |
+| Neutron agents alive, after the restart (1) | not all alive within 300 s | Not determined. The evidence has no agent list, no unit journals and no OVN state |
+| s66-g3 SSH and metadata, after the restart (2) | no SSH; empty instance-id | Consistent with the metadata agent not working after the restart (the key comes from metadata), but not determined, for the same reason |
+
+**Evidence gap.** `s66-node.sh` keeps the step logs, but not:
+- `openstack network agent list`;
+- the journals of the Neutron, OVN and Nova units;
+- `ovn-sbctl show`;
+- the guests' console logs.
+
+So the network failures cannot be diagnosed from this run.
+
+Verdict: **NO-GO**.
+- Build, release, nodocs, the RPM set, the change notices, the all-in-one install,
+  the core APIs and Hagistack's branding are verified on real hardware.
+- Tenant connectivity (guest-to-guest ping) and Neutron after a restart (agents,
+  metadata) failed.
+- Two pages load assets that return 404.
+
+The next run would need:
+- a diagnosis of the network failures;
+- more evidence captured (the list above);
+- a wait before the ping;
+- a decision on the two 404s (fix them, or exclude assets that are not Hagistack's,
+  with a reason).
+
+Each further run needs a new approval.
