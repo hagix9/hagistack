@@ -234,3 +234,41 @@ The next run would need:
   with a reason).
 
 Each further run needs a new approval.
+
+## Preparation for the next run (after s66r3b)
+
+| Commit | Content |
+|---|---|
+| `09e1ed3` | Changes to `s_accept` and `s_evidence` (listed below), the script header, and tests |
+| this and the previous commit | audit LOWs: the newest 3000 journal lines with their exit status; 404 file names without a query string; diag directories 0700; a NOTE on whether the first ping was answered |
+
+`09e1ed3` changes:
+- `s_accept` gives the second guest up to 300 s for a first ping reply before it counts 5.
+- `diag` keeps, before and after the restart and again in evidence:
+  - the agent, service, server, port and security-group lists;
+  - `ovn-nbctl show`, `ovn-sbctl show` and `ovs-vsctl show`;
+  - the network namespaces and addresses;
+  - `systemctl status` of 11 units;
+  - the guests' console logs and journal tails.
+
+  Every command is bounded.
+- `asset_diag` records where each asset that returned HTTP 404 is installed, if anywhere, and by which RPM.
+- `s_evidence` withholds every diagnostic file in which a secret value appears and lists its name. The final full scan still stops packing on any hit.
+
+The two 404 checks are unchanged: they still fail if the assets are missing.
+
+**Verification.** `test_s66_node` and `test_s66_web` pass, 44/44 on 3.13 and on 3.9. A new test runs the real `s_evidence` on a copy and checks that a diagnostic file holding a private key is withheld and the rest packed.
+
+**Independent audit of `09e1ed3`:** GO, with 0 BLOCKER / HIGH / MEDIUM.
+- LOW-1, LOW-2, LOW-5 and part of LOW-4 are fixed.
+- Still open:
+  - LOW-3: `asset_diag` is not bounded by the number of URLs;
+  - LOW-4: the agent list is not kept at the moment of the failure;
+  - LOW-6: there are no runtime tests of `diag`.
+- NOT VERIFIED: that cirros's ping accepts `-W 2`. If it does not, the check waits 300 s and then counts, so it cannot pass falsely.
+
+**Still open: the two 404s.** They come from assets that are not in the Hagistack set:
+- the glyphicons fonts of `xstatic-bootstrap-scss-common` (el10s);
+- the documentation theme's `side-note-pointer.gif`.
+
+Whether to keep them as failures, or to exclude assets that no Hagistack RPM ships, with a reason, is the Owner's decision. The next run records where those files are, if anywhere.
