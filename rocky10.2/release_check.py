@@ -365,9 +365,16 @@ def check_notices(set_dir):
         src = rpm_query(path, '%{SOURCERPM}')
         if src not in notices:
             continue
+        content = list(payload(path))
+        if not content:
+            # A package that installs no file (an extras subpackage made by
+            # %pyproject_extras_subpkg: only requirements, the dist-info is a
+            # %ghost) has no file a notice could accompany. genspec.py writes the
+            # notice into every package with files and none into extras. It does
+            # not count as a binary of its source either (see "covered" below).
+            continue
         covered.add(src)
         name = rpm_query(path, '%{NAME}')
-        content = list(payload(path))
         got = [(f, data) for f, data in content if f.endswith('/HAGISTACK-CHANGES')]
         want_path = CHANGES_DIR + name + '/HAGISTACK-CHANGES'
         if [f for f, _ in got] != [want_path]:

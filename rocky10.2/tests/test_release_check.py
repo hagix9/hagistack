@@ -205,6 +205,21 @@ class Notices(Base):
     def test_a_changed_source_without_binaries_is_refused(self):
         self.refused(rc.check_notices, self.set, want='no binary RPM from x-1-1.src.rpm')
 
+    def test_a_binary_that_installs_no_file_needs_no_notice(self):
+        # python3-x+extra from %pyproject_extras_subpkg: requirements only, no file
+        self.good()
+        self.pkg('repo', 'python3-x+extra-1-1.noarch.rpm', {}, NAME='python3-x+extra', SOURCERPM='x-1-1.src.rpm',
+                 LICENSE='Apache-2.0', FILEFLAGS=[['/usr/lib/python3.12/site-packages/x-1.dist-info', '']])
+        rc.check_notices(self.set)
+        # one file is enough to need the notice
+        self.pkg('repo', 'python3-x+extra-1-1.noarch.rpm', {'./usr/lib/x-extra.py': b''}, NAME='python3-x+extra',
+                 SOURCERPM='x-1-1.src.rpm', LICENSE='Apache-2.0', FILEFLAGS=[['/usr/lib/x-extra.py', '']])
+        self.refused(rc.check_notices, self.set, want='python3-x+extra-1-1.noarch.rpm (from x-1-1.src.rpm) must install')
+
+    def test_binaries_that_install_no_file_do_not_cover_their_source(self):
+        self.pkg('repo', 'python3-x+extra-1-1.noarch.rpm', {}, NAME='python3-x+extra', SOURCERPM='x-1-1.src.rpm')
+        self.refused(rc.check_notices, self.set, want='no binary RPM from x-1-1.src.rpm')
+
     def test_a_set_where_no_source_declares_changes_is_refused(self):
         os.remove(os.path.join(self.set, 'srpms', 'x-1-1.src.rpm'))
         self.refused(rc.check_notices, self.set, want='no source RPM declares changes')
