@@ -369,7 +369,8 @@ guest_checks() {  # guest_checks <label> <name> [<name2>]
             local got
             # ACTIVE is not booted: give $3 up to 300 s to answer a first ping, as the
             # SSH check gives $2, then count 5
-            wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"
+            if wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"; then note "$l: $3 answered a first ping"
+            else note "$l: $3 gave no first ping reply within 300 s"; fi
             got="$(guest_ssh "$ip1" "ping -c 5 $ip2" 2>/dev/null | sed -n 's/.* \([0-9]*\) packets received.*/\1/p')"
             check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
         fi
@@ -385,7 +386,7 @@ os_t(){ ( set -a; . "$OPENRC"; set +a; timeout 60 openstack "$@" ); }
 dump(){ local f="$1" rc; shift; { printf '\n==== %s\n' "$*"; "$@" 2>&1; rc=$?; printf '==== exit %s\n' "$rc"; } >> "$f"; }
 diag() {         # diag <label>
     local d="$OUT/diag" f g u
-    mkdir -p "$d"; f="$d/state-$1.txt"; : > "$f"
+    mkdir -p -m 0700 "$d"; f="$d/state-$1.txt"; : > "$f"
     dump "$f" os_t network agent list --long
     dump "$f" os_t compute service list
     dump "$f" os_t server list --long
@@ -401,15 +402,15 @@ diag() {         # diag <label>
         dump "$d/console-$1-$g.txt" os_t console log show --lines 200 "$g"
     done
     for u in $DIAG_UNITS; do
-        timeout 60 journalctl -b --no-pager -o short-iso -u "$u.service" 2>&1 | tail -n 3000 > "$d/journal-$1-$u.txt"
+        dump "$d/journal-$1-$u.txt" timeout 60 journalctl -b --no-pager -o short-iso -n 3000 -u "$u.service"
     done
 }
 asset_diag() {   # where the assets that returned HTTP 404 are, if anywhere, and their owners
     local f="$OUT/diag/assets-404.txt" url b p
-    mkdir -p "$OUT/diag"; : > "$f"
+    mkdir -p -m 0700 "$OUT/diag"; : > "$f"
     for url in $(grep -ho 'http://127\.0\.0\.1[^ ]* returned HTTP 404' "$OUT"/horizon-web.*.out "$OUT"/docs-web.out 2>/dev/null \
                  | awk '{print $1}' | sort -u); do
-        b="${url##*/}"
+        b="${url##*/}"; b="${b%%[?#]*}"
         printf '\n==== %s\n' "$url" >> "$f"
         for p in $(timeout 120 find /usr/share /usr/lib/python3*/site-packages /usr/lib64/python3*/site-packages \
                        -name "$b" 2>/dev/null | head -20); do
