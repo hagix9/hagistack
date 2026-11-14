@@ -36,8 +36,12 @@
 # check failed.
 #
 # Never written to the output or the evidence: /etc/hagistack (admin password,
-# guest key), tokens, the journal of the services. Their state is reported as
-# counts and PASS/FAIL lines.
+# guest key) and tokens. For diagnosis, accept and evidence keep under out/diag/
+# the state of agents, services, ports, OVN and OVS, the guests' console logs and
+# the last lines of the journals of the Neutron, OVN, Nova and web units. Before
+# packing, every diagnostic file is scanned like the rest of the evidence, and a
+# file in which a secret value appears is withheld (only its name is listed).
+# The evidence stays on the operator's machine; screen it before quoting it.
 set -uo pipefail
 umask 022
 export LC_ALL=C
@@ -363,10 +367,55 @@ guest_checks() {  # guest_checks <label> <name> [<name2>]
         check "$l: guest $3 ACTIVE (${ip2:-no address})" [ -n "$ip2" ]
         if [ -n "$ip2" ]; then
             local got
+            # ACTIVE is not booted: give $3 up to 300 s to answer a first ping, as the
+            # SSH check gives $2, then count 5
+            wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"
             got="$(guest_ssh "$ip1" "ping -c 5 $ip2" 2>/dev/null | sed -n 's/.* \([0-9]*\) packets received.*/\1/p')"
-            check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed)" [ "${got:-0}" -ge 3 ]
+            check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
         fi
     fi
+}
+
+# ------------------------------------------------------------- diagnostics --
+# State kept for diagnosis off the node, never judged here. Every command is
+# bounded by a timeout. Files go to $OUT/diag/; s_evidence withholds any of them
+# in which a secret value appears.
+DIAG_UNITS="neutron-rpc-server neutron-periodic-workers neutron-ovn-maintenance-worker neutron-ovn-metadata-agent ovn-controller ovn-northd ovsdb-server openvswitch openstack-nova-compute openstack-nova-conductor httpd"
+os_t(){ ( set -a; . "$OPENRC"; set +a; timeout 60 openstack "$@" ); }
+dump(){ local f="$1" rc; shift; { printf '\n==== %s\n' "$*"; "$@" 2>&1; rc=$?; printf '==== exit %s\n' "$rc"; } >> "$f"; }
+diag() {         # diag <label>
+    local d="$OUT/diag" f g u
+    mkdir -p "$d"; f="$d/state-$1.txt"; : > "$f"
+    dump "$f" os_t network agent list --long
+    dump "$f" os_t compute service list
+    dump "$f" os_t server list --long
+    dump "$f" os_t port list --long
+    dump "$f" os_t security group rule list --long
+    dump "$f" timeout 30 ovn-nbctl show
+    dump "$f" timeout 30 ovn-sbctl show
+    dump "$f" timeout 30 ovs-vsctl show
+    dump "$f" ip netns list
+    dump "$f" ip -br addr
+    for u in $DIAG_UNITS; do dump "$f" systemctl status --no-pager -l --lines=30 "$u.service"; done
+    for g in $(os_t server list -f value -c Name 2>/dev/null); do
+        dump "$d/console-$1-$g.txt" os_t console log show --lines 200 "$g"
+    done
+    for u in $DIAG_UNITS; do
+        timeout 60 journalctl -b --no-pager -o short-iso -u "$u.service" 2>&1 | tail -n 3000 > "$d/journal-$1-$u.txt"
+    done
+}
+asset_diag() {   # where the assets that returned HTTP 404 are, if anywhere, and their owners
+    local f="$OUT/diag/assets-404.txt" url b p
+    mkdir -p "$OUT/diag"; : > "$f"
+    for url in $(grep -ho 'http://127\.0\.0\.1[^ ]* returned HTTP 404' "$OUT"/horizon-web.*.out "$OUT"/docs-web.out 2>/dev/null \
+                 | awk '{print $1}' | sort -u); do
+        b="${url##*/}"
+        printf '\n==== %s\n' "$url" >> "$f"
+        for p in $(timeout 120 find /usr/share /usr/lib/python3*/site-packages /usr/lib64/python3*/site-packages \
+                       -name "$b" 2>/dev/null | head -20); do
+            printf '%s\t%s\n' "$p" "$(rpm -qf "$p" 2>&1)" >> "$f"
+        done
+    done
 }
 
 web_checks() {   # web_checks <label>
@@ -419,6 +468,7 @@ s_accept() {
     web_checks before-restart
     docs_check
     guest_checks before-restart s66-g1 s66-g2
+    diag before-restart
     local units n rc=0 u
     units="$(openstack_units)"; n=$(echo "$units" | grep -c .)
     echo "$units" > "$OUT/restarted-units.txt"
@@ -428,6 +478,8 @@ s_accept() {
     api_checks after-restart
     web_checks after-restart
     guest_checks after-restart s66-g3
+    diag after-restart
+    asset_diag
     check "0 failed units" [ "$(systemctl --failed --no-legend --plain | grep -c .)" -eq 0 ]
     local bad; bad="$(installed_mismatch)"
     check "still only the new set's packages (header check, after the documentation install)" [ -z "$bad" ]
@@ -454,6 +506,18 @@ s_evidence() {
     rpm -qa --qf '%{NEVRA}\t%{SHA256HEADER}\n' | sort > "$ev/rpm-qa.tsv"
     systemctl --failed --no-legend --plain > "$ev/failed-units.txt" 2>&1
     systemctl list-units --type=service --no-legend --plain > "$ev/units.txt" 2>&1
+    # diagnostics: the state now, then every diagnostic file without a secret in it
+    [ -f "$OPENRC" ] && [ -d "$OUT/accept.started" ] && diag at-evidence
+    if [ -d "$OUT/diag" ]; then
+        local hit nw=0
+        cp -rp "$OUT/diag" "$ev/diag"
+        python3 -I -c "$SECRET_SCAN" "$ev/diag" > "$OUT/diag-secret-hits.txt" 2>/dev/null
+        while IFS= read -r hit; do
+            [ -n "$hit" ] && rm -f -- "$ev/diag/$hit" && nw=$((nw + 1))
+        done < "$OUT/diag-secret-hits.txt"
+        cp "$OUT/diag-secret-hits.txt" "$ev/diag/WITHHELD.txt"   # file names only
+        note "$(find "$ev/diag" -type f | wc -l) diagnostic files kept; $nw withheld because a secret value appears in them"
+    fi
     # The evidence must carry no secret: every password, secret, token or key value
     # in /etc/hagistack and Horizon's secret key are looked for (never printed),
     # and so are private keys and Keystone tokens. A hit packs nothing.

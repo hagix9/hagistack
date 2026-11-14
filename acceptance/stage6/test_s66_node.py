@@ -162,6 +162,50 @@ class NodeFlow(unittest.TestCase):
             self.assertEqual(f.read(), "PASS  stub preflight\n")
 
 
+class EvidenceDiag(NodeFlow):
+    """The real s_evidence on a copy: diagnostic files with a secret are withheld,
+    the others are packed. Other steps are stubs; no /etc/hagistack exists here."""
+    def setUp(self):
+        super().setUp()
+        with open(self.script) as f:
+            src = f.read()
+        self.assertEqual(src.count("DL=/var/tmp/hs6-dl\n"), 1)
+        src = src.replace("DL=/var/tmp/hs6-dl\n", "DL='%s/dl'\n" % self.tmp)
+        # keep the real evidence step: drop its stub
+        stub = 's_evidence(){ [ -e "$BASE/FAIL_evidence" ] && fail "stub evidence" || pass "stub evidence"; }\n'
+        self.assertEqual(src.count(stub), 1)
+        src = src.replace(stub, "")
+        with open(self.script, "w") as f:
+            f.write(src)
+        for n in ("rpm", "timeout", "journalctl"):
+            with open(os.path.join(self.bin, n), "w") as f:
+                f.write("#!/bin/bash\nexit 0\n")
+            os.chmod(os.path.join(self.bin, n), 0o755)
+
+    def test_diagnostic_files_with_a_secret_are_withheld_and_the_rest_packed(self):
+        diag = os.path.join(self.base, "out", "diag")
+        os.makedirs(diag)
+        with open(os.path.join(diag, "state-after-restart.txt"), "w") as f:
+            f.write("agent list\n")
+        with open(os.path.join(diag, "journal-after-restart-httpd.txt"), "w") as f:
+            f.write("x\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n")
+        self.assertEqual(self.step("preflight")[0], 0)
+        open(os.path.join(self.base, "FAIL_build"), "w").close()
+        self.assertEqual(self.step("build")[0], 1)
+        rc, out = self.step("evidence")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1 withheld because a secret value appears in them", out)
+        self.assertNotIn("MIIE", out)
+        tar = os.path.join(self.tmp, "dl", "evidence-final.tar")
+        names = subprocess.run(["tar", "-tf", tar], capture_output=True, text=True, check=True).stdout.split()
+        self.assertIn("evidence-final/diag/state-after-restart.txt", names)
+        self.assertIn("evidence-final/diag/WITHHELD.txt", names)
+        self.assertNotIn("evidence-final/diag/journal-after-restart-httpd.txt", names)
+        withheld = subprocess.run(["tar", "-xOf", tar, "evidence-final/diag/WITHHELD.txt"], capture_output=True,
+                                  text=True, check=True).stdout
+        self.assertEqual(withheld.split(), ["journal-after-restart-httpd.txt"])
+
+
 class SecretScan(unittest.TestCase):
     """The evidence scan of s66-node.sh, run on its own."""
 
@@ -230,6 +274,20 @@ class NodeScriptText(unittest.TestCase):
         want = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                     and any(getattr(t, "id", None) == "MARK" for t in n.targets))
         self.assertIn('\nMARK="%s"\n' % want, self.src)
+
+    def test_accept_waits_for_the_second_guest_and_keeps_diagnostics(self):
+        acc = self.src.split("s_accept() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("diag before-restart", acc)
+        self.assertIn("diag after-restart", acc)
+        self.assertIn("asset_diag", acc)
+        g = self.src.split("guest_checks() {", 1)[1].split("\n}\n", 1)[0]
+        wait = g.index('wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"')
+        self.assertLess(wait, g.index('"ping -c 5 $ip2"'))
+        d = self.src.split("diag() {", 1)[1].split("\n}\n", 1)[0]
+        for cmd in ("network agent list", "ovn-sbctl show", "console log show", "journalctl -b"):
+            self.assertIn(cmd, d)
+        # every OpenStack call in diag is bounded (os_t), and so is every other command that could hang
+        self.assertNotIn("os_ ", d)
 
     def test_the_evidence_never_copies_hagistack_etc(self):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]
