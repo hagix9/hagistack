@@ -319,6 +319,13 @@ agents_alive() {
     local a; a="$(os_ network agent list -f value -c Alive 2>/dev/null)" || return 1
     [ "$(echo "$a" | grep -c .)" -ge 2 ] && ! echo "$a" | grep -qv '^True$'
 }
+# One chassis, named after the host, and the name kept for the next start of
+# ovsdb-server (s66r3c: a restart renamed it to a random UUID).
+chassis_named() {
+    local n h; h="$(hostname -s)"
+    n="$(timeout 30 ovn-sbctl --bare --columns=name list Chassis 2>/dev/null | sed '/^$/d')" || return 1
+    [ "$n" = "$h" ] && [ "$(cat /etc/openvswitch/system-id.conf 2>/dev/null)" = "$h" ]
+}
 api_checks() {   # api_checks <label>
     local l="$1"
     check "$l: Keystone issues a token" wait_until 120 token_ok
@@ -326,6 +333,7 @@ api_checks() {   # api_checks <label>
     check "$l: Nova scheduler, conductor and compute up" wait_until 300 services_up
     check "$l: Neutron API answers (hagistack-tenant)" wait_until 120 network_ok
     check "$l: Neutron agents alive" wait_until 300 agents_alive
+    check "$l: the OVN chassis is named after the host, in the southbound DB and system-id.conf" wait_until 120 chassis_named
     check "$l: Placement lists a resource provider" wait_until 120 placement_ok
     check "$l: a hypervisor is up" wait_until 120 hypervisor_ok
 }
@@ -371,7 +379,10 @@ guest_checks() {  # guest_checks <label> <name> [<name2>]
             # SSH check gives $2, then count 5
             if wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"; then note "$l: $3 answered a first ping"
             else note "$l: $3 gave no first ping reply within 300 s"; fi
-            got="$(guest_ssh "$ip1" "ping -c 5 $ip2" 2>/dev/null | sed -n 's/.* \([0-9]*\) packets received.*/\1/p')"
+            # the output and exit status are kept: s66r3c counted 0 after a first reply
+            mkdir -p -m 0700 "$OUT/diag"
+            { guest_ssh "$ip1" "ping -c 5 $ip2" 2>&1; echo "==== exit $?"; } > "$OUT/diag/ping-$l.txt"
+            got="$(sed -n 's/.* \([0-9]*\) packets received.*/\1/p' "$OUT/diag/ping-$l.txt")"
             check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
         fi
     fi

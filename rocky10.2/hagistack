@@ -105,6 +105,7 @@ ML2_CONF="/etc/neutron/plugins/ml2/ml2_conf.ini"
 OVN_META_CONF="/etc/neutron/neutron_ovn_metadata_agent.ini"
 NOVA_CONF="/etc/nova/nova.conf"
 OVS_DB_SOCK="/var/run/openvswitch/db.sock"
+OVS_SYSTEM_ID_CONF="/etc/openvswitch/system-id.conf"
 OVS_DB_TCP="tcp:127.0.0.1:6640"
 
 KEYSTONE_PORT=5000
@@ -2533,8 +2534,32 @@ ovs_ready()  { ovs_vsctl --timeout=10 show >/dev/null 2>&1; }
 ovn_nb_ready() { ovn_nbctl --timeout=10 show >/dev/null 2>&1; }
 ovn_sb_ready() { ovn_sbctl --timeout=10 show >/dev/null 2>&1; }
 
+# The chassis name. EL's ovsdb-server.service runs `ovs-ctl --system-id=random`,
+# which on every start sets external-ids:system-id from $OVS_SYSTEM_ID_CONF and,
+# when that file is missing, first writes a random UUID there. An id set only
+# with ovs-vsctl therefore lasts until the next restart of ovsdb-server; then the
+# chassis is renamed, and the metadata agent and the router's gateway binding
+# stay with the old name (stage 6-6 run s66r3c). Writing the file before
+# openvswitch starts makes the host name the id on this and every later start.
+ovs_persist_system_id() {
+    local id="$OS_HOSTNAME" tmp LC_ALL=C   # C: the ranges below are ASCII only
+    [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || die "the host name '$id' cannot be used as the OVN chassis name"
+    [ "$($SUDO cat "$OVS_SYSTEM_ID_CONF" 2>/dev/null)" = "$id" ] && return 0
+    tmp="$(mktemp)"
+    printf '%s\n' "$id" > "$tmp" || { rm -f "$tmp"; die "cannot write a temporary file"; }
+    if ! $SUDO install -m 0644 "$tmp" "$OVS_SYSTEM_ID_CONF"; then
+        rm -f "$tmp"; die "cannot write $OVS_SYSTEM_ID_CONF"
+    fi
+    rm -f "$tmp"
+    if command -v restorecon >/dev/null 2>&1; then $SUDO restorecon "$OVS_SYSTEM_ID_CONF" 2>/dev/null || true; fi
+    [ "$($SUDO cat "$OVS_SYSTEM_ID_CONF" 2>/dev/null)" = "$id" ] || die "$OVS_SYSTEM_ID_CONF does not hold $id"
+    log_ok "OVN chassis name $id kept in $OVS_SYSTEM_ID_CONF, so a restart of ovsdb-server keeps it"
+}
+
 phase_ovn() {
     log_step "data plane (Open vSwitch and OVN)"
+    ovs_persist_system_id
     service_start_enable openvswitch
     wait_for 60 "Open vSwitch" ovs_ready || die "ovs-vsctl does not answer"
     log_ok "Open vSwitch $(ovs_vsctl --version 2>/dev/null | head -1 | awk '{print $NF}') running"
@@ -2556,7 +2581,20 @@ phase_ovn() {
     ovs_vsctl set open . external-ids:ovn-remote="$sb_remote"
     ovs_vsctl set open . external-ids:ovn-encap-type=geneve
     ovs_vsctl set open . external-ids:ovn-encap-ip="$MGMT_IP"
+    # Also set now: on a re-run openvswitch is already running with the old id.
+    local old_id
+    old_id="$(ovs_vsctl --if-exists get open . external-ids:system-id 2>/dev/null | tr -d '"')" || old_id=""
     ovs_vsctl set open . external-ids:system-id="$OS_HOSTNAME"
+    if [ -n "$old_id" ] && [ "$old_id" != "$OS_HOSTNAME" ]; then
+        # A running metadata agent stays with the old chassis (s66r3c), so it
+        # is restarted. A southbound chassis record left under the old name is
+        # not removed here.
+        log_warn "the OVN chassis was named '$old_id'; it is now '$OS_HOSTNAME'. A chassis record under the old name may remain in the southbound DB (ovn-sbctl chassis-del)."
+        if service_active neutron-ovn-metadata-agent; then
+            $SUDO systemctl restart neutron-ovn-metadata-agent || die "neutron-ovn-metadata-agent failed to restart after the chassis rename"
+            log_ok "neutron-ovn-metadata-agent restarted for the new chassis name"
+        fi
+    fi
     ovs_vsctl set open . external-ids:hostname="$OS_HOSTNAME"
     if [ "$REMOTE_COMPUTE" -eq 0 ]; then
         ovs_vsctl set open . external-ids:ovn-cms-options=enable-chassis-as-gw

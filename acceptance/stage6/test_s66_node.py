@@ -289,6 +289,21 @@ class NodeScriptText(unittest.TestCase):
         # every OpenStack call in diag is bounded (os_t), and so is every other command that could hang
         self.assertNotIn("os_ ", d)
 
+    def test_the_chassis_name_is_checked_before_and_after_the_restart(self):
+        api = self.src.split("api_checks() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("wait_until 120 chassis_named", api)
+        f = self.src.split("chassis_named() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("timeout 30 ovn-sbctl --bare --columns=name list Chassis", f)
+        self.assertIn('[ "$n" = "$h" ]', f)                     # exactly one chassis, the host
+        self.assertIn("/etc/openvswitch/system-id.conf", f)
+
+    def test_the_ping_output_is_kept(self):
+        g = self.src.split("guest_checks() {", 1)[1].split("\n}\n", 1)[0]
+        keep = g.index('> "$OUT/diag/ping-$l.txt"')
+        self.assertIn('2>&1; echo "==== exit $?"; }', g)
+        self.assertLess(keep, g.index("packets received"))
+        self.assertIn('mkdir -p -m 0700 "$OUT/diag"', g)
+
     def test_the_evidence_never_copies_hagistack_etc(self):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]
         self.assertNotIn("cp -p /etc/hagistack", ev)
