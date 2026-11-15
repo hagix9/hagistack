@@ -276,6 +276,7 @@ installed_mismatch() {   # installed packages named in the set whose header is n
 
 s_install() {
     set_env
+    [ ! -d "$OUT/controller.started" ] || stop "this node is the controller of s67-cluster.sh; all-in-one needs a fresh node"
     ip link show hgext0 >/dev/null 2>&1 || { ip link add hgext0 type dummy && ip link set hgext0 up; }
     check "dummy provider interface hgext0 is up (never attached to the outside)" link_up hgext0
     local t0 rc
@@ -350,6 +351,9 @@ guest_boot() {   # guest_boot <name>  -> prints the guest's tenant address
     os_ server create --image cirros-0.6.3-x86_64 --flavor m1.tiny --network hagistack-tenant \
         --key-name hagistack-key "$1" -f value -c id >/dev/null || return 1
     wait_until 600 server_active "$1" || return 1
+    guest_addr "$1"
+}
+guest_addr() {   # guest_addr <name>  -> prints the guest's tenant address
     os_ server show "$1" -f json -c addresses | python3 -I -c '
 import json, sys
 a = json.load(sys.stdin)["addresses"]
@@ -392,19 +396,54 @@ guest_checks() {  # guest_checks <label> <name> [<name2>]
     if [ -n "${3:-}" ]; then
         ip2="$(guest_boot "$3")"
         check "$l: guest $3 ACTIVE (${ip2:-no address})" [ -n "$ip2" ]
-        if [ -n "$ip2" ]; then
-            local got
-            # ACTIVE is not booted: give $3 up to 300 s to answer a first ping, as the
-            # SSH check gives $2, then count 5
-            if wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"; then note "$l: $3 answered a first ping"
-            else note "$l: $3 gave no first ping reply within 300 s"; fi
-            # the output and exit status are kept: s66r3c counted 0 after a first reply
-            mkdir -p -m 0700 "$OUT/diag"
-            { guest_ssh "$ip1" "ping -c 5 $ip2" 2>&1; echo "==== exit $?"; } > "$OUT/diag/ping-$l.txt"
-            got="$(ping_received "$OUT/diag/ping-$l.txt")"
-            check "$l: $2 pings $3 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
-        fi
+        [ -n "$ip2" ] && ping_pair "$l" "$2" "$ip1" "$3" "$ip2"
     fi
+    return 0
+}
+
+ping_pair() {    # ping_pair <label> <from-name> <from-ip> <to-name> <to-ip>
+    local l="$1" got
+    # ACTIVE is not booted: give the target up to 300 s to answer a first ping,
+    # as the SSH check gives the source, then count 5
+    if wait_until 300 guest_ssh "$3" "ping -c 1 -W 2 $5"; then note "$l: $4 answered a first ping"
+    else note "$l: $4 gave no first ping reply within 300 s"; fi
+    # the output and exit status are kept: s66r3c counted 0 after a first reply
+    mkdir -p -m 0700 "$OUT/diag"
+    { guest_ssh "$3" "ping -c 5 $5" 2>&1; echo "==== exit $?"; } > "$OUT/diag/ping-$l.txt"
+    got="$(ping_received "$OUT/diag/ping-$l.txt")"
+    check "$l: $2 pings $4 (${got:-0}/5 received, at least 3 needed, after up to 300 s for a first reply)" [ "${got:-0}" -ge 3 ]
+}
+
+# Tracebacks by window: [boot, restart), [restart, recovered), [recovered, now].
+# Errors while units restart one after another are expected (s66r4a: nova-compute
+# timed out waiting for the conductor that was restarting, exited, and systemd
+# started it again); they are counted and kept, not judged. A traceback after
+# the services recovered (the after-restart checks passed, a new guest booted and
+# answered) is an error that persists, and that is judged.
+TB_UNITS=(-u 'openstack-*' -u 'neutron-*')   # an array: the patterns must never be globbed here
+tracebacks_between() {   # tracebacks_between <since-epoch|""> <until-epoch|""> [unit]
+    local a=()
+    [ -n "$1" ] && a+=(--since "@$1")
+    [ -n "$2" ] && a+=(--until "@$2")
+    if [ -n "${3:-}" ]; then a+=(-u "$3"); else a+=("${TB_UNITS[@]}"); fi
+    # a journal that cannot be read is "error", never 0; a window with no entry
+    # (which some journalctl versions answer with a non-zero exit) is 0
+    local j
+    if ! j="$(journalctl -b --no-pager -o cat "${a[@]}" 2>/dev/null)"; then
+        journalctl -b --no-pager -q -n 1 >/dev/null 2>&1 && [ -z "$j" ] || { echo error; return 0; }
+    fi
+    printf '%s\n' "$j" | traceback_count
+}
+traceback_windows() {    # traceback_windows <restart-epoch> <recovered-epoch> <label>
+    local t1="$1" t2="$2" l="$3" b d a u f="$OUT/diag/tracebacks-$3.txt"
+    b="$(tracebacks_between "" "$t1")"; d="$(tracebacks_between "$t1" "$t2")"; a="$(tracebacks_between "$t2" "")"
+    mkdir -p -m 0700 "$OUT/diag"
+    { printf 'unit\tbefore-restart\trestart-to-recovered\tafter-recovered\n'
+      for u in $(systemctl list-units --all --type=service --no-legend --plain 'openstack-*' 'neutron-*' 2>/dev/null | awk '{print $1}' | sort -u); do
+          printf '%s\t%s\t%s\t%s\n' "$u" "$(tracebacks_between "" "$t1" "$u")" "$(tracebacks_between "$t1" "$t2" "$u")" "$(tracebacks_between "$t2" "" "$u")"
+      done; } > "$f"
+    note "$l: Python tracebacks in the OpenStack and Neutron journals: $b before the restart, $d while the units restarted and recovered (per unit in diag/${f##*/})"
+    check "$l: no Python traceback after the services recovered ($a in the last $(( $(date +%s) - t2 )) s)" [ "$a" = 0 ]
 }
 
 # ------------------------------------------------------------- diagnostics --
@@ -500,27 +539,38 @@ s_accept() {
     docs_check
     guest_checks before-restart s66-g1 s66-g2
     diag before-restart
-    local units n rc=0 u
+    local units n rc=0 u t_restart t_recovered ip1 ip3
     units="$(openstack_units)"; n=$(echo "$units" | grep -c .)
     echo "$units" > "$OUT/restarted-units.txt"
+    t_restart=$(date +%s)
     for u in $units; do systemctl restart "$u" || rc=1; done
     check "restart of $n OpenStack, OVN and web units" [ "$rc" -eq 0 -a "$n" -gt 0 ]
     sleep 30
     api_checks after-restart
     web_checks after-restart
     guest_checks after-restart s66-g3
+    # traffic after the restart, between a guest booted after it and one booted before
+    check "after-restart: s66-g1 (booted before the restart) is ACTIVE" wait_until 120 server_active s66-g1
+    ip1="$(guest_addr s66-g1)"; ip3="$(guest_addr s66-g3)"
+    if [ -n "$ip1" ] && [ -n "$ip3" ]; then ping_pair after-restart s66-g3 "$ip3" s66-g1 "$ip1"
+    else fail "after-restart: addresses of s66-g3 and s66-g1 (${ip3:-none}, ${ip1:-none})"; fi
+    t_recovered=$(date +%s)
     diag after-restart
     asset_diag
     check "0 failed units" [ "$(systemctl --failed --no-legend --plain | grep -c .)" -eq 0 ]
     local bad; bad="$(installed_mismatch)"
     check "still only the new set's packages (header check, after the documentation install)" [ -z "$bad" ]
-    local tb; tb=$(journalctl -b --no-pager -o cat -u 'openstack-*' -u 'neutron-*' 2>/dev/null | traceback_count)
-    note "$tb Python tracebacks in the OpenStack and Neutron journals since boot (examined off the node only by count)"
+    # at least two minutes after recovery are watched for tracebacks
+    local left=$(( t_recovered + 120 - $(date +%s) ))
+    [ "$left" -gt 0 ] && sleep "$left"
+    traceback_windows "$t_restart" "$t_recovered" accept
 }
 
 # ---------------------------------------------------------------- evidence --
 s_evidence() {
-    local ev="$BASE/evidence-final" d f
+    # s67-cluster.sh sets EVIDENCE_NAME (evidence-cluster, evidence-compute)
+    local name="${EVIDENCE_NAME:-evidence-final}"
+    local ev="$BASE/$name" d f
     rm -rf "$ev"; mkdir -p "$ev/build"
     cp -p "$OUT"/*.result "$OUT"/*.log "$OUT"/*.out "$OUT"/*.txt "$OUT"/*.tsv "$ev/" 2>/dev/null
     [ -f "$OUT/set.env" ] && cp -p "$OUT/set.env" "$ev/"
@@ -538,7 +588,7 @@ s_evidence() {
     systemctl --failed --no-legend --plain > "$ev/failed-units.txt" 2>&1
     systemctl list-units --type=service --no-legend --plain > "$ev/units.txt" 2>&1
     # diagnostics: the state now, then every diagnostic file without a secret in it
-    [ -f "$OPENRC" ] && [ -d "$OUT/accept.started" ] && diag at-evidence
+    [ -f "$OPENRC" ] && { [ -d "$OUT/accept.started" ] || [ -d "$OUT/cluster.started" ]; } && diag at-evidence
     if [ -d "$OUT/diag" ]; then
         local hit nw=0
         cp -rp "$OUT/diag" "$ev/diag"
@@ -557,10 +607,10 @@ s_evidence() {
     fi
     pass "the evidence holds no password, secret, private key or token"
     install -d -m 0755 "$DL"
-    tar -cf "$DL/evidence-final.tar" -C "$BASE" evidence-final
-    chmod 0644 "$DL/evidence-final.tar"
-    check "evidence-final.tar written" [ -s "$DL/evidence-final.tar" ]
-    ( cd "$DL" && sha256sum evidence-final.tar ) | tee -a "$OUT/download-sha256.txt"
+    tar -cf "$DL/$name.tar" -C "$BASE" "$name"
+    chmod 0644 "$DL/$name.tar"
+    check "$name.tar written" [ -s "$DL/$name.tar" ]
+    ( cd "$DL" && sha256sum "$name.tar" ) | tee -a "$OUT/download-sha256.txt"
 }
 
 SECRET_SCAN='
@@ -663,6 +713,10 @@ main() {
     [ "$FAILS" -eq 0 ] && touch "$OUT/$STEP.passed"
     [ "$FAILS" -eq 0 ]
 }
+
+# s67-cluster.sh sources this file for its helpers: everything above is defined,
+# nothing below runs
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case "$STEP" in
     run|status)

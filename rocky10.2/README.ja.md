@@ -81,12 +81,30 @@ Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。対応�
   - 5000（Keystone）
   - 9292（Glance）
   - 8778（Placement）
+  - 9696（Neutron API）
+  - 8775（Nova metadata。ノードの metadata agent が使います）
   - 5672（RabbitMQ）
   - 6642（OVN southbound）
   - 11211（memcached）
-- ノード間の Geneve トンネルは **UDP 6081** を使います。このポートは確認しません。
+- ノード間の Geneve トンネルは **UDP 6081** を双方向に使います。このポートは確認しません。
 - Hagistack はホストファイアウォールを設定しません。
-  `firewalld` などが有効な場合は、上記のポートを自分で開けてください。その構成は検証していません。
+  `firewalld` が有効な場合（一部のクラウドの Rocky Linux イメージでは有効です）は、ポートを自分で開けてください。例：
+
+  ```sh
+  # コントローラで
+  sudo firewall-cmd --permanent --add-port={5000,9292,8778,9696,8775,5672,6642,11211}/tcp --add-port=6081/udp
+  # 各コンピュートノードで
+  sudo firewall-cmd --permanent --add-port=6081/udp
+  # 両方で
+  sudo firewall-cmd --reload
+  ```
+
+  可能なら、接続元を管理ネットワークに限定してください。
+- **すべてのノードの管理インターフェースが同じ MTU であること。**
+  Neutron はテナントネットワークの MTU をコントローラの値（Hagistack が設定する `global_physnet_mtu`）から決めます。
+  MTU の小さいノードがあると、トンネル内で最大長のゲストパケットが落ちます。
+  ネットワークの MTU は作成時の値のままで、後の変更は新しいネットワークにだけ適用されます。
+- すべてのノードで**時刻が同期していること**（chronyd などの NTP クライアント）。
 
 ## インストールの流れ
 

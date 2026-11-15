@@ -31,7 +31,8 @@ gcloud.
 | `run-plan.json` | the run plan: what an approved run may send to, run on and fetch from its nodes |
 | `s66-node.sh` | stage 6-6 steps on n1 (build, release checks, nodocs, install, acceptance, evidence) |
 | `s66_web.py` | stage 6-6 page checks on n1: Horizon sign-in, logos, every image; one documentation page |
-| `test_s66_node.py`, `test_s66_web.py` | local tests of the two node files (control flow, page checks) |
+| `s67-cluster.sh` | stage 6-6-R5 steps for a controller (n1) and a compute node (n2); reuses the helpers of `s66-node.sh` |
+| `test_s66_node.py`, `test_s66_web.py`, `test_s67_cluster.py` | local tests of the node files (control flow, page checks, the handoff) |
 
 ## Fixed in the code, not on the command line
 
@@ -151,6 +152,33 @@ evidence), after an extract step that checks the tree's SHA-256 again.
   previous one passed. `evidence` needs only that preflight started, so the logs
   of an early failure can be fetched. The plan makes `install` wait until the
   candidate and the build evidence are downloaded.
+
+**The controller + compute plan (s67-cluster.sh).** The same plan names n2 and
+the steps of `s67-cluster.sh`. Each node knows its role from its name (`-n1`
+controller, `-n2` compute) and refuses the other role's steps. The order across
+the two nodes:
+
+| Node | Step | What it does |
+|---|---|---|
+| n1 | preflight … pack | as above (`s66-node.sh`): the set is built and checked |
+| n2 | extract, preflight | `s66-node.sh preflight` only; n2 builds nothing |
+| n1 | controller | `hagistack controller`; a controller with no compute node; README's firewall ports; `compute-secrets` and `rpm-bundle` offered once to n2 |
+| n2 | compute | the handoff fetched; README's credential install; `compute-add --controller-ip --rpm-source bundle`; no database access, no admin credential |
+| n1 | cluster | registration (Nova, Placement, both chassis, agents); guests on n2 over floating IPs; a 2 MB stream through the tunnel; the controller's units restarted; tracebacks after recovery |
+| n2 | reboot | the node reboots 20 s after the step ends |
+| n1 | after-reboot | the same chassis name after the reboot; guests started again and reachable |
+| n2 | rerun | `compute-add` again: no configuration changes |
+| n1 | final | a new guest after the re-run; tracebacks since the reboot |
+| n1, n2 | evidence-c, evidence-n | `evidence-cluster.tar`, `evidence-compute.tar` |
+
+The two nodes share no SSH key, so n1 offers one tar once, on its management
+address, to n2's address only, for at most an hour. The tar holds
+`compute-secrets`, the RPM bundle and the controller's MTU. A runtime firewalld
+rule opens the port for that one source. n2 sends back the SHA-256 of what it
+received, and n1 answers whether it matches; neither prints the value. The
+transfer is plain TCP inside the run's own VPC. n1 deletes its copy afterwards.
+n2 installs the credentials as README says and deletes its copy. Neither copy is
+under `out/`, which is all the evidence takes.
 
 **What the plan does not fix.**
 - What the node fetches itself is pinned elsewhere, not by the plan:

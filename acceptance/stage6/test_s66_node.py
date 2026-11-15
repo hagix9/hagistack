@@ -287,9 +287,9 @@ class NodeScriptText(unittest.TestCase):
         self.assertIn("diag before-restart", acc)
         self.assertIn("diag after-restart", acc)
         self.assertIn("asset_diag", acc)
-        g = self.src.split("guest_checks() {", 1)[1].split("\n}\n", 1)[0]
-        wait = g.index('wait_until 300 guest_ssh "$ip1" "ping -c 1 -W 2 $ip2"')
-        self.assertLess(wait, g.index('"ping -c 5 $ip2"'))
+        g = self.src.split("ping_pair() {", 1)[1].split("\n}\n", 1)[0]
+        wait = g.index('wait_until 300 guest_ssh "$3" "ping -c 1 -W 2 $5"')
+        self.assertLess(wait, g.index('"ping -c 5 $5"'))
         d = self.src.split("diag() {", 1)[1].split("\n}\n", 1)[0]
         for cmd in ("network agent list", "ovn-sbctl show", "console log show", "journalctl -b"):
             self.assertIn(cmd, d)
@@ -305,7 +305,7 @@ class NodeScriptText(unittest.TestCase):
         self.assertIn("/etc/openvswitch/system-id.conf", f)
 
     def test_the_ping_output_is_kept(self):
-        g = self.src.split("guest_checks() {", 1)[1].split("\n}\n", 1)[0]
+        g = self.src.split("ping_pair() {", 1)[1].split("\n}\n", 1)[0]
         keep = g.index('> "$OUT/diag/ping-$l.txt"')
         self.assertIn('2>&1; echo "==== exit $?"; }', g)
         self.assertLess(keep, g.index('got="$(ping_received "$OUT/diag/ping-$l.txt")"'))
@@ -363,8 +363,84 @@ class NodeScriptText(unittest.TestCase):
 
     def test_the_accept_counts_tracebacks_with_traceback_count(self):
         acc = self.src.split("s_accept() {", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("| traceback_count)", acc)
+        self.assertIn('traceback_windows "$t_restart" "$t_recovered" accept', acc)
+        tb = self.src.split("tracebacks_between() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("| traceback_count", tb)
         self.assertNotIn("'^Traceback'", self.src)
+
+    def test_tracebacks_are_judged_only_after_recovery(self):
+        # journalctl is a stand-in that answers by window: 2 tracebacks before the
+        # restart, 3 while units restart, N after recovery
+        f = "".join(name + "() {" + self.src.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+                    for name in ("traceback_count", "tracebacks_between", "traceback_windows"))
+        head = self.src.split("TB_UNITS=", 1)[1].split("\n", 1)[0]
+        stub = r'''
+OUT="$1"; STEP=t; FAILS=0
+pass(){ echo "PASS  $*"; }; fail(){ echo "FAIL  $*"; FAILS=$((FAILS+1)); }; note(){ echo "NOTE  $*"; }
+check(){ local w="$1"; shift; if "$@"; then pass "$w"; else fail "$w"; fi; }
+journalctl() {
+    local since="" until=""
+    while [ $# -gt 0 ]; do case "$1" in --since) since="$2"; shift ;; --until) until="$2"; shift ;; -u) echo "$2" >> "$OUT/units-asked"; shift ;; esac; shift; done
+    tb="x ERROR nova Traceback (most recent call last):"
+    if [ -z "$since" ]; then n=2; elif [ -n "$until" ]; then n=3; else n=$AFTER; fi
+    i=0; while [ "$i" -lt "$n" ]; do echo "$tb"; echo "  File x"; i=$((i + 1)); done
+}
+systemctl() { echo "openstack-nova-compute.service loaded active running x"; }
+'''
+        for after, want in (("0", "PASS  t: no Python traceback after the services recovered (0 in"),
+                            ("1", "FAIL  t: no Python traceback after the services recovered (1 in")):
+            with tempfile.TemporaryDirectory() as d:
+                r = subprocess.run(["bash", "-c", "set -uo pipefail\nTB_UNITS=" + head + "\n" + stub + f
+                                    + 'traceback_windows 100 200 t', "_", d],
+                                   capture_output=True, text=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C", "AFTER": after})
+                self.assertIn("NOTE  t: Python tracebacks in the OpenStack and Neutron journals: 2 before the restart, 3 while", r.stdout)
+                self.assertIn(want, r.stdout)
+                with open(os.path.join(d, "diag", "tracebacks-t.txt")) as fh:
+                    rows = fh.read().splitlines()
+                self.assertEqual(rows[0], "unit\tbefore-restart\trestart-to-recovered\tafter-recovered")
+                self.assertEqual(rows[1], "openstack-nova-compute.service\t2\t3\t" + after)
+                with open(os.path.join(d, "units-asked")) as fh:
+                    asked = fh.read().split()
+                self.assertIn("openstack-*", asked)            # the patterns reach journalctl unglobbed
+                self.assertIn("neutron-*", asked)
+
+    def test_an_unreadable_journal_is_an_error_not_zero(self):
+        f = "".join(name + "() {" + self.src.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+                    for name in ("traceback_count", "tracebacks_between"))
+        head = self.src.split("TB_UNITS=", 1)[1].split("\n", 1)[0]
+        r = subprocess.run(["bash", "-c", "set -uo pipefail\nTB_UNITS=" + head + "\njournalctl(){ return 1; }\n" + f
+                            + "tracebacks_between 100 ''"], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
+        self.assertEqual(r.stdout.strip(), "error")
+        # a window with no entry: journalctl exits 1 but the journal reads
+        r = subprocess.run(["bash", "-c", "set -uo pipefail\nTB_UNITS=" + head
+                            + '\njournalctl(){ case " $* " in *" -n 1 "*) return 0 ;; esac; return 1; }\n' + f
+                            + "tracebacks_between 100 ''"], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
+        self.assertEqual(r.stdout.strip(), "0")
+        tw = self.src.split("traceback_windows() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('[ "$a" = 0 ]', tw)                     # "error" fails the check
+
+    def test_the_accept_pings_across_the_restart(self):
+        acc = self.src.split("s_accept() {", 1)[1].split("\n}\n", 1)[0]
+        g3 = acc.index("guest_checks after-restart s66-g3")
+        ping = acc.index('ping_pair after-restart s66-g3 "$ip3" s66-g1 "$ip1"')
+        rec = acc.index("t_recovered=$(date +%s)")
+        self.assertLess(acc.index("t_restart=$(date +%s)"), acc.index('for u in $units; do systemctl restart "$u"'))
+        self.assertLess(g3, ping)
+        self.assertLess(ping, rec)
+        self.assertIn("wait_until 120 server_active s66-g1", acc)
+        self.assertIn("t_recovered + 120 - $(date +%s)", acc)
+
+    def test_the_script_can_be_sourced_for_its_helpers(self):
+        r = subprocess.run(["bash", "-c", 'source "$1"; declare -F ping_pair tracebacks_between s_evidence; echo "rc=$?"',
+                            "_", os.path.join(HERE, "s66-node.sh")],
+                           capture_output=True, text=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
+        self.assertEqual(r.stdout.split(), ["ping_pair", "tracebacks_between", "s_evidence", "rc=0"], r.stdout + r.stderr)
+
+    def test_all_in_one_refuses_on_a_controller(self):
+        ins = self.src.split("s_install() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(ins.index('[ ! -d "$OUT/controller.started" ] || stop'), ins.index("./hagistack all-in-one"))
 
     def test_the_evidence_never_copies_hagistack_etc(self):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]

@@ -6,6 +6,7 @@
 #   tests/test-build-rpms-staging.sh  sources re-staged before every rpmbuild
 #   tests/test-build-own.sh           own packaging: our names excluded from every other repository, retries, origin checks
 #   tests/test-ovs-system-id.sh       the OVN chassis name survives a restart of ovsdb-server
+#   tests/test-compute-node.sh        compute preflight ports, management MTU, compute-secrets, per-node values
 #   spec-adapt/test_adapt.py          spec adaptation rules and licensing
 #   tests/test_release_check.py       release generator's notice and logo checks (stub rpm)
 #   packaging/test_genspec.py         package definitions and spec generation
@@ -19,7 +20,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 rc=0
-for t in test-env-file.sh test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh test-build-own.sh test-ovs-system-id.sh; do
+for t in test-env-file.sh test-rpm-source.sh test-build-in-container.sh test-build-rpms-staging.sh test-build-own.sh test-ovs-system-id.sh test-compute-node.sh; do
     echo "######## $t"
     bash "$HERE/$t" || rc=1
 done

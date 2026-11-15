@@ -1,14 +1,16 @@
 {
   "format": 1,
-  "name": "stage6-6: build, release checks, nodocs, all-in-one acceptance on n1",
+  "name": "stage6-6: build, release checks, nodocs; all-in-one acceptance on n1, or controller n1 + compute n2 (s67-cluster.sh)",
   "nodes": [
-    "n1"
+    "n1",
+    "n2"
   ],
   "tree": {
     "paths": [
       "LICENSE",
       "rocky10.2",
       "acceptance/stage6/s66-node.sh",
+      "acceptance/stage6/s67-cluster.sh",
       "acceptance/stage6/s66_web.py"
     ],
     "remote": "/var/tmp/hs6-tree.tar"
@@ -47,11 +49,43 @@
     },
     "status": {
       "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh status"
+    },
+    "controller": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run controller"
+    },
+    "compute": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run compute"
+    },
+    "cluster": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run cluster"
+    },
+    "reboot": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run reboot"
+    },
+    "after-reboot": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run after-reboot"
+    },
+    "rerun": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run rerun"
+    },
+    "final": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run final"
+    },
+    "evidence-c": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run evidence-c"
+    },
+    "evidence-n": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run evidence-n"
+    },
+    "cluster-status": {
+      "command": "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh status"
     }
   },
   "download": {
     "candidate.tar": "/var/tmp/hs6-dl/candidate.tar",
     "evidence-build.tar": "/var/tmp/hs6-dl/evidence-build.tar",
-    "evidence-final.tar": "/var/tmp/hs6-dl/evidence-final.tar"
+    "evidence-final.tar": "/var/tmp/hs6-dl/evidence-final.tar",
+    "evidence-cluster.tar": "/var/tmp/hs6-dl/evidence-cluster.tar",
+    "evidence-compute.tar": "/var/tmp/hs6-dl/evidence-compute.tar"
   }
 }

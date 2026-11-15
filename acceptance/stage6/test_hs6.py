@@ -1005,8 +1005,8 @@ class CommittedRunPlan(unittest.TestCase):
         with open(os.path.join(HERE, "run-plan.json"), "rb") as f:
             self.plan = hs6.parse_plan(f.read())
 
-    def test_it_parses_and_targets_n1_only(self):
-        self.assertEqual(self.plan["nodes"], ["n1"])
+    def test_it_parses_and_targets_n1_and_n2(self):
+        self.assertEqual(self.plan["nodes"], ["n1", "n2"])
 
     def test_tree_paths_exist_and_carry_the_node_files(self):
         top = os.path.dirname(os.path.dirname(HERE))
@@ -1014,12 +1014,26 @@ class CommittedRunPlan(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(top, p)), p)
         self.assertIn("acceptance/stage6/s66-node.sh", self.plan["tree"]["paths"])
         self.assertIn("acceptance/stage6/s66_web.py", self.plan["tree"]["paths"])
+        self.assertIn("acceptance/stage6/s67-cluster.sh", self.plan["tree"]["paths"])
 
     def test_steps_are_the_node_script_steps_in_order(self):
         with open(os.path.join(HERE, "s66-node.sh")) as f:
             src = f.read()
         steps = src.split('STEPS="', 1)[1].split('"', 1)[0].split()
-        self.assertEqual(list(self.plan["ssh"]), ["extract"] + steps + ["status"])
+        with open(os.path.join(HERE, "s67-cluster.sh")) as f:
+            src67 = f.read()
+        c = src67.split('CTRL_STEPS="', 1)[1].split('"', 1)[0].split()
+        n = src67.split('COMP_STEPS="', 1)[1].split('"', 1)[0].split()
+        order = ["controller", "compute", "cluster", "reboot", "after-reboot", "rerun", "final", "evidence-c", "evidence-n"]
+        self.assertEqual(sorted(c + n), sorted(order))
+        self.assertEqual(list(self.plan["ssh"]), ["extract"] + steps + ["status"] + order + ["cluster-status"])
+        for name in order:
+            self.assertEqual(self.plan["ssh"][name]["command"],
+                             "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh run " + name)
+            self.assertIn("\ns_%s() {" % name.replace("-", "_"), src67)
+            self.assertNotIn("requires_downloads", self.plan["ssh"][name])
+        self.assertEqual(self.plan["ssh"]["cluster-status"]["command"],
+                         "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s67-cluster.sh status")
         self.assertEqual(self.plan["ssh"]["status"]["command"],
                          "sudo bash /var/tmp/hs6/tree/acceptance/stage6/s66-node.sh status")
         for name in steps:
@@ -1032,9 +1046,20 @@ class CommittedRunPlan(unittest.TestCase):
     def test_downloads_are_what_the_node_script_writes(self):
         with open(os.path.join(HERE, "s66-node.sh")) as f:
             src = f.read()
+        with open(os.path.join(HERE, "s67-cluster.sh")) as f:
+            src67 = f.read()
+        self.assertIn('tar -cf "$DL/$name.tar"', src)            # s_evidence, named by EVIDENCE_NAME
+        names = {"evidence-final": '${EVIDENCE_NAME:-evidence-final}' in src,
+                 "evidence-cluster": "EVIDENCE_NAME=evidence-cluster; s_evidence\n" in src67,
+                 "evidence-compute": "EVIDENCE_NAME=evidence-compute; s_evidence\n" in src67}
         for name, remote in self.plan["download"].items():
             self.assertEqual(remote, "/var/tmp/hs6-dl/" + name)
-            self.assertIn('"$DL/%s"' % name, src)
+            if name[:-4] in names:
+                self.assertTrue(names[name[:-4]], name)
+            else:
+                self.assertIn('"$DL/%s"' % name, src)
+        self.assertEqual(sorted(self.plan["download"]), ["candidate.tar", "evidence-build.tar", "evidence-cluster.tar",
+                                                         "evidence-compute.tar", "evidence-final.tar"])
 
 
 class CommitBinding(Base):

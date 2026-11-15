@@ -96,12 +96,32 @@ What gets installed:
   - 5000 (Keystone)
   - 9292 (Glance)
   - 8778 (Placement)
+  - 9696 (Neutron API)
+  - 8775 (Nova metadata, for the node's metadata agent)
   - 5672 (RabbitMQ)
   - 6642 (OVN southbound)
   - 11211 (memcached)
-- Geneve tunnels between the nodes use **UDP 6081**. This port is not checked.
-- Hagistack configures no host firewall. If `firewalld` or another firewall is
-  active, open these ports yourself. That setup has not been verified.
+- Geneve tunnels between the nodes use **UDP 6081**, in both directions. This
+  port is not checked.
+- Hagistack configures no host firewall. If `firewalld` is active (it is on the
+  Rocky Linux images of some clouds), open the ports yourself, for example:
+
+  ```sh
+  # on the controller
+  sudo firewall-cmd --permanent --add-port={5000,9292,8778,9696,8775,5672,6642,11211}/tcp --add-port=6081/udp
+  # on each compute node
+  sudo firewall-cmd --permanent --add-port=6081/udp
+  # on both
+  sudo firewall-cmd --reload
+  ```
+
+  Limit the sources to the management network where you can.
+- **The same MTU on every node's management interface.** Neutron sizes tenant
+  networks from the controller's (`global_physnet_mtu`, set by Hagistack); a
+  node with a smaller MTU drops full-size guest packets in the tunnel. A
+  network keeps the MTU it was created with; a later change applies to new
+  networks only.
+- **Synchronised clocks** (chronyd or another NTP client) on every node.
 
 ## Installation model
 

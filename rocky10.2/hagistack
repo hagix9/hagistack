@@ -2632,6 +2632,17 @@ phase_ovn() {
 # ---------------------------------------------------------------------------
 neutron_serving() { _probe_http "http://${MGMT_IP}:${NEUTRON_PORT}/"; }
 
+# The MTU of the interface that holds MGMT_IP: the network Geneve runs over.
+# Prints nothing when it cannot be read or is not a plausible MTU.
+mgmt_mtu() {
+    local ifc m
+    ifc="$(ip -o -4 addr show 2>/dev/null | awk -v ip="$MGMT_IP" '{split($4, a, "/"); if (a[1] == ip) {print $2; exit}}')"
+    [ -n "$ifc" ] && valid_nic_name "$ifc" || return 0
+    m="$(cat "/sys/class/net/$ifc/mtu" 2>/dev/null)"
+    [[ "$m" =~ ^[0-9]+$ ]] && [ "$m" -ge 1280 ] && [ "$m" -le 9216 ] && printf '%s\n' "$m"
+    return 0
+}
+
 phase_neutron() {
     log_step "networking (Neutron, ML2/OVN)"
     mariadb_reachable || { note_skip neutron "MariaDB is not reachable"; return 0; }
@@ -2658,6 +2669,18 @@ phase_neutron() {
     ini_set "$ML2_CONF" ml2 overlay_ip_version 4 && changed=1
     ini_set "$ML2_CONF" ml2_type_geneve vni_ranges "1:65536" && changed=1
     ini_set "$ML2_CONF" ml2_type_geneve max_header_size 38 && changed=1
+    # Tenant networks get global_physnet_mtu - 20 - max_header_size. Neutron's
+    # default of 1500 is wrong on a smaller network (a GCE VPC is 1460): a full
+    # guest packet is then too big for the Geneve tunnel between two nodes and
+    # is dropped. On one node nothing is tunnelled, so all-in-one never shows it.
+    # Networks created earlier keep the MTU they were created with.
+    local mtu; mtu="$(mgmt_mtu)"
+    if [ -n "$mtu" ]; then
+        ini_set "$NEUTRON_CONF" DEFAULT global_physnet_mtu "$mtu" && changed=1
+        log_ok "global_physnet_mtu $mtu (the MTU of the interface holding $MGMT_IP); every node's must be the same or larger"
+    else
+        log_warn "could not read the MTU of the interface holding $MGMT_IP; Neutron keeps its default (1500)"
+    fi
     ini_set "$ML2_CONF" ml2_type_flat flat_networks "$PROVIDER_PHYSNET" && changed=1
     ini_set "$ML2_CONF" ml2_type_vlan network_vlan_ranges "$PROVIDER_PHYSNET" && changed=1
     ini_set "$ML2_CONF" securitygroup enable_security_group true && changed=1
@@ -3138,7 +3161,10 @@ controller_port_open() {
 phase_compute_preflight() {
     log_step "compute preflight (reaching the controller)"
     local p name ok=1
-    for p in "5000 identity" "9292 image" "8778 placement" "5672 message queue" "6642 OVN southbound" "11211 memcached"; do
+    # 9696: nova-compute binds ports and plugs VIFs through the Neutron API.
+    # 8775: this node's metadata agent proxies guest requests to Nova metadata.
+    for p in "5000 identity" "9292 image" "8778 placement" "9696 network" "8775 compute metadata" \
+             "5672 message queue" "6642 OVN southbound" "11211 memcached"; do
         set -- $p
         if controller_port_open "$1"; then log_ok "tcp/$1 ($2) reachable on $CONTROLLER_IP"
         else log_error "tcp/$1 ($2) NOT reachable on $CONTROLLER_IP"; ok=0; fi
