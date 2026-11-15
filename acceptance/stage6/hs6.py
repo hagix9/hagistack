@@ -139,7 +139,7 @@ class NotFound(Exception):
 # they make the harness refuse to run. Without an approval nothing is called.
 _TEST_MODE = {"on": False}
 TEST_HOOKS = ("HS6_GCLOUD", "HS6_NOW", "HS6_CLOCK_FILE", "HS6_REGISTRY", "HS6_WATCH_MAX_LOOPS",
-              "HS6_OWNER_SIGNERS", "HS6_GIT")
+              "HS6_OWNER_SIGNERS", "HS6_GIT", "HS6_TEST_GROUP_LEFT")
 
 # ------------------------------------------------------- Owner signing keys --
 # A signed (format 3) approval is executed only if it carries the Owner's SSH
@@ -174,6 +174,30 @@ def watch_interval():
     between 5 s and 5 min, so it can neither busy-loop nor switch monitoring off."""
     v = float(os.environ.get("HS6_WATCH_INTERVAL", "60"))
     return v if _TEST_MODE["on"] else min(300.0, max(5.0, v))
+
+
+def download_limits():
+    """(stall, total) seconds for one download. A download stops when the
+    received byte count has not grown for `stall` seconds, or after `total`
+    seconds even while bytes arrive. Outside the tests they are kept to
+    30..600 s and 60..3600 s, so neither can be switched off or set to hours."""
+    stall = float(os.environ.get("HS6_DOWNLOAD_STALL", "120"))
+    total = float(os.environ.get("HS6_DOWNLOAD_TIMEOUT", "1800"))
+    if _TEST_MODE["on"]:
+        return stall, total
+    return min(600.0, max(30.0, stall)), min(3600.0, max(60.0, total))
+
+
+def local_size(path):
+    """Bytes of a regular file received so far; 0 if absent or not a plain file."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0
+    return st.st_size if stat.S_ISREG(st.st_mode) else 0
+
+
+IAP_DROP_MARK = "ConnectionReconnectTimeout"
 
 
 def record_stop(state_dir, rec):
@@ -335,15 +359,22 @@ class Gcloud:
             raise Stop("internal: the project must be pinned exactly once in a mutating call")
         return self._run(args)
 
-    def remote(self, args, target, timeout, monitor=None, interval=60.0):
+    def remote(self, args, target, timeout, monitor=None, interval=60.0, progress=None, stall=None):
         """ssh/scp to one node of this run. Returns (status, stdout, stderr)
         without raising on a non-zero status: a failed test step keeps its
         whole output and exit code. While the command runs, monitor() is called
         every `interval` seconds; if it raises Stop, the command is killed and
-        the Stop is re-raised with the output collected so far attached."""
+        the Stop is re-raised with the output collected so far attached.
+        With progress (a function returning the bytes received so far) the
+        command is also stopped when that count has not grown for `stall`
+        seconds; a live process or new log output is not progress. A stopped
+        command's Stop carries .transfer: why, seconds elapsed, bytes received
+        and whether its whole process group ended."""
         check_target(self.rid, target)
         if not _prefix_ok(args, REMOTE_PREFIXES):
             raise Stop("internal: not an ssh/scp call")
+        if progress is not None and not (stall and stall > 0):
+            raise Stop("internal: a progress check needs a positive stall time")
         if self.account:
             args = args + ["--account=" + self.account]
         self.log("gcloud " + " ".join(args))
@@ -356,11 +387,14 @@ class Gcloud:
         # its own process group, so a stop kills ssh and everything it started
         p = subprocess.Popen(self.cmd + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                              start_new_session=True)
-        start = time.monotonic()
+        start = last_monitor = time.monotonic()
+        seen, seen_at = 0, start
+        # with a progress check, look often enough to stop within a few seconds of the stall time
+        step = interval if progress is None else max(0.05, min(interval, stall / 4.0, 5.0))
         while True:
             left = timeout - (time.monotonic() - start)
             try:
-                out, err = p.communicate(timeout=max(0.1, min(interval, left)))
+                out, err = p.communicate(timeout=max(0.05, min(step, left)))
                 return p.returncode, out, err
             except subprocess.TimeoutExpired:
                 pass
@@ -370,35 +404,74 @@ class Gcloud:
                 rc_out_err = _kill_group(p)
                 e = Stop("interrupted: the step on the node was stopped", EXIT_REMOTE)
                 e.partial = rc_out_err
+                e.interrupted = True
                 raise e
-            stop = None
-            if time.monotonic() - start >= timeout:
-                stop = Stop("the command ran longer than %.0fs" % timeout, EXIT_REMOTE)
-            elif monitor is not None:
+            t = time.monotonic()
+            stop, why = None, None
+            if progress is not None:
+                got = progress()
+                if got > seen:
+                    seen, seen_at = got, t
+            if t - start >= timeout:
+                stop, why = Stop("the command ran longer than %.0fs" % timeout, EXIT_REMOTE), "total-timeout"
+            elif progress is not None and t - seen_at >= stall:
+                stop, why = Stop("no bytes received for %.0fs (%d bytes in %.0fs): the transfer is stalled"
+                                 % (t - seen_at, seen, t - start), EXIT_REMOTE), "stalled"
+            elif monitor is not None and (progress is None or t - last_monitor >= interval):
+                last_monitor = t
                 try:
                     monitor()
                 except Stop as e:
-                    stop = e
+                    stop, why = e, "monitor"
                 except Exception as e:  # noqa: BLE001 - a monitor that cannot run stops the step
-                    stop = Stop("the monitor failed while the command ran (%s)" % e, EXIT_GUARD)
+                    stop, why = Stop("the monitor failed while the command ran (%s)" % e, EXIT_GUARD), "monitor"
             if stop is not None:
                 stop.partial = _kill_group(p)
+                stop.transfer = {"why": why, "elapsed": round(time.monotonic() - start, 1), "bytes": seen,
+                                 "group_ended": _group_gone(p.pid)}
                 raise stop
+
+
+def _group_gone(pgid, wait=5.0):
+    """True once no process of the group is left (checked for up to `wait` seconds)."""
+    if _TEST_MODE["on"] and os.environ.get("HS6_TEST_GROUP_LEFT"):
+        return False      # test hook: a member that outlives SIGKILL cannot be made on purpose
+    end = time.monotonic() + wait
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            # a member this user cannot signal, or (macOS) only unreaped zombies: counted as left
+            pass
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.1)
 
 
 def _kill_group(p):
     """TERM then KILL the whole process group; never wait without a bound.
-    Returns (status, stdout, stderr) with whatever output could be collected."""
+    SIGKILL follows unless the whole group (not only its leader) ended after
+    SIGTERM. Returns (status, stdout, stderr) with whatever output could be
+    collected."""
+    result = None
     for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 5.0)):
+        end = time.monotonic() + grace
         try:
             os.killpg(p.pid, sig)
         except (ProcessLookupError, PermissionError):
             pass
-        try:
-            out, err = p.communicate(timeout=grace)
-            return p.returncode, out or "", err or ""
-        except subprocess.TimeoutExpired:
-            continue
+        if result is None:
+            try:
+                out, err = p.communicate(timeout=grace)
+                result = (p.returncode, out or "", err or "")
+            except subprocess.TimeoutExpired:
+                continue
+        if _group_gone(p.pid, wait=max(0.0, end - time.monotonic())):
+            return result
+    if result is not None:
+        return result
     for stream in (p.stdout, p.stderr):
         try:
             stream.close()
@@ -1804,6 +1877,10 @@ class Run:
         g, _ = self.gcloud(op)
         name = name_of(self.rid, part)
         timeout = float(os.environ.get("HS6_REMOTE_TIMEOUT", "14400"))
+        stall = None
+        if op == "download":
+            # a download has its own limits: no growth for `stall` seconds, or `timeout` in all
+            stall, timeout = download_limits()
         part_file = final_file = upload_local = tree_sha = None
         plan = None
         if g.execute:
@@ -1901,17 +1978,33 @@ class Run:
             # the same guards as everywhere, re-evaluated while the step runs
             guard(self.load_retry()[0], now(), limits=self.limits())
 
+        progress = (lambda: local_size(part_file)) if op == "download" else None
+        started = time.monotonic()
         try:
             try:
-                rc, out, err = g.remote(args, name, timeout, monitor, interval)
+                rc, out, err = g.remote(args, name, timeout, monitor, interval, progress=progress, stall=stall)
             except Stop as e:
                 if not hasattr(e, "partial"):
                     raise
                 rc, out, err = e.partial
                 err = (err or "") + "\n# stopped while running: %s\n" % e
+                tr = getattr(e, "transfer", None)
+                if tr:
+                    got = (", %d bytes received" % tr["bytes"]) if op == "download" else ""
+                    err += "# stop: %s after %.1fs%s, process group %s\n" % (
+                        tr["why"], tr["elapsed"], got,
+                        "ended" if tr["group_ended"] else "NOT ENDED: processes of it remain")
+                    self.log("remote %s %s stopped: %s after %.1fs%s, process group %s" % (
+                        op, name, tr["why"], tr["elapsed"], got, "ended" if tr["group_ended"] else "not ended"))
                 stopped = e
+                if tr and not tr["group_ended"]:
+                    stopped = Stop("%s; processes of the stopped command remain after SIGKILL: stop and check"
+                                   % e, EXIT_UNKNOWN, teardown=e.teardown)
+                    record_stop(self.state_dir, {"event": "process-left", "reason": str(stopped), "by": op})
                 if e.code == EXIT_GUARD and not e.teardown:
                     record_stop(self.state_dir, {"event": "monitor-failed", "reason": str(e), "by": op})
+            if op == "download" and IAP_DROP_MARK in (err or ""):
+                err += "# the IAP tunnel reported %s (its connection dropped and did not come back)\n" % IAP_DROP_MARK
             if op == "upload" and rc == 0 and stopped is None:
                 with open(upload_local, "rb") as f:
                     want = hashlib.sha256(f.read()).hexdigest()
@@ -1936,8 +2029,25 @@ class Run:
                         for chunk in iter(lambda: f.read(1 << 20), b""):
                             h.update(chunk)
                     got_local = h.hexdigest()
-                    rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE, "--tunnel-through-iap", P(),
-                                                "--command=sha256sum " + shlex.quote(cmd_args[0])], name, timeout)
+                    # the check on the node gets what is left of the download's time, at most the stall time
+                    vt = min(stall, timeout - (time.monotonic() - started))
+                    if vt <= 0:
+                        rc2, out2, err2 = 1, "", "no time left of the download's %.0fs to check it" % timeout
+                    else:
+                        try:
+                            rc2, out2, err2 = g.remote(["compute", "ssh", name, "--zone=" + ZONE,
+                                                        "--tunnel-through-iap", P(),
+                                                        "--command=sha256sum " + shlex.quote(cmd_args[0])], name, vt)
+                        except Stop as e:
+                            if not hasattr(e, "partial") or getattr(e, "interrupted", False):
+                                raise
+                            rc2, out2, err2 = 1, "", "the check on the node was stopped: %s" % e
+                            tr = getattr(e, "transfer", None)
+                            if tr and not tr["group_ended"] and stopped is None:
+                                stopped = Stop("the check on the node was stopped (%s); processes of it remain "
+                                               "after SIGKILL: stop and check" % e, EXIT_UNKNOWN)
+                                record_stop(self.state_dir, {"event": "process-left", "reason": str(stopped),
+                                                             "by": op})
                     got = out2.split()
                     if rc2 == 0 and got and got[0] == got_local:
                         try:
@@ -1947,6 +2057,8 @@ class Run:
                         else:
                             verified = True
                             out += "download verified: %s %s -> downloads/%s\n" % (got_local, cmd_args[0], cmd_args[1])
+                            self.log("download %s: %d bytes in %.1fs" % (cmd_args[1], os.path.getsize(final_file),
+                                                                          time.monotonic() - started))
                     else:
                         err += "\nSHA-256 check failed after the transfer (%s): %s" % (rc2, err2.strip())
                 if not verified:

@@ -14,6 +14,7 @@ import stat
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2251,6 +2252,249 @@ class ApproveTool(unittest.TestCase):
         self.assertLess(hs6_approve.cost_estimate(ops, 6.0), hs6.COST_STOP_ALL)
         self.assertGreater(hs6_approve.cost_estimate(ops, 6.0), hs6_approve.cost_estimate(ops, 4.0))
         self.assertEqual(hs6_approve.cost_estimate(["init", "teardown"], 6.0), 0.0)
+
+
+class DownloadStall(Base):
+    """A download stops when no byte arrives for HS6_DOWNLOAD_STALL seconds or
+    after HS6_DOWNLOAD_TIMEOUT seconds in all (s66r5a waited 4 h on a dropped
+    IAP tunnel). The times are shortened here; nothing waits 120 s or 1800 s."""
+    PAYLOAD = "payload-" + "z" * 24
+    gone = R2Teardown.gone
+    _popen = R2Teardown._popen
+
+    def setUp(self):
+        super().setUp()
+        self.write_plan(dict(TEST_PLAN, ssh={"install": {"command": "install", "requires_downloads": ["out.tar"]},
+                                             "other": {"command": "other"}}))
+        self.up("n1")
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": self.PAYLOAD},
+                                         remote_sha={"/root/out.tar": hashlib.sha256(self.PAYLOAD.encode()).hexdigest()}))
+
+    def dl(self, **env):
+        e = {"HS6_DOWNLOAD_STALL": "1", "HS6_DOWNLOAD_TIMEOUT": "30", "HS6_WATCH_INTERVAL": "1"}
+        e.update(env)
+        start = time.monotonic()
+        rc, out = self.hs("download", "n1", "/root/out.tar", "out.tar", env=e)
+        return rc, out, time.monotonic() - start
+
+    def ddir(self):
+        d = os.path.join(self.sdir, "downloads")
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+    def child_gone(self):
+        with open(os.path.join(os.path.dirname(self.state), "mock-child.pid")) as f:
+            pid = int(f.read())
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def install_refused(self):
+        rc, out = self.hs("ssh", "n1", "--", "install")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("downloads/out.tar must be kept first", out)
+
+    def test_a_slow_download_that_keeps_arriving_is_kept_and_verified(self):
+        self.inject("compute scp", "DL_SLOW")
+        rc, out, _ = self.dl(MOCK_GAP="0.1")   # 32 bytes, 0.1 s apart: 3 s in all, never 1 s without a byte
+        self.assertEqual(rc, 0, out)
+        self.assertIn("download verified", out)
+        self.assertEqual(self.ddir(), ["out.tar"])
+        with open(os.path.join(self.sdir, "downloads", "out.tar")) as f:
+            self.assertEqual(f.read(), self.PAYLOAD)
+        with open(os.path.join(self.sdir, "operations.log")) as f:
+            self.assertRegex(f.read(), r"download out\.tar: %d bytes in [0-9.]+s" % len(self.PAYLOAD))
+
+    def test_a_download_that_stops_sending_is_stopped_and_its_processes_end(self):
+        self.inject("compute scp", "DL_STALL")
+        rc, out, took = self.dl(MOCK_SLEEP="60", MOCK_FORK="1")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 20, out)
+        self.assertIn("the transfer is stalled", out)
+        self.assertRegex(out, r"# stop: stalled after [0-9.]+s, %d bytes received, process group ended"
+                         % (len(self.PAYLOAD) // 2))
+        self.assertIn("IAP tunnel reported ConnectionReconnectTimeout", out)
+        self.assertTrue(self.child_gone(), "a child of the transfer is left running")
+        self.assertEqual(self.ddir(), [], "the partial file is not kept")
+        self.assertFalse(self.gone())      # a failed transfer is not a limit: teardown is the runner's next step
+        self.install_refused()
+        with open(os.path.join(self.sdir, "operations.log")) as f:
+            self.assertRegex(f.read(), r"stopped: stalled after [0-9.]+s, \d+ bytes received, process group ended")
+
+    def test_a_download_that_never_sends_a_byte_is_stopped(self):
+        self.set_mock(lambda s: s.update(remote_files={"/root/out.tar": ""}))
+        self.inject("compute scp", "DL_STALL")
+        rc, out, took = self.dl(MOCK_SLEEP="60")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 20, out)
+        self.assertIn("0 bytes received", out)
+        self.assertEqual(self.ddir(), [])
+        self.install_refused()
+
+    def test_a_download_that_trickles_for_ever_meets_the_total_limit(self):
+        self.inject("compute scp", "DL_TRICKLE")
+        rc, out, took = self.dl(MOCK_SLEEP="60", MOCK_FORK="1", HS6_DOWNLOAD_TIMEOUT="3")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 20, out)
+        self.assertIn("ran longer than 3s", out)
+        self.assertRegex(out, r"# stop: total-timeout after [0-9.]+s, [1-9]\d* bytes received, process group ended")
+        self.assertTrue(self.child_gone())
+        self.assertEqual(self.ddir(), [])
+        self.install_refused()
+
+    def test_a_checksum_mismatch_after_a_complete_transfer_keeps_nothing(self):
+        self.set_mock(lambda s: s.update(remote_sha={"/root/out.tar": "1" * 64}))
+        self.inject("compute scp", "DL_SLOW")
+        rc, out, _ = self.dl(MOCK_GAP="0.01")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertIn("SHA-256 check failed", out)
+        self.assertEqual(self.ddir(), [])
+        self.install_refused()
+
+    def test_a_hanging_checksum_on_the_node_is_bounded_and_keeps_nothing(self):
+        self.inject("sha256sum", "SLEEP")
+        rc, out, took = self.dl(MOCK_SLEEP="60", MOCK_FORK="1", HS6_DOWNLOAD_STALL="2")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 20, out)
+        self.assertIn("the check on the node was stopped", out)
+        self.assertEqual(self.ddir(), [])
+        self.install_refused()
+
+    def test_the_cost_and_time_guard_still_runs_during_a_download(self):
+        clock = os.path.join(self.tmp, "clock")
+        with open(clock, "w") as f:
+            f.write(str(self.t))
+        self.inject("compute scp", "DL_TRICKLE")
+        p = self._popen(["download", "n1", "/root/out.tar", "out.tar"],
+                        {"HS6_CLOCK_FILE": clock, "MOCK_SLEEP": "60", "HS6_DOWNLOAD_STALL": "5",
+                         "HS6_DOWNLOAD_TIMEOUT": "60"})
+        time.sleep(3)
+        with open(clock, "w") as f:
+            f.write(str(self.t + 7 * 3600))
+        out, _ = p.communicate(timeout=90)
+        self.assertEqual(p.returncode, hs6.EXIT_GUARD, out)
+        self.assertTrue(self.gone())
+        self.assertEqual(self.ddir(), [])
+
+    def test_the_limits_cannot_be_switched_off_outside_the_tests(self):
+        was = hs6._TEST_MODE["on"]
+        keep = {k: os.environ.get(k) for k in ("HS6_DOWNLOAD_STALL", "HS6_DOWNLOAD_TIMEOUT")}
+        try:
+            hs6._TEST_MODE["on"] = False
+            for k in keep:
+                os.environ.pop(k, None)
+            self.assertEqual(hs6.download_limits(), (120.0, 1800.0))
+            os.environ.update(HS6_DOWNLOAD_STALL="0", HS6_DOWNLOAD_TIMEOUT="14400")
+            self.assertEqual(hs6.download_limits(), (30.0, 3600.0))
+            os.environ.update(HS6_DOWNLOAD_STALL="99999", HS6_DOWNLOAD_TIMEOUT="1")
+            self.assertEqual(hs6.download_limits(), (600.0, 60.0))
+        finally:
+            hs6._TEST_MODE["on"] = was
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_the_remote_timeout_of_steps_does_not_apply_to_a_download(self):
+        # a 3 s download completes under a 1 s HS6_REMOTE_TIMEOUT: only the download limits apply
+        self.inject("compute scp", "DL_SLOW")
+        rc, out, _ = self.dl(MOCK_GAP="0.1", HS6_REMOTE_TIMEOUT="1")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("download verified", out)
+        # and a stalled one stops at the stall time under a 14400 s one
+        os.remove(os.path.join(self.sdir, "downloads", "out.tar"))
+        self.inject("compute scp", "DL_STALL")
+        rc, out, took = self.dl(MOCK_SLEEP="60", HS6_REMOTE_TIMEOUT="14400")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 20, out)
+
+    def test_a_child_that_ignores_sigterm_and_holds_no_pipe_is_killed(self):
+        self.inject("compute scp", "DL_STALL")
+        rc, out, took = self.dl(MOCK_SLEEP="60", MOCK_FORK="1", MOCK_TERM_IGNORE="1")
+        self.assertEqual(rc, hs6.EXIT_REMOTE, out)
+        self.assertLess(took, 25, out)
+        self.assertIn("process group ended", out)
+        self.assertTrue(self.child_gone(), "the SIGTERM-ignoring child is left running")
+        self.assertEqual(self.ddir(), [])
+
+    def test_a_process_left_after_sigkill_stops_the_whole_run(self):
+        self.inject("compute scp", "DL_STALL")
+        rc, out, _ = self.dl(MOCK_SLEEP="60", HS6_TEST_GROUP_LEFT="1")
+        self.assertEqual(rc, hs6.EXIT_UNKNOWN, out)
+        self.assertIn("remain after SIGKILL", out)
+        self.assertIn("process group NOT ENDED", out)
+        self.assertEqual(self.ddir(), [])
+        stops = hs6.recorded_stops(self.sdir)
+        self.assertTrue(any('"process-left"' in x for x in stops), stops)
+        rc, out = self.hs("ssh", "n1", "--", "other")    # even a step that needs no download
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("stops.jsonl", out)
+
+    def test_a_process_left_by_the_checksum_check_stops_the_whole_run(self):
+        self.inject("sha256sum", "SLEEP")
+        rc, out, _ = self.dl(MOCK_SLEEP="60", HS6_DOWNLOAD_STALL="2", HS6_TEST_GROUP_LEFT="1")
+        self.assertEqual(rc, hs6.EXIT_UNKNOWN, out)
+        self.assertIn("the check on the node was stopped", out)
+        self.assertEqual(self.ddir(), [])
+        self.assertTrue(any('"process-left"' in x for x in hs6.recorded_stops(self.sdir)))
+
+    def test_the_left_process_hook_is_refused_with_a_real_account(self):
+        self.assertIn("HS6_TEST_GROUP_LEFT", hs6.TEST_HOOKS)
+        was, keep = hs6._TEST_MODE["on"], {k: os.environ.get(k) for k in hs6.TEST_HOOKS}
+        try:
+            for k in hs6.TEST_HOOKS:
+                os.environ.pop(k, None)
+            os.environ["HS6_TEST_GROUP_LEFT"] = "1"
+            with self.assertRaises(hs6.Stop) as c:
+                hs6._decide_test_mode("owner@example.com")
+            self.assertIn("refused with a real account", str(c.exception))
+        finally:
+            hs6._TEST_MODE["on"] = was
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_an_interrupt_during_the_checksum_check_stops_the_command(self):
+        self.inject("sha256sum", "SLEEP")
+        p = self._popen(["download", "n1", "/root/out.tar", "out.tar"],
+                        {"HS6_NOW": str(self.t), "MOCK_SLEEP": "60", "HS6_DOWNLOAD_STALL": "30",
+                         "HS6_DOWNLOAD_TIMEOUT": "60"})
+        logf, end = os.path.join(self.sdir, "operations.log"), time.monotonic() + 30
+        while True:
+            with open(logf) as f:
+                if "--command=sha256sum" in f.read():
+                    break
+            self.assertIsNone(p.poll(), "hs6 ended before the checksum check")
+            self.assertLess(time.monotonic(), end, "the checksum check did not start")
+            time.sleep(0.2)
+        time.sleep(1)
+        p.send_signal(signal.SIGTERM)
+        out, _ = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, hs6.EXIT_REMOTE, out)
+        self.assertIn("interrupted", out)
+        self.assertNotIn("the check on the node was stopped", out)
+        self.assertEqual(self.ddir(), [])
+
+    def test_local_size_counts_only_a_plain_file(self):
+        f = os.path.join(self.tmp, "f")
+        self.assertEqual(hs6.local_size(f), 0)
+        with open(f, "w") as fh:
+            fh.write("abc")
+        self.assertEqual(hs6.local_size(f), 3)
+        os.symlink(f, f + ".l")
+        self.assertEqual(hs6.local_size(f + ".l"), 0)
+
+    def test_a_progress_check_needs_a_stall_time(self):
+        g = hs6.Gcloud(RID, True, lambda m: None, None)
+        with self.assertRaises(hs6.Stop):
+            g.remote(["compute", "scp", "a", "b"], hs6.name_of(RID, "n1"), 10, progress=lambda: 0, stall=None)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

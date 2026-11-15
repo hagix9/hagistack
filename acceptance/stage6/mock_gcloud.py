@@ -144,6 +144,46 @@ def main():
                 print("line 1 of the failing step\n" + "x" * 1000)
                 sys.stderr.write("step failed\n")
                 sys.exit(3)
+            if rest[0] == "scp" and mode in ("DL_STALL", "DL_TRICKLE", "DL_SLOW"):
+                # downloads that stop sending, keep sending a little for ever, or are slow but finish
+                src_, dst_ = [x for x in args if not x.startswith("-")][-2:]
+                data = s.get("remote_files", {}).get(src_.split(":", 1)[1], "")
+                save(s)
+                if os.environ.get("MOCK_FORK"):
+                    import subprocess
+                    if os.environ.get("MOCK_TERM_IGNORE"):
+                        # a child that ignores SIGTERM and holds none of the output pipes
+                        child = subprocess.Popen(
+                            [sys.executable, "-I", "-c", "import signal, time; signal.signal(signal.SIGTERM, "
+                             "signal.SIG_IGN); open(%r, 'w').close(); time.sleep(60)"
+                             % os.path.join(os.path.dirname(STATE), "mock-child.ready")],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        while not os.path.exists(os.path.join(os.path.dirname(STATE), "mock-child.ready")):
+                            time.sleep(0.02)
+                    else:
+                        child = subprocess.Popen(["sleep", os.environ.get("MOCK_SLEEP", "15")])
+                    with open(os.path.join(os.path.dirname(STATE), "mock-child.pid"), "w") as fh:
+                        fh.write(str(child.pid))
+                with open(dst_, "w") as fh:
+                    if mode == "DL_STALL":
+                        fh.write(data[: len(data) // 2]); fh.flush()
+                        sys.stderr.write("ERROR: [0] Error during local connection to [stdin]:\n"
+                                         "googlecloudsdk.api_lib.compute.iap_tunnel_websocket."
+                                         "ConnectionReconnectTimeout\n")
+                        sys.stderr.flush()
+                        time.sleep(float(os.environ.get("MOCK_SLEEP", "15")))
+                        return 0
+                    if mode == "DL_TRICKLE":
+                        end = time.monotonic() + float(os.environ.get("MOCK_SLEEP", "15"))
+                        while time.monotonic() < end:
+                            fh.write("x"); fh.flush()
+                            time.sleep(0.1)
+                        return 0
+                    gap = float(os.environ.get("MOCK_GAP", "0.5"))
+                    for ch in data:
+                        fh.write(ch); fh.flush()
+                        time.sleep(gap)
+                return 0
             if rest[0] == "scp":
                 src_, dst_ = [x for x in args if not x.startswith("-")][-2:]
                 if ":" in src_ and os.path.isabs(dst_):      # a download: write the node's file

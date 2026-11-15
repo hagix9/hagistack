@@ -182,3 +182,68 @@ Everything in s67-cluster.sh, in particular:
 - whether the compute-add re-run restarts units (recorded as a NOTE).
 
 For all-in-one: the new ping and traceback windows.
+
+## GCE run s66r5a (all-in-one, commit 0f082c1): stopped before install
+
+Approved in chat with s66r5b ("両方を承認"); s66r5b was not started.
+
+| Step | Result |
+|---|---|
+| init, network, n1, upload (tree sha256 4d896b5c…, verified) | done |
+| extract, preflight, build, release, nodocs, pack | PASSED (pack 05:46Z; candidate.tar 161 003 520 bytes, sha256 c18d5b32…) |
+| download candidate.tar | **failed**: gcloud's IAP tunnel raised `ConnectionReconnectTimeout` and gcloud kept running without exiting; the harness waited for `HS6_REMOTE_TIMEOUT` (14400 s) and stopped it at 09:46Z |
+| download evidence-build.tar | verified (sha256 0b9accb1…) |
+| install | refused by the harness: `downloads/candidate.tar must be kept first` |
+| evidence | not applicable (no accept, no failed node step); evidence-final.tar does not exist |
+| teardown, residual | complete; "none of run s66r5a left"; watch ended rc 0 (no limit tripped) |
+
+About 5 h 42 min of n1 (n2-standard-8). The all-in-one acceptance (post-restart ping, traceback windows) is **not verified** on a real node.
+
+Why it waited 4 h: a download had only the step timeout of 14400 s and nothing watched the bytes received. The temporary runner also lost the download's exit status (`dl … | tail -1` without `pipefail`) and went on to `install`; the harness refused it. The runner now sets `pipefail`.
+
+## Stage 6-6-R5 transfer fix (hs6.py)
+
+- `download` has its own limits: it stops when the size of the local `.part` file has not grown for `HS6_DOWNLOAD_STALL` seconds (default 120), or after `HS6_DOWNLOAD_TIMEOUT` seconds in all (default 1800). Outside the tests they are clamped to 30..600 s and 60..3600 s. A live process or log output is not progress. The size is polled every `min(5 s, stall/4)`; the cost and time guard still runs every watch interval.
+- The node's `sha256sum` check gets what is left of the download's time, at most the stall time.
+- A stop kills the process group: SIGTERM, then SIGKILL unless every member has ended; then it checks that no member is left. The log records why (`stalled`, `total-timeout`, guard), the seconds, the bytes received and an IAP `ConnectionReconnectTimeout`. A member left after SIGKILL exits 5 and records `process-left` in stops.jsonl, which refuses every further step.
+- The `.part` file is always deleted; the file is kept only after the SHA-256 match (unchanged). No automatic retry. `install` stays refused without `candidate.tar` (unchanged).
+- Not changed: the run plan (sha256 149a17c9…aa3), the tree paths (hs6.py is not in the tree), the approval format. Uploads and ssh steps keep `HS6_REMOTE_TIMEOUT` (14400 s); an IAP drop during the 1.4 MB tree upload would still wait up to the 6 h run limit (not in this task's scope).
+- Not verified: that real `gcloud compute scp` (SFTP mode) grows the `.part` file as bytes arrive. If it wrote the file only at the end, a large healthy download would be stopped as stalled (fail-closed). The first real download shows it.
+
+### Tests (this Mac)
+
+- New class `test_hs6.DownloadStall`, 16 tests. They cover:
+  - a slow download that is completed and verified;
+  - a stalled download, and one that never sends a byte;
+  - a trickling download stopped by the total limit;
+  - a SHA-256 mismatch;
+  - a hanging and an interrupted `sha256sum` check;
+  - the cost and time guard during a download;
+  - the limit clamps;
+  - `HS6_REMOTE_TIMEOUT` not applying to downloads;
+  - a child that ignores SIGTERM and holds no pipe, which is killed;
+  - `process-left` for both the transfer and the check;
+  - the test hook refused with a real account;
+  - `install` refused after every failed case.
+- Times are shortened, so no test waits 120 s or 1800 s.
+- `test_hs6` + `test_s66_node` + `test_s66_web` + `test_s67_cluster`: 285 of 285 on 3.9 and on 3.13. `DownloadStall` was then run again on the final code, 16 of 16 on both. The last test was added after the full run.
+
+### Independent audit (separate agent; not self-review)
+
+**First pass: 0 BLOCKER, 1 HIGH, 2 MEDIUM, 6 LOW.**
+- H1: `_kill_group` sent no SIGKILL once the leader had ended, so a child that ignored SIGTERM survived.
+- M1: the `process-left` path was untested.
+- M2: the `sha256sum` check swallowed a left process and interrupts.
+
+All three were fixed, together with L1 (comment), L2 (wording and README for ssh and upload), and L5 (a test that proved less than its name).
+
+**Targeted re-audit: 0 BLOCKER, HIGH or MEDIUM.** Every fix was confirmed by code and by probe. Of its LOW items:
+- L-a (no regression test for an interrupted check) and L-b (a weak hook test) are now fixed.
+- Left as they are:
+  - L-c: an interrupt during the kill (pre-existing);
+  - L-d: up to 5 s more before SIGKILL;
+  - L3: a healthy download that ends near the total limit fails its check (fail-closed);
+  - L4: the stall clock includes the IAP and ssh set-up;
+  - L6: uploads unchanged.
+
+NOT VERIFIED (both passes): `.part` growth with the real gcloud scp.

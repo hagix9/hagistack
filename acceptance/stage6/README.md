@@ -13,6 +13,23 @@ one file back from a node of the run:
 - The remote path must be absolute and plain, and NAME a plain file name.
 - Like `ssh` and `upload`, it runs only under the guards (ssh-keys baseline, cost
   and time limits, lock).
+- It stops when no byte has arrived for `HS6_DOWNLOAD_STALL` seconds (default 120;
+  the size of the local `.part` file is the measure, not a live process or log
+  output), or after `HS6_DOWNLOAD_TIMEOUT` seconds in all (default 1800), even while
+  bytes still arrive. Outside the tests the values are kept to 30..600 s and
+  60..3600 s. `HS6_REMOTE_TIMEOUT` (14400 s) applies to ssh steps and uploads only.
+  The node's `sha256sum` check gets what is left of the download's time, at most
+  the stall time.
+- A stopped download kills its whole process group (gcloud, ssh, the IAP helper):
+  SIGTERM, then SIGKILL unless every member (not only gcloud) has ended. It checks
+  that no process of the group is left, and deletes the `.part` file. The remote
+  log records why it stopped (`stalled`, `total-timeout` or a guard), the seconds
+  elapsed, the bytes received, and an IAP `ConnectionReconnectTimeout` if gcloud
+  reported one. If a process of the group survives SIGKILL (also of the
+  `sha256sum` check, or of a stopped ssh step or upload), the harness exits 5 and
+  records a stop that blocks every further step. There is no automatic retry.
+  A step that `requires_downloads` the file is refused, so `install` cannot follow
+  a failed `candidate.tar` download.
 
 **It is dry-run unless the Owner approved the run.** Without an approval file, every
 command prints the gcloud calls it would make and calls nothing, not even read-only
