@@ -338,6 +338,34 @@ class NodeScriptText(unittest.TestCase):
                                    capture_output=True, text=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
                 self.assertEqual((r.returncode, r.stdout.strip()), (0, want), text)
 
+    def test_traceback_count_reads_oslo_log_lines(self):
+        # journal lines as journalctl -o cat printed them in s66r4a: oslo.log puts
+        # the date, pid, level and module before the header, so '^Traceback'
+        # counted 0 there; continuation lines of one traceback count once
+        f = "traceback_count() {" + self.src.split("traceback_count() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        oslo = ("2026-11-15 02:00:52.963 300185 ERROR ovsdbapp.backend.ovs_idl.transaction [-] Traceback (most recent call last):\n"
+                "2026-11-15 02:00:52.963 300185 ERROR ovsdbapp.backend.ovs_idl.transaction   File \"/usr/lib/x.py\", line 1, in run\n"
+                "2026-11-15 02:00:52.963 300185 ERROR ovsdbapp.backend.ovs_idl.transaction RowNotFound: Cannot find Chassis_Private\n")
+        nova = ("2026-11-15 02:01:34.280 300453 ERROR nova Traceback (most recent call last):\n"
+                "2026-11-15 02:01:34.280 300453 ERROR nova AttributeError: 'ComputeManager' object has no attribute 'rpcserver_alt'\n")
+        plain = "Traceback (most recent call last):\n  File \"/usr/bin/x\", line 1\nValueError: x\n"
+        cases = [
+            (oslo, "1"),
+            (oslo + nova + plain, "3"),
+            ("2026-11-15 01:56:16.483 300185 WARNING neutron.agent.ovn.metadata.agent [-] Using br-int instead.\n", "0"),
+            ("a line that mentions a Traceback in words\n", "0"),
+            ("", "0"),
+        ]
+        for text, want in cases:
+            r = subprocess.run(["bash", "-c", "set -uo pipefail\n" + f + "traceback_count"], input=text,
+                               capture_output=True, text=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), text)
+
+    def test_the_accept_counts_tracebacks_with_traceback_count(self):
+        acc = self.src.split("s_accept() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("| traceback_count)", acc)
+        self.assertNotIn("'^Traceback'", self.src)
+
     def test_the_evidence_never_copies_hagistack_etc(self):
         ev = self.src.split("s_evidence() {", 1)[1].split("\n}\n", 1)[0]
         self.assertNotIn("cp -p /etc/hagistack", ev)

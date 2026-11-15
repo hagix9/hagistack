@@ -550,3 +550,15 @@ The accept restarts the 14 units one after another, in name order.
   2. The traceback NOTE undercounts (finding 1) and needs fixing before its number is used.
   3. Finding 2 is recorded as known, recovered, pre-existing restart behaviour.
 - Push, merge, tag and Release still need the Owner's separate explicit approval.
+
+## Fix after run s66r4a: the traceback count
+
+`s66-node.sh` now counts tracebacks with `traceback_count`, which looks for `Traceback (most recent call last):` anywhere on a line. The old pattern looked only at the start of a line. A chained exception counts once per header. The function prints one number, also `0`, and exits 0.
+
+- On s66r4a's retained `journal-at-evidence-{neutron,openstack}-*` files it counts 20. The old pattern counts 0 on the same text with the journal prefix removed.
+- Tests in `test_s66_node`:
+  - The function is run under bash on oslo.log lines copied from s66r4a, a plain Python traceback, and three cases that must give 0.
+  - The accept is checked to use the function.
+  - With the old pattern put back in a copy, both tests fail.
+- No check result depends on this NOTE, and nothing else in the accept changes. The real-node count is not verified until the next GCE run.
+- This is condition 2 of the s66r4a verdict, fixed locally.

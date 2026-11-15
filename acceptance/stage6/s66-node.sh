@@ -371,6 +371,16 @@ ping_received() {
     sed -n 's/^[0-9][0-9]* packets transmitted, \([0-9][0-9]*\) \(packets \)\{0,1\}received.*/\1/p' "$1" | sed -n 1p
 }
 
+# traceback_count: the number of Python tracebacks in a journal read on stdin.
+# oslo.log writes "<date> <pid> ERROR <module> Traceback (most recent call
+# last):", so the header is matched anywhere on the line, not only at its start.
+# The earlier pattern, anchored at the line start, matched none of these:
+# s66r4a reported 0 for 20.
+# A chained exception counts once per header. The output is always one number.
+traceback_count() {
+    grep -c 'Traceback (most recent call last):' || true
+}
+
 guest_checks() {  # guest_checks <label> <name> [<name2>]
     local l="$1" ip1 ip2 iid
     ip1="$(guest_boot "$2")"
@@ -504,7 +514,7 @@ s_accept() {
     check "0 failed units" [ "$(systemctl --failed --no-legend --plain | grep -c .)" -eq 0 ]
     local bad; bad="$(installed_mismatch)"
     check "still only the new set's packages (header check, after the documentation install)" [ -z "$bad" ]
-    local tb; tb=$(journalctl -b --no-pager -o cat -u 'openstack-*' -u 'neutron-*' 2>/dev/null | grep -c '^Traceback')
+    local tb; tb=$(journalctl -b --no-pager -o cat -u 'openstack-*' -u 'neutron-*' 2>/dev/null | traceback_count)
     note "$tb Python tracebacks in the OpenStack and Neutron journals since boot (examined off the node only by count)"
 }
 
