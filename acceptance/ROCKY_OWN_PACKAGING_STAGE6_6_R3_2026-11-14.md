@@ -481,3 +481,72 @@ Verdict: NO-GO.
   - L3: the nodocs parse check does not parse `.scss` (a broken file would fail at `compress`).
   - L5: the material theme's `$icon-font-path: "../icons/fonts/"` names no collected files. Upstream, out of scope; `s66_web` checks the default theme only.
 - NOT VERIFIED (blocks final acceptance until the GCE run): the real-node results listed above.
+
+## GCE run s66r4a (commit `572664f`, conditions `ee012a74…4a130`)
+
+Owner approval: "s66r4a ee012a74 承認" in chat on 2026-11-15 (format 4 dev record `2a9cfb46…695d`, not signed; the harness cannot verify a chat approval cryptographically). One n2-standard-8, Rocky 10.2 x86_64 (image rocky-linux-10-v20261110), pd-standard 100 GB, asia-northeast1-a, own VPC and Cloud NAT. Uploaded tree `bf89236d…`.
+
+| Step | Result |
+|---|---|
+| preflight, build, release, nodocs, pack | PASSED: 69 packages, 195 RPMs, 69 SRPMs. The two release candidates are byte-identical. Candidate `77e03b5c…4197`, evidence-build `3a78453b…5e30` |
+| install | PASSED: all-in-one rc=0, 496 s |
+| accept | PASSED, 0 failed checks |
+| evidence | PASSED: 47 diag files, 0 withheld; 14 secret values looked for, none found. Evidence-final `9fd45e20…cb7c` |
+| teardown, residual | All 7 resources deleted; "none of run s66r4a left"; watch ended |
+
+The harness estimate is US$1.63, of which US$0.54 is assumed. Elapsed time 2.23 h. This is an estimate, not a bill.
+
+**The R4 fixes on the real node (evidence files read).**
+- release check (`make-rpm-release.1.out`):
+  - No RPM carries an OpenStack logo. The dashboard and every HTML documentation tree carry Hagistack's.
+  - This check now includes the new stylesheet `url()` target check and the dashboard `$icon-font-path` check.
+  - Set identity `9b9618ab…0c64`.
+- nodocs: 36 installed files carry the mark, the same with and without docs (34 in s66r3d). The two new ones are `openstack_dashboard/themes/default/_variables.scss` and `static/themes/default/_variables.scss`, both carrying the `//` mark. The parse check passed.
+- Horizon (`horizon-web.{before,after}-restart.out`):
+  - All five `glyphicons-halflings-regular.{eot,woff2,woff,ttf,svg}` load from `/static/horizon/lib/bootstrap_scss/fonts/bootstrap/` with HTTP 200, before and after the restart.
+  - The Hagistack logos are in place.
+  - `assets-404.txt` is empty.
+  - The httpd journal has no error or traceback lines, so pyscss accepted the leading `//` line and `compress` succeeded.
+- Documentation (`docs-web.out`):
+  - `side-note-pointer.gif` is not requested.
+  - The Hagistack doc logos (svg and png, under both the `logo-*` and `openstack-logo-*` names) answer HTTP 200.
+- Chassis (`state-{before,after}-restart.txt`): the OVN chassis is named after the host in the southbound DB and in `system-id.conf`, before and after the restart. After the restart:
+  - Both agents are alive: the OVN Metadata agent and the OVN Controller Gateway agent.
+  - The router gateway is still `gateway chassis: [hagistack-s6-s66r4a-n1]`.
+  - `cr-lrp-…` is still bound to that chassis.
+- Guests:
+  - g1: SSH with the metadata-injected key works, and it reads instance-id `i-00000001` from the metadata service.
+  - g3, after the restart: SSH works, and it reads instance-id `i-00000003`.
+- Ping: `diag/ping-before-restart.txt` holds `5 packets transmitted, 5 received`, and the check counted 5/5.
+- Not in the plan, so not verified: guest-to-guest traffic after the restart. Only g3 was checked after the restart (SSH and metadata), and no ping was sent then.
+
+**Finding 1: the traceback count in the accept NOTE is wrong.**
+- The accept NOTE reported "0 Python tracebacks". The counter is `grep -c '^Traceback'` on `journalctl -o cat`. oslo.log puts `<date> <pid> ERROR <module>` before `Traceback (most recent call last):`, so the counter never matches.
+- In the retained journals (`journal-at-evidence-*`) the real count is 20:
+  - nova-compute: 17
+  - nova-conductor: 1
+  - neutron-ovn-metadata-agent: 2
+- The NOTE is informational and no check depends on it. However, the evidence states a false number. This is a defect in `s66-node.sh` and is not fixed in this run.
+
+**Finding 2: errors during the restart loop, all recovered; the same in s66r3d.**
+The accept restarts the 14 units one after another, in name order.
+- nova-compute:
+  - The old process took 90 s to stop and was killed with SIGKILL. The new one started at 01:57:50.
+  - nova-conductor was restarted next (01:57:50 to 01:59:20; its stop also timed out at 90 s).
+  - The new nova-compute's `init_host` timed out with `MessagingTimeout` at 01:58:54.
+  - It then exited with status 1 at 02:01:34, with an `AttributeError: 'ComputeManager' object has no attribute 'rpcserver_alt'` raised in `stop()`.
+  - systemd restarted it at 02:01:39 (restart counter 1). That process (PID 301515) ran until the evidence step, and g3 was scheduled on it at 02:03.
+  - nova-conductor's own stop also raised `AttributeError: 'NoneType' object has no attribute 'stop'`.
+- Placement: nova-compute logged `ECONNREFUSED` to Placement at 01:55:42, while httpd was restarting (01:55:33 to 01:55:43).
+- neutron-ovn-metadata-agent logged `RowNotFound: Cannot find Chassis_Private with name=hagistack-s6-s66r4a-n1` at 02:00:52, while ovsdb-server and ovn-controller were restarting (02:00:50 to 02:00:53). It reconnected and did a full sync at 02:00:53–54.
+- All this happened inside the restart loop. The after-restart checks ran afterwards and all passed.
+- s66r3d's evidence shows the same nova-compute `MessagingTimeout` and systemd restart, and the metadata agent `RowNotFound`. So this predates R4, which changed only the stylesheets and the Sass variables.
+- The causes are identified as the restart order and Nova's and Neutron's upstream behaviour. Hagistack's packaging is not changed.
+
+**Verdict for the R4 acceptance: CONDITIONAL GO (technical; not approval to publish).**
+- Every item the R4 instruction asked the GCE run to confirm passed on the real node.
+- Conditions:
+  1. Guest-to-guest traffic after the restart is not verified (not in the plan).
+  2. The traceback NOTE undercounts (finding 1) and needs fixing before its number is used.
+  3. Finding 2 is recorded as known, recovered, pre-existing restart behaviour.
+- Push, merge, tag and Release still need the Owner's separate explicit approval.
