@@ -265,6 +265,21 @@ class Helpers(unittest.TestCase):
         finally:
             os.remove(t.name)
 
+    def test_times_saved_by_one_step_are_read_back_by_the_next(self):
+        # s66r5b: '%s=%s' wrote "T_CLUSTER_END=1794759665=", and after-reboot stopped on the arithmetic
+        f = "\n".join(l for l in SRC.splitlines() if l.startswith(("save_times(){", "load_times(){"))) + "\n"
+        out = tempfile.mkdtemp(prefix="s67t-", dir=os.environ.get("TMPDIR"))
+        try:
+            script = f + ('OUT="$1"; save_times T_RESTART=11 T_RECOVERED=22; save_times T_CLUSTER_END=33\n'
+                          'unset T_RESTART T_RECOVERED T_CLUSTER_END; load_times\n'
+                          'echo "$T_RESTART|$T_RECOVERED|$T_CLUSTER_END|$(( 100 - T_CLUSTER_END ))"')
+            r = self.bash(script, out)
+            self.assertEqual(r.stdout.strip(), "11|22|33|67", r.stderr)
+            with open(os.path.join(out, "cluster-times.env")) as t:
+                self.assertEqual(t.read(), "T_RESTART=11\nT_RECOVERED=22\nT_CLUSTER_END=33\n")
+        finally:
+            shutil.rmtree(out)
+
     def test_the_expected_names_are_hagistacks_compute_keys(self):
         with open(os.path.join(HERE, "..", "..", "rocky10.2", "hagistack")) as f:
             hs = f.read()

@@ -247,3 +247,89 @@ All three were fixed, together with L1 (comment), L2 (wording and README for ssh
   - L6: uploads unchanged.
 
 NOT VERIFIED (both passes): `.part` growth with the real gcloud scp.
+
+## GCE run s66r5c (all-in-one re-run, commit be1599a): PASSED
+
+Approved in chat with s66r5b ("両方を承認", conditions 2d60e230…). It ran under a new run id and is not a retry of s66r5a.
+
+| Step | Result |
+|---|---|
+| upload (tree sha256 cf88f021…, verified) | done |
+| extract, preflight, build, release, nodocs, pack | PASSED |
+| downloads | all verified, all well inside the new limits: candidate.tar 161 003 520 bytes in 51.0 s (sha256 a0573b4d…); evidence-build.tar 15 237 120 bytes in 8.1 s; evidence-final.tar 17 172 480 bytes in 6.7 s |
+| install | PASSED, 0 failed checks |
+| accept | PASSED, 111 PASS, 0 failed checks |
+| evidence | PASSED |
+| teardown, residual | complete; "none of run s66r5c left"; watch ended rc 0 |
+
+Real `gcloud compute scp` with the progress check ran three downloads to the end with no false stall. This settles the earlier NOT VERIFIED item: no download was stopped while bytes arrived.
+
+All-in-one items checked in the evidence (`evidence-final.tar`):
+- **Post-restart guest ping.** `after-restart: s66-g3 pings s66-g1`: 5/5 received, rtt 0.3–0.9 ms (`diag/ping-after-restart.txt`). Before the restart, s66-g1 pinged s66-g2 5/5.
+- **Traceback windows** (`diag/tracebacks-accept.txt`):
+  - 0 before the restart.
+  - 5 between the restart and recovery:
+    - neutron-ovn-metadata-agent, 2: `RowNotFound: Cannot find Chassis_Private` right after ovn-controller restarted;
+    - nova-compute, 2: one in the libvirt driver while stopping, and an `oslo_messaging MessagingTimeout` while the conductor restarted;
+    - nova-conductor, 1: `AttributeError: 'NoneType' object has no attribute 'stop'` during RPC server stop.
+  - **0 after recovery**, judged after at least 120 s of observation.
+
+  The restart-time errors are transient: they occur while units stop and reconnect, and none continues after recovery. The judgement does not fail on their existence, as the R5 instruction asks.
+- `failed-units.txt` is empty.
+
+## GCE run s66r5b (controller n1 + compute n2, commit be1599a): stopped in after-reboot on a script defect
+
+Approved in chat with s66r5c ("両方を承認", conditions d543b7e5…).
+
+The first `create-node n1` was refused (`approval refused: tracked files are changed`). The executing agent had edited this record in the checkout while the run started, and only the network existed at that point. The edit was saved as a patch and the checkout restored. The same approved run then continued from `create-node n1`: no node had been created, and nothing was re-created.
+
+| Node | Step | Result |
+|---|---|---|
+| n1 | upload, extract, preflight, build, release, nodocs, pack | PASSED; evidence-build.tar verified (15 237 120 bytes in 6.4 s) |
+| n2 | create, upload, extract, preflight | PASSED |
+| n1 | controller | PASSED; a guest with no compute node gets `NoValidHost` (the 4 conductor tracebacks before the restart in the cluster window) |
+| n2 | compute | PASSED, 29 PASS |
+| n1 | cluster | PASSED (details below) |
+| n2 | reboot | PASSED |
+| n1 | after-reboot | **NOT PASSED**: every check up to "SSH to s67-g3 over its floating IP" passed, then the script stopped at `s67-cluster.sh:548` (`1794760001 - 1794759665= : attempted assignment to non-variable`) |
+| n2, n1 | rerun, final | not run |
+| n1, n2 | evidence-c, evidence-n | PASSED; evidence-cluster.tar (16 793 600 bytes) and evidence-compute.tar (348 160 bytes) verified |
+| | teardown, residual | complete; "none of run s66r5b left"; watch ended rc 0 |
+
+About 2 h 10 min of n1 and 30 min of n2.
+
+**Cause.** `save_times` wrote its `NAME=VALUE` arguments with `printf '%s=%s\n'`. A single argument therefore became `T_CLUSTER_END=1794759665=`, and the arithmetic in the after-reboot check failed. This is a defect of the acceptance script, not of Hagistack. **Fix:** `printf '%s\n'`, with a test that saves and reads back two calls. The old line fails the test (`33=`).
+
+**What the real nodes showed** (`evidence-cluster.tar`, `evidence-compute.tar`, step logs):
+- **Controller without compute:** no nova-compute or libvirt packages, no compute services or hypervisors. The firewall ports follow README. compute-secrets holds the five compute keys and the RPM set id; rpm-bundle refuses to overwrite. The handoff completed.
+- **Compute:** compute-add --controller-ip with --rpm-source bundle; the set was verified. No database or admin credential. The chassis is the host name; ovn-remote is the controller's SB DB; the encap IP is its own address; the MTU equals the controller's.
+- **Registration:**
+  - Nova lists n2 as the only hypervisor, up, and no nova-compute runs on the controller.
+  - Placement has a provider.
+  - The OVN chassis are exactly n1 and n2. n1 is the gateway; n2 is not a gateway, and its Geneve endpoint is 10.86.0.3.
+  - The OVN Controller Gateway agent (n1) and the OVN Controller and Metadata agents (n2) are alive.
+- **Guests on n2:**
+  - s67-g1 and s67-g2 were reachable over floating IPs through br-ex.
+  - SSH worked with the metadata-injected key, and each read its instance-id from the metadata service on n2.
+  - g1 pinged g2 5/5, and a 2 MB stream crossed the Geneve tunnel whole.
+- **Controller restart:** the controller's 12 units were restarted. Registration passed again, the new guest g3 was reachable, and g3 pinged g1 5/5.
+  - Tracebacks (`diag/tracebacks-cluster.txt`): 4 before the restart (the NoValidHost test above), 1 during the restart (nova-conductor), **0 after recovery**.
+- **Compute reboot:** n2 was seen down, then nova-compute was up again with the same chassis pair and alive agents. The guests came back SHUTOFF (libvirt-guests is not enabled on Rocky; NV-C as expected); they were started, became ACTIVE, and answered SSH.
+- **Not judged** because the script stopped:
+  - the guest-uptime check that the host went down;
+  - the after-reboot ping;
+  - the compute-add re-run (no configuration change);
+  - g4 after the re-run;
+  - the traceback windows of the re-run and final.
+
+### The save_times fix: tests and independent check
+
+- Change: `save_times` writes one `NAME=VALUE` per line. s_final compares the traceback count with `= 0`, as the other judgements do (audit L1), so an unreadable journal fails cleanly.
+- Tests: `test_s67_cluster`, `test_s66_node`, `test_s66_web` and `test_hs6.CommittedRunPlan` pass on 3.9 and on 3.13. `bash -n s67-cluster.sh` passes.
+- Independent check (separate agent): it confirmed the root cause by reproducing the exact message, and confirmed the fix at every save/load site. It found **0 BLOCKER, HIGH or MEDIUM** in the parts that never ran on a real node (the rest of after-reboot, rerun, final, evidence).
+  - L1 is fixed.
+  - L2 is not changed: validating the loaded times before the arithmetic. The values are numbers now.
+- Still to be seen on a real node:
+  - that the compute-add re-run changes no configuration;
+  - no controller traceback after n2's reboot and re-run;
+  - no failed controller units at the end.

@@ -105,7 +105,7 @@ firewall_has() {
     for p in $1; do [[ "$have" == *" $p/tcp "* ]] || return 1; done
     for p in $2; do [[ "$have" == *" $p/udp "* ]] || return 1; done
 }
-save_times(){ printf '%s=%s\n' "$@" >> "$OUT/cluster-times.env"; }
+save_times(){ printf '%s\n' "$@" >> "$OUT/cluster-times.env"; }   # each argument is NAME=VALUE
 load_times(){ [ -f "$OUT/cluster-times.env" ] && . "$OUT/cluster-times.env"; }
 
 # controller side: guests are reached through floating IPs from this host, so
@@ -566,7 +566,7 @@ s_final() {
     local t="${T_AFTER_REBOOT:-}" a
     [ -n "$t" ] || { fail "the after-reboot step recorded no time"; return 0; }
     a="$(tracebacks_between "$t" "")"
-    check "final: no Python traceback on the controller since the compute node came back ($a in $(( $(date +%s) - t )) s)" [ "$a" -eq 0 ]
+    check "final: no Python traceback on the controller since the compute node came back ($a in $(( $(date +%s) - t )) s)" [ "$a" = 0 ]
 }
 
 # --------------------------------------------------------------- evidence --
