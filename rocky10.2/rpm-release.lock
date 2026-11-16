@@ -1,22 +1,15 @@
-# The GitHub Release that `hagistack --rpm-source github` installs from.
-#
-# This file is the trust anchor for downloaded RPMs. hagistack refuses an asset
-# whose SHA-256 or size differs from ASSET_SHA256 / ASSET_SIZE, and an RPM set
-# whose identity (SHA-256 of its RPM-SHA256SUMS) differs from RPM_SET_SHA256.
-# A checksum file published next to the asset is never trusted on its own: it
-# is as replaceable as the asset. What you trust is this file, from the Git
-# checkout you are running.
-#
-# It is parsed as KEY=VALUE data, never sourced. It is written by
-# rocky10.2/make-rpm-release.sh when a release is prepared. It is committed only
-# for a candidate that has been audited and approved for publication, in the
-# commit the release tag points to; the release is then created from that tag
-# and its files uploaded. Until they are uploaded, a download fails and
-# hagistack stops.
-#
-# LOCK_STATUS=unpublished means no release is pinned: --rpm-source github stops
-# with an explanation and downloads nothing. Use --rpm-source build or
-# --repo-url until a release is published.
+# Candidate lock for release rocky10.2-rpms-2026.1, written by make-rpm-release.sh.
+# Publication order, once the candidate is audited and the Owner approves:
+# commit this file as rocky10.2/rpm-release.lock, tag that commit rocky10.2-rpms-2026.1, then
+# create the release from the tag and upload the candidate's files. Never commit
+# it for a candidate that will not be published.
 LOCK_FORMAT=1
-LOCK_STATUS=unpublished
+LOCK_STATUS=published
+RELEASE_TAG=rocky10.2-rpms-2026.1
 BASE_URL=https://github.com/hagix9/hagistack/releases/download
+ASSET_NAME=hagistack-rpms-rocky10.2-rpms-2026.1-el10-x86_64.tar
+ASSET_SHA256=565a10133cbb26b6f871f53514c7f8ebc0b3329c206a8b0ed7d2b93690ab713b
+ASSET_SIZE=107929600
+RPM_SET_SHA256=0b61c809ad2e90d5ab07502ae0732aaf61475278b032585cc98d9418c1f62000
+RPM_COUNT=195
+MANIFEST_SHA256=b8d52d0f1a07b917c63b751f460b335711cb025a2ed2c96f101fb35158719fd0

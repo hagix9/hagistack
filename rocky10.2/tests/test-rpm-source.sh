@@ -199,8 +199,13 @@ printf 'LOCK_FORMAT=1\nLOCK_STATUS=unpublished\n' > "$T/lock.unpub"
 run_hs g12 "RPM_SOURCE=github RPM_LOCK_FILE=$T/lock.unpub; rpm_prepare_github"
 expect_fail "github: unpublished lock stops with guidance" "no published RPM release"
 no_build_no_dnf "github: unpublished lock"
-run_hs g12b "RPM_SOURCE=github; rpm_prepare_github"
-expect_fail "github: the shipped rpm-release.lock is unpublished" "no published RPM release"
+# The shipped lock pins the published release. Pointed at a server that does not
+# have it, it must pass every check before the download (format, status, keys,
+# values, the manifest of this checkout) and stop only at the download.
+sed "s#^BASE_URL=.*#BASE_URL=http://127.0.0.1:$PORT/absent#" "$HERE/../rpm-release.lock" > "$T/lock.shipped"
+run_hs g12b "RPM_SOURCE=github RPM_LOCK_FILE=$T/lock.shipped; rpm_prepare_github"
+expect_fail "github: the shipped rpm-release.lock passes every check up to the download" "could not download http://127.0.0.1:$PORT/absent/"
+no_build_no_dnf "github: shipped lock, release not reachable"
 
 # 13. manifest mismatch
 write_lock "$T/lock.man" MANIFEST_SHA256=2222222222222222222222222222222222222222222222222222222222222222

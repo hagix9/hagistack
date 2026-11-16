@@ -37,7 +37,7 @@ Hagistack installs **OpenStack 2026.1 (Gazpacho)** on **Ubuntu Server 26.04 LTS*
 |---|---|---|
 | Architecture | amd64 (verified). arm64 is accepted by preflight but has **not been verified** | x86_64 only (other architectures are refused) |
 | OpenStack | 2026.1 Gazpacho | 2026.1 Gazpacho |
-| Package source | The Ubuntu 26.04 archive | RPMs built from pinned 2026.1 release tarballs. `hagistack` downloads a pinned release (none published yet) or builds them on the host with `--rpm-source build` |
+| Package source | The Ubuntu 26.04 archive | RPMs built from pinned 2026.1 release tarballs. `hagistack` downloads the pinned release (`rocky10.2-rpms-2026.1`) or builds them on the host with `--rpm-source build` |
 | Verified | Two nodes on Google Compute Engine, 2026-09-28 | Two nodes on Google Compute Engine, 2026-09-29 |
 
 Other OS versions are refused by preflight. One exception: the Rocky script
@@ -79,8 +79,8 @@ The full policy, including the rules for coding agents, is in
 - **[Ubuntu Server 26.04 LTS →](ubuntu26.04/README.md)**
   Packages come from the Ubuntu archive. There is nothing to build first.
 - **[Rocky Linux 10.2 →](rocky10.2/README.md)**
-  Nobody publishes OpenStack 2026.1 for EL10. **You must build the OpenStack RPM
-  repository before you can install.**
+  Nobody else publishes OpenStack 2026.1 for EL10. `hagistack` downloads
+  Hagistack's pinned RPM release, or builds the RPMs on the host.
 
 ## Quick start
 
@@ -91,9 +91,10 @@ The full policy, including the rules for coding agents, is in
    - an existing interface to name as the provider NIC;
    - the provider network values: CIDR, gateway and floating-IP range.
 
-   On Rocky, nothing else: `hagistack` obtains the RPMs itself. Until an RPM
-   release is published, add `--rpm-source build` (it builds on the host and
-   takes hours) or `--repo-url` for a repository you already have.
+   On Rocky, nothing else: `hagistack` obtains the RPMs itself, by default from
+   the release `rocky10.2-rpms-2026.1` pinned in the checkout. `--rpm-source build` builds them
+   on the host instead (it takes hours); `--repo-url` uses a repository you
+   already have.
 3. **Run preflight only:**
    `sudo ./hagistack all-in-one --check …`
    It validates every setting and prints the resolved configuration. It changes

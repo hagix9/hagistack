@@ -168,10 +168,11 @@ different inputs.
 GitHub Releases are not treated as a DNF repository: the asset is one tarball,
 fetched once.
 
-`LOCK_STATUS=unpublished` (the state shipped today) makes `github` stop with
-guidance and download nothing. A release is never treated as published until
-the lock says so, and the lock is committed only after the release exists and
-has been audited. `--rpm-lock-file` exists to test a mirror (for example a
+`LOCK_STATUS=unpublished` (the state shipped before `rocky10.2-rpms-2026.1`) makes `github`
+stop with guidance and download nothing. A release is never treated as
+published until the lock says so. The lock of an audited, approved candidate is
+committed, that commit is tagged, and the release is created from the tag (the
+order in `rocky10.2/RELEASE-README.md`). `--rpm-lock-file` exists to test a mirror (for example a
 local HTTP server before publication); it is a deliberate operator choice.
 
 GitHub limits (checked 2026-11): a release asset must be under 2 GiB; a release

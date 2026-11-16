@@ -13,9 +13,11 @@ English | [日本語](README.ja.md)
 > use a repository you already run (`--repo-url`). You do not need to build RPMs
 > or create a DNF repository by hand.
 >
-> **Status, 2026-11-09:** no RPM release has been published yet, so the
-> default `github` source stops with an explanation. Use `--rpm-source build`
-> (or `--repo-url`) until a release is published.
+> **Status:** the RPM release `rocky10.2-rpms-2026.1` is published and pinned in
+> `rpm-release.lock`. The default `github` source downloads it and verifies it
+> against that file. Checkouts older than the tag `rocky10.2-rpms-2026.1` pin no release.
+> Start from the tag:
+> `git clone --branch rocky10.2-rpms-2026.1 https://github.com/hagix9/hagistack.git`
 
 ## Overview
 
@@ -67,6 +69,10 @@ What gets installed:
 - **The 2026.1 RPMs**: nothing to prepare. `hagistack` downloads, builds or
   unpacks them (see [RPM sources](#rpm-sources)). `--rpm-source build` needs
   about 30 GB of extra disk, internet access to the build inputs, and hours.
+- **Internet access to GitHub** for the default `github` source: the release
+  asset (about 108 MB) is downloaded from
+  `https://github.com/hagix9/hagistack/releases/download/`. Each node that uses
+  `github` downloads it once and reuses it on re-runs.
 - **Internet access for dependency repositories.** Hagistack adds the following:
   - EPEL 10, and it enables CRB;
   - the CentOS Stream 10 NFV SIG mirror, for Open vSwitch and OVN;
@@ -400,7 +406,7 @@ list them.
 An example `hagistack.env` (the values are placeholders):
 
 ```sh
-RPM_SOURCE=build
+# RPM_SOURCE=github is the default (the published release); build, bundle or repo-url otherwise
 EXT_NIC=eth1
 PROVIDER_CIDR=192.0.2.0/24
 PROVIDER_GATEWAY=192.0.2.1
@@ -412,7 +418,7 @@ FLOATING_END=192.0.2.200
 
 ```sh
 cd hagistack/rocky10.2
-sudo ./hagistack all-in-one --check --rpm-source build \
+sudo ./hagistack all-in-one --check \
     --ext-nic eth1 --provider-cidr 192.0.2.0/24 --provider-gateway 192.0.2.1 \
     --floating-start 192.0.2.100 --floating-end 192.0.2.200
 ```
@@ -443,9 +449,9 @@ installer reaches them:
 ## All-in-one installation
 
 ```sh
+sudo ./hagistack all-in-one                      # plus your settings; RPMs from the published release
+# or build the RPMs on this host instead (hours):
 sudo ./hagistack all-in-one --rpm-source build   # plus your settings
-# once a release is published, simply:
-sudo ./hagistack all-in-one                      # plus your settings
 ```
 
 The phases run in this order:
@@ -495,7 +501,7 @@ and the exact commands for adding a compute node.
 ## Controller-only installation, then a local hypervisor
 
 ```sh
-sudo ./hagistack controller --rpm-source build   # plus the same settings as all-in-one
+sudo ./hagistack controller                      # plus the same settings as all-in-one
 ```
 
 `controller` runs every all-in-one phase except nova-compute: Keystone, Glance,
@@ -671,8 +677,8 @@ run.
   sign-in still worked.
 
 That result came from the first version of `tests-horizon-login.sh`. The current,
-stricter version has been checked against a local fixture only. **It has not
-yet been run against a real Horizon.**
+stricter version passed against a real Horizon on GCE on 2026-11-15 (run s66r5c,
+with the RPMs of the release), before and after a restart of the services.
 
 ## Re-running Hagistack
 
@@ -754,9 +760,9 @@ The options for `all-in-one` and `compute-add` are listed under
 
 ## Troubleshooting
 
-- **"no published RPM release is pinned".** No release has been published for
-  this checkout yet. Use `--rpm-source build`, or `--repo-url` with a
-  repository you have.
+- **"no published RPM release is pinned".** This checkout is older than the
+  tag `rocky10.2-rpms-2026.1` and pins no release. Use a checkout of that tag (or later), or
+  `--rpm-source build`, or `--repo-url` with a repository you have.
 - **The download or a verification fails.** Nothing was installed. Hagistack
   does not fall back to building; fix the network or the mirror and re-run, or
   choose `--rpm-source build` yourself.
@@ -821,6 +827,16 @@ server). Guests booted on every hypervisor and pinged each other across nodes;
 re-runs exited 0 and restarted nothing. A real GitHub Release has not been
 published or tested. Details:
 [acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md](../acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md).
+
+**2026-11-15/16 (stage 6-6-R5, `rocky10.2-rpms-2026.1`):** on GCE, `all-in-one` was
+accepted with exactly the RPM set this release publishes (run s66r5c, set
+`0b61c809…`). `controller` plus a remote `compute-add` node was accepted in run
+s66r5d: compute reboot, re-registration, a `compute-add` re-run that changed
+nothing, guests with SSH, metadata and cross-node traffic. s66r5d ran on a
+rebuild from the same sources (the same 195 package versions); the builds are
+not byte-identical, so it is not the exact published binaries. The download from
+the real GitHub Release has not been tested. Details:
+[acceptance/ROCKY_OWN_PACKAGING_STAGE6_6_R5_2026-11-15.md](../acceptance/ROCKY_OWN_PACKAGING_STAGE6_6_R5_2026-11-15.md).
 
 ## Known limitations
 

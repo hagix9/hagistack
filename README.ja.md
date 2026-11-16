@@ -39,7 +39,7 @@ Hagistack は、**Ubuntu Server 26.04 LTS** または **Rocky Linux 10.2** に
 |---|---|---|
 | アーキテクチャ | amd64（検証済み）。arm64 は preflight を通過しますが**未検証**です | x86_64 のみ（それ以外は拒否されます） |
 | OpenStack | 2026.1 Gazpacho | 2026.1 Gazpacho |
-| パッケージの入手元 | Ubuntu 26.04 の公式アーカイブ | 固定した 2026.1 リリース tarball からビルドした RPM。`hagistack` が固定済みリリースをダウンロード（未公開）するか、`--rpm-source build` でホスト上でビルドします |
+| パッケージの入手元 | Ubuntu 26.04 の公式アーカイブ | 固定した 2026.1 リリース tarball からビルドした RPM。`hagistack` が固定済みリリース（`rocky10.2-rpms-2026.1`）をダウンロードするか、`--rpm-source build` でホスト上でビルドします |
 | 検証 | Google Compute Engine 上の 2 ノード、2026-09-28 | Google Compute Engine 上の 2 ノード、2026-09-29 |
 
 上記以外の OS バージョンは、preflight で拒否されます。
@@ -82,8 +82,8 @@ coding agent 向けの規則を含む方針の全文は [docs/CURRENT_GENERATION
 - **[Ubuntu Server 26.04 LTS →](ubuntu26.04/README.ja.md)**
   パッケージは Ubuntu の公式アーカイブから入れます。事前のビルドは不要です。
 - **[Rocky Linux 10.2 →](rocky10.2/README.ja.md)**
-  OpenStack 2026.1 の EL10 向けパッケージはどこも公開していません。
-  **インストールの前に、OpenStack の RPM リポジトリを自分でビルドする必要があります。**
+  OpenStack 2026.1 の EL10 向けパッケージはほかに公開されていません。
+  `hagistack` が Hagistack の固定済み RPM リリースをダウンロードするか、ホスト上で RPM をビルドします。
 
 ## クイックスタート
 
@@ -94,8 +94,8 @@ coding agent 向けの規則を含む方針の全文は [docs/CURRENT_GENERATION
    - provider NIC として指定する、実在するインターフェース
    - provider ネットワークの値（CIDR、ゲートウェイ、Floating IP の範囲）
 
-   Rocky の場合もほかに準備は不要です（`hagistack` が RPM を用意します）。RPM のリリースが
-   公開されるまでは `--rpm-source build`（ホスト上でビルド、数時間）か、手元のリポジトリを `--repo-url` で指定します。
+   Rocky の場合もほかに準備は不要です（`hagistack` が RPM を用意します。既定ではチェックアウトに固定されたリリース `rocky10.2-rpms-2026.1` を使います）。
+   代わりに `--rpm-source build`（ホスト上でビルド、数時間）か、手元のリポジトリを `--repo-url` で指定することもできます。
 3. **preflight だけを実行します。**
    `sudo ./hagistack all-in-one --check …`
    すべての設定を検証し、最終的な設定値を表示します。何も変更しません。

@@ -12,8 +12,9 @@
 > コントローラの RPM の再利用（`bundle`）、手元のリポジトリの利用（`--repo-url`）です。
 > 利用者が RPM をビルドしたり DNF リポジトリを手で作ったりする必要はありません。
 >
-> **2026-11-09 時点：** RPM のリリースはまだ公開していません。そのため既定の `github` は理由を表示して停止します。
-> 公開されるまでは `--rpm-source build`（または `--repo-url`）を使ってください。
+> **現状：** RPM リリース `rocky10.2-rpms-2026.1` を公開し、`rpm-release.lock` に固定しています。既定の `github` はこれをダウンロードし、同ファイルで検証します。
+> タグ `rocky10.2-rpms-2026.1` より前のチェックアウトにはリリースが固定されていません。
+> タグから始めてください：`git clone --branch rocky10.2-rpms-2026.1 https://github.com/hagix9/hagistack.git`
 
 ## 概要
 
@@ -57,6 +58,8 @@ Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入します。対応�
     Hagistack はそのリポジトリを有効にしないためです。
 - **2026.1 の RPM：** 事前準備は不要です。`hagistack` がダウンロード・ビルド・展開します（「[RPM の入手方法](#rpm-の入手方法)」）。
   `--rpm-source build` には追加で約 30 GB のディスク、ビルド入力へのインターネット接続、数時間が必要です。
+- **GitHub へのインターネット接続**（既定の `github` の場合）。リリースの asset（約 108 MB）を
+  `https://github.com/hagix9/hagistack/releases/download/` からダウンロードします。`github` を使う各ノードが一度ダウンロードし、再実行では再利用します。
 - **依存リポジトリのためのインターネット接続。** Hagistack は次のものを追加します。
   - EPEL 10（あわせて CRB を有効にします）
   - Open vSwitch と OVN のための CentOS Stream 10 NFV SIG のミラー
@@ -345,7 +348,7 @@ Hagistack が追加する依存リポジトリも `gpgcheck=0` です。
 `hagistack.env` の例です（値は仮のものです）。
 
 ```sh
-RPM_SOURCE=build
+# RPM_SOURCE の既定は github（公開リリース）。ほかに build、bundle、repo-url
 EXT_NIC=eth1
 PROVIDER_CIDR=192.0.2.0/24
 PROVIDER_GATEWAY=192.0.2.1
@@ -357,7 +360,7 @@ FLOATING_END=192.0.2.200
 
 ```sh
 cd hagistack/rocky10.2
-sudo ./hagistack all-in-one --check --rpm-source build \
+sudo ./hagistack all-in-one --check \
     --ext-nic eth1 --provider-cidr 192.0.2.0/24 --provider-gateway 192.0.2.1 \
     --floating-start 192.0.2.100 --floating-end 192.0.2.200
 ```
@@ -384,9 +387,9 @@ sudo ./hagistack all-in-one --check --rpm-source build \
 ## all-in-one のインストール
 
 ```sh
+sudo ./hagistack all-in-one                      # ほかの設定もあわせて指定。RPM は公開リリースから
+# 代わりにこのホストで RPM をビルドする場合（数時間）
 sudo ./hagistack all-in-one --rpm-source build   # ほかの設定もあわせて指定
-# リリース公開後は次だけで済みます
-sudo ./hagistack all-in-one                      # ほかの設定もあわせて指定
 ```
 
 phase は次の順に実行されます。
@@ -436,7 +439,7 @@ phase は次の順に実行されます。
 ## controller だけを導入し、あとでローカルにハイパーバイザを追加する
 
 ```sh
-sudo ./hagistack controller --rpm-source build   # all-in-one と同じ設定もあわせて指定
+sudo ./hagistack controller                      # all-in-one と同じ設定もあわせて指定
 ```
 
 `controller` は nova-compute 以外の all-in-one の phase をすべて実行します。
@@ -596,7 +599,7 @@ sudo HZ_URL=http://MGMT_IP/dashboard ./tests-horizon-login.sh
 - `all-in-one` を再実行しても何も再構築・再起動されず、サインインも引き続き成功した
 
 この結果は `tests-horizon-login.sh` の最初の版で得たものです。
-より厳密にした現在の版は、ローカルのフィクスチャで確認しただけで、**実際の Horizon に対してはまだ実行していません。**
+より厳密にした現在の版は、2026-11-15 に GCE 上の実際の Horizon（実行 s66r5c、このリリースの RPM）で、サービス再起動の前後とも合格しました。
 
 ## Hagistack の再実行
 
@@ -675,7 +678,7 @@ rpm options: --rpm-source github|build|bundle|repo-url, --repo-url URL,
 ## トラブルシューティング
 
 - **「no published RPM release is pinned」と出る。**
-  このチェックアウトに対応するリリースはまだ公開されていません。`--rpm-source build` を使うか、手元のリポジトリを `--repo-url` で指定してください。
+  このチェックアウトはタグ `rocky10.2-rpms-2026.1` より古く、リリースを固定していません。そのタグ以降をチェックアウトするか、`--rpm-source build` を使うか、手元のリポジトリを `--repo-url` で指定してください。
 - **ダウンロードや検証に失敗する。**
   何もインストールしていません。Hagistack はビルドへ切り替えません。ネットワークかミラーを直して再実行するか、自分で `--rpm-source build` を選んでください。
 - **「Switching the package set of a running cloud is an upgrade」と出る。**
@@ -735,6 +738,12 @@ Horizon は最後に追加しました。
 すべてのハイパーバイザでゲストが起動し、ノード間で疎通しました。再実行は exit 0 で、再起動はありませんでした。
 実際の GitHub Release は未公開で、未試験です。
 詳細：[acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md](../acceptance/ROCKY_INSTALLER_COMPLETION_ACCEPTANCE_2026-11-09.md)
+
+**2026-11-15/16（stage 6-6-R5、`rocky10.2-rpms-2026.1`）：** GCE 上で、このリリースが公開する RPM セットそのもの（実行 s66r5c、セット `0b61c809…`）で `all-in-one` を受け入れました。
+`controller` とリモートの `compute-add` ノードは実行 s66r5d で受け入れました（compute の再起動、再登録、何も変更しない `compute-add` の再実行、SSH・metadata・ノード間通信を伴うゲスト）。
+s66r5d は同じソース（同じ 195 パッケージのバージョン）からの再ビルドで実行しました。ビルドはバイト単位では一致しないため、公開するバイナリそのものではありません。
+実際の GitHub Release からのダウンロードは未試験です。
+詳細：[acceptance/ROCKY_OWN_PACKAGING_STAGE6_6_R5_2026-11-15.md](../acceptance/ROCKY_OWN_PACKAGING_STAGE6_6_R5_2026-11-15.md)
 
 ## 既知の制約
 
