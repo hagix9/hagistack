@@ -51,9 +51,15 @@ gcloud.
 | `s67-cluster.sh` | stage 6-6-R5 steps for a controller (n1) and a compute node (n2); reuses the helpers of `s66-node.sh` |
 | `test_s66_node.py`, `test_s66_web.py`, `test_s67_cluster.py` | local tests of the node files (control flow, page checks, the handoff) |
 
+## Configuration
+
+- `HS6_PROJECT`: the GCP project ID, required. `hs6.py` and `hs6_approve.py` stop
+  before doing anything if it is unset or not a valid project ID. The approval
+  records the project, so a run approved for one project cannot act in another.
+
 ## Fixed in the code, not on the command line
 
-- Project `<GCP_PROJECT>`, zone `asia-northeast1-a`.
+- Zone `asia-northeast1-a`.
 - Machine types, `pd-standard` boot disks and their sizes (n1 100 GB; n2 60; n3 50;
   n4 50; u1 60).
 - Image family `rocky-linux-10` from `rocky-linux-cloud`. `init` resolves it to one

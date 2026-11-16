@@ -455,6 +455,8 @@ def main(argv=None):
     try:
         if a.setup:
             return setup(a)
+        if not hs6.PROJECT:
+            raise Refused("HS6_PROJECT must name the GCP project (a valid project ID)")
         if a.show and a.dev_record:
             raise Refused("--show and --dev-record are separate steps")
         if not a.run_id or not re.fullmatch(r"[a-z][a-z0-9]{3,7}", a.run_id):

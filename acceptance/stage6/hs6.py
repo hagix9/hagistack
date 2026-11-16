@@ -44,7 +44,14 @@ import tempfile
 import time
 
 # ---------------------------------------------------------------- constants --
-PROJECT = "<GCP_PROJECT>"
+# The GCP project is configuration, not code: it is read from HS6_PROJECT and
+# must be a valid project ID. Unset or malformed, every command stops before
+# anything is read or called (see main()). Approvals bind the project, so a run
+# approved for one project cannot act in another.
+PROJECT_RE = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+PROJECT = os.environ.get("HS6_PROJECT", "")
+if not PROJECT_RE.fullmatch(PROJECT):
+    PROJECT = ""
 ZONE = "asia-northeast1-a"
 REGION = "asia-northeast1"
 IMAGE_PROJECT = "rocky-linux-cloud"
@@ -2208,6 +2215,10 @@ def main(argv=None):
                                         "teardown", "status", "residual", "ssh", "upload", "download", "watch"])
     ap.add_argument("rest", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
+    if not PROJECT:
+        print("STOP: HS6_PROJECT must name the GCP project (a valid project ID); nothing was done",
+              file=sys.stderr)
+        return EXIT_REFUSED
     r = None
     try:
         r = Run(a)

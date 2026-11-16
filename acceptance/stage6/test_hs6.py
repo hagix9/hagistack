@@ -27,6 +27,8 @@ MOCK = os.path.join(HERE, "mock_gcloud.py")
 MOCK_GIT = os.path.join(HERE, "mock_git.py")
 COMMIT = "c" * 40
 sys.path.insert(0, HERE)
+TEST_PROJECT = "example-project-0"   # synthetic; the real project comes from HS6_PROJECT
+os.environ["HS6_PROJECT"] = TEST_PROJECT
 import hs6  # noqa: E402
 
 RID = "t6abc"
@@ -148,6 +150,7 @@ class Base(unittest.TestCase):
                     "HS6_OWNER_SIGNERS": SIGNERS,
                     "CLOUDSDK_CONFIG": os.path.join(self.tmp, "gcloudcfg"), "MOCK_STATE": self.state,
                     "HS6_GCLOUD": self.mockbin, "HS6_TIMEOUT": "10", "HS6_GIT": MOCK_GIT,
+                    "HS6_PROJECT": TEST_PROJECT,
                     "HS6_REGISTRY": os.path.join(self.tmp, "registry"), "MOCK_GIT_REPO": self.repo,
                     "MOCK_GIT_HEAD": self.commit}
         # in-process calls (Protection tests) must not reach the real gcloud either
@@ -1502,6 +1505,35 @@ class R2Teardown(Base):
         self.assertEqual(rc, 0, out)
 
 
+class ProjectSetting(unittest.TestCase):
+    """The GCP project comes only from HS6_PROJECT; unset or malformed stops everything."""
+
+    def _run(self, script, project):
+        e = {"PATH": "/usr/bin:/bin"}
+        if project is not None:
+            e["HS6_PROJECT"] = project
+        with tempfile.TemporaryDirectory() as d:
+            return subprocess.run([sys.executable, "-I", script, "--run-id", RID]
+                                  + (["--state-dir", d, "plan"] if script == HS6 else ["--show"]),
+                                  capture_output=True, text=True, env=e, timeout=60)
+
+    def test_hs6_stops_without_or_with_a_malformed_project(self):
+        for project in (None, "", "Bad_Project", "a", "x" * 31, "proj-"):
+            p = self._run(HS6, project)
+            self.assertEqual(p.returncode, hs6.EXIT_REFUSED, (project, p.stderr))
+            self.assertIn("HS6_PROJECT must name the GCP project", p.stderr)
+            self.assertEqual(p.stdout, "")
+
+    def test_hs6_approve_refuses_without_a_project(self):
+        p = self._run(os.path.join(HERE, "hs6_approve.py"), None)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("HS6_PROJECT must name the GCP project", p.stderr)
+
+    def test_the_configured_project_is_used(self):
+        self.assertEqual(hs6.PROJECT, TEST_PROJECT)
+        self.assertEqual(hs6.P(), "--project=" + TEST_PROJECT)
+
+
 class R2Approval(Base):
     def test_symlinked_approval_refused(self):
         link = os.path.join(self.tmp, "link.json")
@@ -1679,9 +1711,9 @@ class R2Fixes(R2Teardown):
 class NatAutoIp(Base):
     """Cloud NAT allocates its external IP only when a node first sends traffic out
     (seen in the live run h6n121): the run's own NAT IP must not stop the run."""
-    ROUTER = "https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/asia-northeast1/routers/"
+    ROUTER = "https://www.googleapis.com/compute/v1/projects/" + TEST_PROJECT + "/regions/asia-northeast1/routers/"
 
-    def add_ip(self, name, users, region="https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/asia-northeast1"):
+    def add_ip(self, name, users, region="https://www.googleapis.com/compute/v1/projects/" + TEST_PROJECT + "/regions/asia-northeast1"):
         self.set_mock(lambda s: s["res"]["addresses"].update(
             {name: {"name": name, "id": "4242", "users": users, "region": region}}))
 
@@ -1729,8 +1761,8 @@ class NatAutoIp(Base):
         name = "hagistack-s6-%s-router" % RID
         for users, region in (
                 (["https://www.googleapis.com/compute/v1/projects/evil/regions/asia-northeast1/routers/" + name], None),
-                (["https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/us-east1/routers/" + name], None),
-                ([self.ROUTER + name], "https://www.googleapis.com/compute/v1/projects/<GCP_PROJECT>/regions/us-east1"),
+                (["https://www.googleapis.com/compute/v1/projects/" + TEST_PROJECT + "/regions/us-east1/routers/" + name], None),
+                ([self.ROUTER + name], "https://www.googleapis.com/compute/v1/projects/" + TEST_PROJECT + "/regions/us-east1"),
                 (["/routers/" + name], None)):
             self.set_mock(lambda s: s["res"]["addresses"].pop("nat-auto-ip-8", None))
             if region:
@@ -2056,7 +2088,7 @@ class DevRecord(Base):
 class ApproveTool(unittest.TestCase):
     """hs6_approve.py's own guards (the signing step itself needs the Owner)."""
     def tool(self, *args, env=None):
-        e = {"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()}
+        e = {"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir(), "HS6_PROJECT": TEST_PROJECT}
         e.update(env or {})
         p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "hs6_approve.py")] + list(args),
                            capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=60)
