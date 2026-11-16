@@ -20,6 +20,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # configure-pages reads the repository's Pages settings through the API, so
+    # the build job needs Pages read access; it gets no write permission.
+    permissions:
+      contents: read
+      pages: read
     defaults:
       run:
         working-directory: docs-site
