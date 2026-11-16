@@ -32,7 +32,7 @@ sidebar:
 | Glance | 独自ユニット、ポート 9292 | — |
 | Placement | httpd、ポート 8778 | — |
 | Nova | API（8774）と metadata API（8775）は httpd。conductor、scheduler | nova-compute、libvirt |
-| Neutron | API（9696）は httpd。RPC サーバー、定期ワーカー、OVN メンテナンスワーカー | OVN metadata エージェント |
+| Neutron | API（9696）は httpd。RPC サーバー、定期ワーカー、OVN メンテナンスワーカー、OVN metadata エージェント | OVN metadata エージェント |
 | OVN / Open vSwitch | northbound・southbound DB、ovn-northd、ovn-controller（ゲートウェイ chassis） | ovn-controller |
 | Horizon | httpd、ポート 80 の `/dashboard` | — |
 | MariaDB | `127.0.0.1` だけで待ち受け | — |

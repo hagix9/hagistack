@@ -21,7 +21,7 @@ Node 2: compute
 ```
 
 :::note[What is verified]
-- **Acceptance with the release RPMs (2026-11-16, run s66r5d):** a controller without a hypervisor plus one compute node: registration, guests, SSH, metadata, traffic between nodes, a compute reboot and re-registration, and a `compute-add` re-run that changed nothing. This run used a rebuild from the same sources and the same 195 package versions as the release; its bytes differ from the published RPMs.
+- **Acceptance with RPMs rebuilt from the release's sources (2026-11-16, run s66r5d):** a controller without a hypervisor plus one compute node: registration, guests, SSH, metadata, traffic between nodes, a compute reboot and re-registration, and a `compute-add` re-run that changed nothing. This run used a rebuild from the same sources and the same 195 package versions as the release; its bytes differ from the published RPMs.
 - **All-in-one plus a compute node:** verified on GCE on 2026-09-29 with an earlier RPM set.
 - **Three or more nodes are not verified.**
 :::

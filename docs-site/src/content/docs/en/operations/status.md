@@ -40,7 +40,7 @@ The main units:
 | `neutron-rpc-server`, `neutron-periodic-workers`, `neutron-ovn-maintenance-worker` | controller |
 | `openstack-nova-conductor`, `openstack-nova-scheduler` | controller |
 | `ovn-controller`, `openvswitch` | every node |
-| `neutron-ovn-metadata-agent` | every node with a hypervisor |
+| `neutron-ovn-metadata-agent` | every node |
 | `openstack-nova-compute`, `libvirtd` | every node with a hypervisor |
 
 ## The OpenStack CLI

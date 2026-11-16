@@ -32,7 +32,7 @@ The role is recorded in `/etc/hagistack/deployment.env`. HAGISTACK never removes
 | Glance | its own unit, port 9292 | — |
 | Placement | httpd, port 8778 | — |
 | Nova | API (8774) and metadata API (8775) in httpd; conductor, scheduler | nova-compute, libvirt |
-| Neutron | API (9696) in httpd; RPC server, periodic workers, OVN maintenance worker | OVN metadata agent |
+| Neutron | API (9696) in httpd; RPC server, periodic workers, OVN maintenance worker, OVN metadata agent | OVN metadata agent |
 | OVN / Open vSwitch | northbound and southbound DBs, ovn-northd, ovn-controller (gateway chassis) | ovn-controller |
 | Horizon | httpd, port 80, `/dashboard` | — |
 | MariaDB | bound to `127.0.0.1` only | — |

@@ -13,7 +13,7 @@ No. With the release, the installer downloads the prebuilt RPMs from GitHub Rele
 
 ## What differs between GCE and on-premises?
 
-- **GCE:** VMs run inside a VM, so the instance needs nested virtualisation. Allow the traffic between nodes in the VPC firewall rules. HAGISTACK's acceptance tests ran on GCE (asia-northeast1, nested KVM).
+- **GCE:** VMs run inside a VM, so the instance needs nested virtualisation. Allow the traffic between nodes in the VPC firewall rules. HAGISTACK's acceptance tests ran on GCE (nested KVM).
 - **On-premises:** enable hardware virtualisation in the BIOS/UEFI and let the required ports through the firewalls and switches between nodes. Reaching floating IPs from a physical LAN needs the provider NIC attached to `br-ex` by you; that setup is not verified.
 
 ## I cannot reach Horizon

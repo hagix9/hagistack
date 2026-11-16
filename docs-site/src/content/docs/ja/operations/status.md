@@ -40,7 +40,7 @@ journalctl -u openstack-nova-compute -n 100
 | `neutron-rpc-server`、`neutron-periodic-workers`、`neutron-ovn-maintenance-worker` | controller |
 | `openstack-nova-conductor`、`openstack-nova-scheduler` | controller |
 | `ovn-controller`、`openvswitch` | 全ノード |
-| `neutron-ovn-metadata-agent` | 全ノード（ハイパーバイザのあるノード） |
+| `neutron-ovn-metadata-agent` | 全ノード |
 | `openstack-nova-compute`、`libvirtd` | ハイパーバイザのあるノード |
 
 ## OpenStack CLI で確認する

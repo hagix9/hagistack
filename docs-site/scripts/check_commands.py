@@ -17,7 +17,7 @@ hs = pathlib.Path(os.environ.get("HAGISTACK", str(root.parents[3] / "rocky10.2" 
 cmds = []
 for md in sorted(root.rglob("*.md*")):
     text = md.read_text(encoding="utf-8")
-    for block in re.findall(r"```bash\n(.*?)```", text, re.S):
+    for block in re.findall(r"```(?:bash|sh)\n(.*?)```", text, re.S):
         joined = re.sub(r"\\\n\s*", " ", block)
         for line in joined.splitlines():
             line = line.split("  #")[0].strip()
@@ -32,7 +32,10 @@ help_cache = {}
 def osc_help(sub):
     if sub not in help_cache:
         p = subprocess.run([osc] + sub.split() + ["--help"], capture_output=True, text=True)
-        help_cache[sub] = p.stdout if p.returncode == 0 else None
+        # openstack answers 0 even for a command group or an unknown word
+        # ("Command 'x' matches: ..."); only a real subcommand prints its usage.
+        ok = p.returncode == 0 and p.stdout.startswith("usage: openstack " + sub + " ")
+        help_cache[sub] = p.stdout if ok else None
     return help_cache[sub]
 
 src = hs.read_text(encoding="utf-8")
@@ -64,8 +67,10 @@ for f, kind, c in cmds:
         if not sub:
             bad += 1; print(f"UNKNOWN COMMAND  {f}: {c}"); continue
         h = osc_help(sub)
-        for o in re.findall(r"(?<!\S)(--[a-z][a-z0-9-]*)", " ".join(toks)):
-            if o not in h:
+        known = set(re.findall(r"(?<![\w-])(--[a-z0-9][a-z0-9-]*)", h))
+        rest = toks[len(sub.split()):]
+        for o in re.findall(r"(?<!\S)(--[a-z][a-z0-9-]*)", " ".join(rest)):
+            if o not in known:
                 bad += 1; print(f"UNKNOWN OPTION   {f}: {o} in `{c}`")
         for o in re.findall(r"(?<!\S)(-[cf])(?=\s)", " ".join(toks)):
             if f"[{o} " not in h and f"{o} " not in h:
