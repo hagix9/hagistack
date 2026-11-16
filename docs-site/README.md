@@ -27,9 +27,15 @@ OSC=/path/to/openstack HAGISTACK=../rocky10.2/hagistack npm run commands
 ```
 
 `npm run commands` checks every `openstack` command and option in the pages
-against the `--help` of the given `openstack` binary, and every `./hagistack`
-subcommand and option against the installer's parser. Use
-python-openstackclient 9.0.1, the version the nodes get. It contacts no cloud.
+(fenced `bash`/`sh` blocks and inline code in tables and prose) against the
+`--help` of the given `openstack` binary: the subcommand must print its own
+usage, and each option must be one that usage lists exactly. Every
+`./hagistack` subcommand and option is checked against the installer's parser
+(its options are global, not per subcommand). A command a page names only to
+say it is not installed (`openstack resource provider list`, from
+osc-placement) is reported separately, never as a pass, and only if that page
+says so. Use python-openstackclient 9.0.1, the version the nodes get; `DUMP=1`
+lists every command, `REPORT=1` counts them per page. It contacts no cloud.
 
 ## Content rules
 

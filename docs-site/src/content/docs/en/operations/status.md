@@ -1,18 +1,24 @@
 ---
 title: Checking the services
-description: hagistack status, systemd and the OpenStack CLI, and how re-runs behave.
+description: HAGISTACK's own status (sudo ./hagistack status), systemd and the OpenStack CLI, and how re-runs behave.
 sidebar:
   order: 2
 ---
 
-## hagistack status
+## HAGISTACK's own status (hagistack status)
+
+`status` is a HAGISTACK subcommand. It is not the OpenStack CLI (the `openstack` command); it reports the state of a host HAGISTACK deployed.
+
+The `hagistack` script is not on the PATH: run it with `./` from the directory you cloned (`hagistack/rocky10.2`). It needs root.
 
 ```bash
+cd hagistack/rocky10.2
 sudo ./hagistack status
 ```
 
 It shows:
 
+- the HAGISTACK version, and the target release and OS
 - the role (`all-in-one`, `controller`, `compute`), the RPM source and set identity
 - the SELinux mode now and at boot, and what HAGISTACK did to it
 - the completed phases

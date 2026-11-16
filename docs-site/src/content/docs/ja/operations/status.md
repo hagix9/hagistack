@@ -1,18 +1,24 @@
 ---
 title: サービス状態の確認
-description: hagistack status、systemd、OpenStack CLI による状態確認と、再実行の考え方。
+description: HAGISTACK 独自の status（sudo ./hagistack status）、systemd、OpenStack CLI による状態確認と、再実行の考え方。
 sidebar:
   order: 2
 ---
 
-## hagistack status
+## HAGISTACK の状態確認（hagistack status）
+
+`status` は HAGISTACK 独自のサブコマンドです。OpenStack 公式の CLI（`openstack` コマンド）とは別物で、HAGISTACK が導入したホストの状態を表示します。
+
+`hagistack` スクリプトは PATH に登録されないため、取得したディレクトリ（`hagistack/rocky10.2`）で `./` を付けて実行します。root 権限が必要です。
 
 ```bash
+cd hagistack/rocky10.2
 sudo ./hagistack status
 ```
 
 表示される内容：
 
+- HAGISTACK の版と、対象のリリース・OS
 - 役割（`all-in-one`、`controller`、`compute`）と RPM の取得方法・セット ID
 - SELinux の現在の状態、起動時の設定、HAGISTACK が行った操作
 - 完了したフェーズ
