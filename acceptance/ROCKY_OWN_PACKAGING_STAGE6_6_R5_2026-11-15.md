@@ -333,3 +333,61 @@ About 2 h 10 min of n1 and 30 min of n2.
   - that the compute-add re-run changes no configuration;
   - no controller traceback after n2's reboot and re-run;
   - no failed controller units at the end.
+
+## GCE run s66r5d (controller n1 + compute n2, commit 4e55892): PASSED
+
+Approved in chat ("s66r5d を承認", conditions ccf4bd98…). The approval also covered harness `hs6.py` 023767bb…, tree 15d42bdf…, US$8 and 6 h. The checkout was not edited while the run was in progress.
+
+| Node | Step | Result |
+|---|---|---|
+| n1 | upload, extract, preflight, build, release, nodocs, pack | PASSED; evidence-build.tar verified (15 237 120 bytes in 5.3 s) |
+| n2 | create, upload, extract, preflight | PASSED |
+| n1 | controller | PASSED, 31 PASS; a guest with no compute node gets `No valid host` |
+| n2 | compute | PASSED, 29 PASS |
+| n1 | cluster | PASSED, 47 PASS |
+| n2 | reboot | PASSED |
+| n1 | after-reboot | PASSED, 21 PASS |
+| n2 | rerun | PASSED, 29 PASS |
+| n1 | final | PASSED, 21 PASS, 0 failed checks |
+| n1, n2 | evidence-c, evidence-n | PASSED; evidence-cluster.tar (17 838 080 bytes in 4.4 s) and evidence-compute.tar (389 120 bytes in 3.3 s) verified |
+| | teardown, residual | complete; "none of run s66r5d left"; watch ended rc 0 ("the run has been torn down") |
+
+About 2 h 10 min of n1 and 37 min of n2; 2 h 15 min from the start of the network to its deletion.
+
+**Results that s66r5b did not reach:**
+- **Compute reboot (after-reboot):**
+  - n2 was seen down. Then nova-compute was up again with the chassis pair n1/n2, n1 was the gateway, and the agents were alive.
+  - g1 was ACTIVE but silent; g2 and g3 were SHUTOFF. All three were started, became ACTIVE, and answered SSH.
+  - g1's uptime (94 s, against 348 s since the cluster step ended) shows that it really booted again.
+  - g1 pinged g2 5/5.
+- **Re-run on n2 (rerun):**
+  - The kernel boot id changed.
+  - After the reboot and again after the re-run, all of these held:
+    - the role is compute;
+    - system-id.conf and the OVS system-id are the host name;
+    - ovn-remote is the controller's SB DB, and the encap IP is 10.86.0.3;
+    - there is no gateway or bridge mapping;
+    - there is no database connection, no database or admin password, and no admin-openrc;
+    - secrets.env is root:root 0600;
+    - the compute units and libvirt are active.
+  - `compute-add` re-run: exit 0, nothing fetched (the verified set was re-used), no configuration changed, and none of the four compute units restarted.
+  - Tracebacks on n2 between the boot and the end of the re-run: 5. After the re-run: 0 in 120 s.
+- **Final (n1):**
+  - Registration held after the re-run.
+  - The new guest g4 ran on n2: floating IP, SSH with the metadata key, instance-id `i-00000004` from the metadata service on n2. g4 pinged g1 5/5.
+  - The controller has 0 failed units and only the new set's packages.
+  - **0 Python tracebacks on the controller since n2 came back (254 s).**
+
+**Tracebacks that were counted but are not failures** (read from the journals in the evidence):
+- **Controller, cluster window** (`diag/tracebacks-cluster.txt`): all in nova-conductor.
+  - 4 before the restart: `NoValidHost` from the controller step's no-compute test (00:18:05, before the cluster step began at 00:22:01).
+  - 1 during the restart.
+  - 0 after recovery.
+- **n2, boot to re-run:** the journal shows `UnexpectedTaskStateError` at 00:34:52. nova-compute's power-state sync expected `powering-off` but found `rebooting_hard`, the start that after-reboot had just issued. It is a race between Nova's start-up sync and the test's start of a SHUTOFF guest. It stopped after the re-run (0 in 120 s), and every guest reached ACTIVE and answered.
+
+**Observation (NON-BLOCKER, not changed):** in after-reboot, the label "the OVN chassis are exactly n1 and n2 (n1)" lists only n1. The label is built before `wait_until 300 chassis_pair` runs, so it shows the chassis at the start of the wait. The check itself waited until both were present, and the later steps list both. Only the wording of the label is stale.
+
+**Verdict:**
+- The compute-add acceptance (controller plus one compute node) passed on real GCE nodes with commit 4e55892.
+- The all-in-one acceptance passed separately in s66r5c.
+- This is a technical result only. It is not approval to publish.
