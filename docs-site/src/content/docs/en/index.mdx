@@ -1,0 +1,71 @@
+---
+title: OpenStack 2026.1 installer for Rocky Linux 10.2
+description: An installer for OpenStack 2026.1 on Rocky Linux 10.2 from prebuilt RPMs, all-in-one or controller + compute.
+template: splash
+hero:
+  title: HAGISTACK
+  tagline: OpenStack 2026.1 on Rocky Linux 10.2. Prebuilt RPMs and one script take you from an all-in-one host to a controller with compute nodes.
+  image:
+    file: ../../../assets/logo.svg
+  actions:
+    - text: Quick start
+      link: /en/quickstart/prepare/
+      icon: right-arrow
+    - text: Download
+      link: /en/download/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/hagix9/hagistack
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+:::note[Current release]
+`rocky10.2-rpms-2026.1` (Rocky Linux 10.2 / x86_64 / OpenStack 2026.1).
+Unless a page says otherwise, the instructions on this site are for this release.
+Features in development are kept in the "In development" section, apart from the released features.
+:::
+
+## What HAGISTACK is
+
+HAGISTACK is a Bash script that installs OpenStack 2026.1 (Gazpacho) on Rocky Linux 10.2.
+Rocky Linux does not ship OpenStack. HAGISTACK builds the RPMs from the 2026.1 release tarballs and publishes them on GitHub Releases; the installer downloads and verifies them.
+Nothing has to be built on the hosts you install.
+
+<CardGrid>
+  <Card title="All-in-one" icon="laptop">
+    Keystone, Glance, Placement, Nova, Neutron (ML2/OVN), Horizon and the hypervisor on one host, plus the initial resources a first VM needs.
+  </Card>
+  <Card title="Controller + compute" icon="list-format">
+    `compute-add` turns more Rocky Linux 10.2 hosts into compute nodes. Only the credentials a compute node needs are handed over.
+  </Card>
+  <Card title="Horizon" icon="seti:html">
+    Sign in at `http://MGMT_IP/dashboard/` and work with images, flavors, networks, instances and floating IPs.
+  </Card>
+  <Card title="Verified RPM download" icon="approve-check">
+    Downloaded RPMs are used only after they match the SHA-256, size and RPM-set identity pinned by the lock in the Git tag.
+  </Card>
+</CardGrid>
+
+## Supported environment
+
+| Item | Value |
+|---|---|
+| OS | Rocky Linux 10.2 (other EL10 distributions are not verified) |
+| Architecture | x86_64 only |
+| Privileges | root through `sudo` |
+| Memory / disk | 8 GB or more and 20 GB free on `/` for all-in-one |
+| Configurations | all-in-one; controller + compute (verified with one compute node) |
+
+See [Before you install](/en/quickstart/prepare/) and [Known limitations](/en/operations/limitations/) for the details.
+
+## Get started
+
+<CardGrid>
+  <LinkCard title="Quick start" description="From preparation to installation, Horizon sign-in, a first VM and SSH" href="/en/quickstart/prepare/" />
+  <LinkCard title="Add a compute node" description="Add a second host as a compute node and see where VMs run" href="/en/guides/add-compute/" />
+  <LinkCard title="OpenStack CLI guide" description="Keystone, Glance, Nova, Neutron and Placement basics" href="/en/cli/overview/" />
+  <LinkCard title="Download" description="GitHub Release, RPMs and SRPMs, release notes" href="/en/download/" />
+</CardGrid>

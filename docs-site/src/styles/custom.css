@@ -1,0 +1,30 @@
+/* HAGISTACK docs — restrained product-documentation styling on top of Starlight. */
+
+:root {
+  --sl-color-accent-low: #10302d;
+  --sl-color-accent: #14b8a6;
+  --sl-color-accent-high: #99f6e4;
+  --sl-color-text-accent: #2dd4bf;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #ccfbf1;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #134e4a;
+  --sl-color-text-accent: #0f766e;
+}
+
+/* Wide tables scroll inside the content column instead of the page. */
+.sl-markdown-content table {
+  display: block;
+  overflow-x: auto;
+}
+.sl-markdown-content table code {
+  overflow-wrap: anywhere;
+}
+
+/* "Example output" blocks are illustrations, not captured logs: mark them. */
+.sl-markdown-content .example-output {
+  border-left: 3px solid var(--sl-color-gray-4);
+  padding-left: 0.75rem;
+}

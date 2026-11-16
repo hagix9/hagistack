@@ -5,6 +5,10 @@ English | [日本語](README.ja.md)
 Hagistack installs **OpenStack 2026.1 (Gazpacho)** on **Ubuntu Server 26.04 LTS** or
 **Rocky Linux 10.2** with one plain-Bash script per distribution.
 
+**User guide for Rocky Linux 10.2:** [hagistack.fulltrust.co.jp](https://hagistack.fulltrust.co.jp/en/)
+(English and Japanese: installation, Horizon, a first VM, adding a compute node,
+the OpenStack CLI).
+
 ## What is Hagistack?
 
 - **A plain-Bash OpenStack installer.** There is no configuration-management

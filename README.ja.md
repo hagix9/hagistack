@@ -6,6 +6,9 @@ Hagistack は、**Ubuntu Server 26.04 LTS** または **Rocky Linux 10.2** に
 **OpenStack 2026.1（Gazpacho）** を導入するインストーラです。ディストリビューションごとに、
 素の Bash で書いたスクリプトが 1 本あります。
 
+**Rocky Linux 10.2 のユーザーガイド：** [hagistack.fulltrust.co.jp](https://hagistack.fulltrust.co.jp/ja/)
+（日本語・英語。インストール、Horizon、最初の VM、Compute ノードの追加、OpenStack CLI）
+
 ## Hagistack とは
 
 - **素の Bash で書いた OpenStack インストーラです。**

@@ -1,0 +1,71 @@
+---
+title: Rocky Linux 10.2 向け OpenStack 2026.1 インストーラー
+description: Rocky Linux 10.2 に OpenStack 2026.1 をビルド済み RPM で導入するインストーラー。All-in-one と Controller + Compute に対応。
+template: splash
+hero:
+  title: HAGISTACK
+  tagline: Rocky Linux 10.2 に OpenStack 2026.1 を。ビルド済みの RPM と 1 本のスクリプトで、All-in-one から Controller + Compute 構成まで導入できます。
+  image:
+    file: ../../../assets/logo.svg
+  actions:
+    - text: クイックスタート
+      link: /ja/quickstart/prepare/
+      icon: right-arrow
+    - text: ダウンロード
+      link: /ja/download/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/hagix9/hagistack
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+:::note[現行の正式版]
+`rocky10.2-rpms-2026.1`（Rocky Linux 10.2 / x86_64 / OpenStack 2026.1）。
+このサイトの手順は、特に断りがない限りこの正式版を対象にしています。
+開発中の機能は「開発中の機能」の章にまとめ、正式版の機能とは区別しています。
+:::
+
+## HAGISTACK とは
+
+HAGISTACK は、Rocky Linux 10.2 に OpenStack 2026.1（Gazpacho）を導入する Bash スクリプトです。
+Rocky Linux は OpenStack を同梱していないため、HAGISTACK は 2026.1 のリリース tarball からビルドした RPM を GitHub Releases で配布し、インストーラーがそれを取得・検証して使います。
+導入先のホストで OpenStack の RPM をビルドする必要はありません。
+
+<CardGrid>
+  <Card title="All-in-one" icon="laptop">
+    1 台に Keystone、Glance、Placement、Nova、Neutron（ML2/OVN）、Horizon とハイパーバイザをまとめて導入します。最初の VM を起動するための初期リソースも作成します。
+  </Card>
+  <Card title="Controller + Compute" icon="list-format">
+    `compute-add` で 2 台目以降の Rocky Linux 10.2 を Compute ノードとして追加できます。必要な資格情報だけを安全に受け渡します。
+  </Card>
+  <Card title="Horizon" icon="seti:html">
+    ブラウザから `http://管理IP/dashboard/` にログインし、イメージ・Flavor・ネットワーク・インスタンス・Floating IP を操作できます。
+  </Card>
+  <Card title="検証付きの RPM 取得" icon="approve-check">
+    取得した RPM は、Git タグ内の lock に固定した SHA-256、サイズ、RPM セットの同一性で検証してから使います。
+  </Card>
+</CardGrid>
+
+## 対応環境
+
+| 項目 | 内容 |
+|---|---|
+| OS | Rocky Linux 10.2（ほかの EL10 は未検証） |
+| アーキテクチャ | x86_64 のみ |
+| 権限 | `sudo` による root |
+| メモリ / ディスク | All-in-one で 8 GB 以上 / `/` に 20 GB 以上の空き |
+| 構成 | All-in-one、Controller + Compute（検証済みは Compute 1 台まで） |
+
+詳しい要件と制限は [インストール前の準備](/ja/quickstart/prepare/) と [既知の制限](/ja/operations/limitations/) を参照してください。
+
+## はじめる
+
+<CardGrid>
+  <LinkCard title="クイックスタート" description="準備からインストール、Horizon ログイン、VM 作成、SSH ログインまで" href="/ja/quickstart/prepare/" />
+  <LinkCard title="Compute ノードの追加" description="2 台目のホストを Compute ノードとして追加し、VM の配置先を確認する" href="/ja/guides/add-compute/" />
+  <LinkCard title="OpenStack CLI ガイド" description="Keystone・Glance・Nova・Neutron・Placement の基本操作" href="/ja/cli/overview/" />
+  <LinkCard title="ダウンロード" description="GitHub Release、RPM・SRPM、リリースノート" href="/ja/download/" />
+</CardGrid>
